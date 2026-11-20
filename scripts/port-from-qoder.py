@@ -511,6 +511,9 @@ GATE_SKIPS = {
     "CONNECTORS.md",
     "PROGRESS.md",
     "docs/MODEL-ROUTING.md",
+    # The manifest description names the port's provenance on purpose.
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
 }
 GATE_SKIP_PREFIXES = ["scripts/"]
 GATE_SUFFIXES = [".md", ".sh", ".py", ".json"]

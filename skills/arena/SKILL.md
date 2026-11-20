@@ -21,7 +21,7 @@ Every candidate gets the same prompt, so the prompt is the contract.
 
 ## Phase B: Fan out
 
-Spawn all N runners in one message with the `Agent` tool, one call per seat, each with `subagent_type: "pstack:pstack-panel-<n>"` and the model and effort from its line. Subagents run in the background by default, so the runners work concurrently and each notifies you when it finishes. Wait for every notification before Phase C. Each prompt carries the task, the path to the shared grounding, its own output path, and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected. Tell each runner to report its model on its first line.
+Spawn all N runners in one message with the `Agent` tool, one call per seat, with `subagent_type` set to `"pstack:pstack-panel-1"`, `"pstack:pstack-panel-2"`, and `"pstack:pstack-panel-3"` and the model and effort from each seat's line. Subagents run in the background by default, so the runners work concurrently and each notifies you when it finishes. Wait for every notification before Phase C. Each prompt carries the task, the path to the shared grounding, its own output path, and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected. Tell each runner to report its model on its first line.
 
 If a candidate produces no output, proceed with N-1 and note the dropout.
 
