@@ -266,9 +266,17 @@ def check_links() -> None:
 
 
 def check_seat_references(agent_names: set[str]) -> None:
-    """Every dispatch target exists and is scoped, or the Agent call misses."""
+    """Every dispatch target exists and is scoped, or the Agent call misses.
+
+    Runtime files only. The provenance documents quote the Qoder names on
+    purpose, to say what was renamed.
+    """
+    provenance = {"README.md", "COMPATIBILITY.md", "PORTING-NOTES.md", "CONNECTORS.md",
+                  "PROGRESS.md", "docs/MODEL-ROUTING.md"}
     for path in shipped_markdown():
         rel = path.relative_to(PLUGIN_ROOT).as_posix()
+        if rel in provenance:
+            continue
         text = path.read_text(encoding="utf-8")
         for seat in set(SCOPED_SEAT_RE.findall(text)):
             if seat in agent_names or seat in {"poteto-mode", "setup-pstack", "setup-enterprise", "prd-rules"}:
