@@ -403,6 +403,16 @@
       "pattern": "`auto`(?=( \\|)|, high \\|| \\| high)",
       "replacement": "`inherit`",
       "reason": "Seat-table cells only; prose `auto` is hand-checked."
+    },
+    "S01": {
+      "pattern": "subagent_type:\\s*\\\"?(ent\\-integration\\-engineer|ent\\-performance\\-engineer|ent\\-database\\-architect|ent\\-database\\-engineer|ent\\-frontend\\-engineer|ent\\-security\\-engineer|ent\\-backend\\-engineer|ent\\-business\\-analyst|ent\\-system\\-architect|ent\\-devops\\-engineer|ent\\-mobile\\-engineer|ent\\-product\\-analyst|ent\\-api\\-architect|ent\\-code\\-reviewer|ent\\-observability|pstack\\-architect|ent\\-qa\\-engineer|pstack\\-explorer|pstack\\-mechanic|pstack\\-verifier|pstack\\-panel\\-1|pstack\\-panel\\-2|pstack\\-panel\\-3|comment\\-sicko|ent\\-prd\\-agent|poteto\\-agent|pstack\\-judge|ent\\-sre)\\\"?(?![\\w:-])",
+      "replacement": "subagent_type: \"pstack:\\1\"",
+      "reason": "Plugin subagents register as pstack:<name>."
+    },
+    "S03": {
+      "pattern": "(?<=`)(ent\\-integration\\-engineer|ent\\-performance\\-engineer|ent\\-database\\-architect|ent\\-database\\-engineer|ent\\-frontend\\-engineer|ent\\-security\\-engineer|ent\\-backend\\-engineer|ent\\-business\\-analyst|ent\\-system\\-architect|ent\\-devops\\-engineer|ent\\-mobile\\-engineer|ent\\-product\\-analyst|ent\\-api\\-architect|ent\\-code\\-reviewer|ent\\-observability|pstack\\-architect|ent\\-qa\\-engineer|pstack\\-explorer|pstack\\-mechanic|pstack\\-verifier|pstack\\-panel\\-1|pstack\\-panel\\-2|pstack\\-panel\\-3|comment\\-sicko|ent\\-prd\\-agent|poteto\\-agent|pstack\\-judge|ent\\-sre)(?=`)",
+      "replacement": "pstack:\\1",
+      "reason": "Backticked seat names are dispatch targets; scope them."
     }
   },
   "substitutions": {

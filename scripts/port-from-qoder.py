@@ -831,7 +831,8 @@ def main(argv: list[str]) -> int:
         "hand_owned_seeded": seeded,
         "hand_owned_protected": protected,
         "renames": RENAMES,
-        "rules": {r[0]: {"pattern": r[1], "replacement": r[2], "reason": r[3]} for r in RULES + ALIAS_RULES},
+        "rules": {r[0]: {"pattern": r[1], "replacement": r[2], "reason": r[3]}
+                  for r in RULES + ALIAS_RULES + build_seat_rules(seats)},
         "substitutions": dict(sorted(hits.items())),
         "rules_that_did_not_fire": silent,
         "hand_rewrites": HAND_REWRITES,
