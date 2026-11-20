@@ -4,31 +4,32 @@ In this page you install the plugin, pick which models pstack uses, and run your
 
 ## Install the plugin
 
-Install from Qoder's plugin marketplace, or from a checkout with the CLI:
+This plugin ships its own marketplace file, so a local checkout installs in two commands. In a Claude Code session:
 
 ```text
-qodercli plugin install --scope local /path/to/pstack-qoder
+/plugin marketplace add /path/to/pstack-claude
+/plugin install pstack@pstack-claude
 ```
 
-Qoder then lists the plugin as enabled.
+Or from a shell, `claude plugin marketplace add /path/to/pstack-claude` then `claude plugin install pstack@pstack-claude`. `claude plugin list` then shows `pstack@pstack-claude` as enabled.
 
-This copy is the Qoder port of pstack, cut from `https://github.com/cursor/plugins/tree/main/pstack`. Upstream also ships adapters for other editors, and those prefix every command with the plugin name. This port has no prefix, so you type each command in this guide exactly as written. Read [COMPATIBILITY.md](../../COMPATIBILITY.md) before you rely on a step that needs a scheduled trigger, a bot code reviewer, or a second machine, because those are the three things Qoder does not have.
+This copy is the Claude Code edition of pstack, cut from `https://github.com/cursor/plugins/tree/main/pstack`. Claude Code prefixes plugin skills and agents with the plugin name, so `/poteto-mode` is `/pstack:poteto-mode`, and the bare `/poteto-mode` also works unless another plugin claims the name. Read [COMPATIBILITY.md](../../COMPATIBILITY.md) before you rely on a step that needs a bot code reviewer, a second machine, or a judge from another model vendor, because those are the things this edition does not have.
 
 ## Pick your models
 
 Run:
 
 ```text
-/setup-pstack
+/pstack:setup-pstack
 ```
 
-[`/setup-pstack`](../../skills/setup-pstack/SKILL.md) asks which models your Qoder account can reach, asks for a reasoning budget, shows you each seat (implementation, architecture, judgment, the review panels, verification), and asks what you want. Answer the questions. It writes two things. `agents.overrides` in `settings.json` is what actually changes the models, and `~/.claude/rules/pstack-models.md` is a small rule every pstack skill reads so it can report the truth about what ran.
+[`/setup-pstack`](../../skills/setup-pstack/SKILL.md) reads which models the `Agent` tool accepts in your session, asks for a reasoning budget, shows you each seat (implementation, architecture, judgment, the review panels, verification), and asks what you want. Answer the questions. It writes one file, `~/.claude/rules/pstack-models.md`, with one `<seat>: <model> <effort>` line per seat you changed. Claude Code loads that file into every session, and every pstack skill that dispatches a seat passes the line's model and effort on the `Agent` call.
 
-The defaults are the same as the `large` budget. Implementation and architecture run on the `opus` alias, the three review panel seats run on `opus`, `sonnet`, and `auto` so the panel is genuinely mixed, and judgment and verification run on `auto` and `sonnet`. Effort is `xhigh` for architecture and `high` everywhere else, and no seat ships above `xhigh`. Those aliases resolve to whatever model Qoder maps them to on your account, so read the concrete names off your own model picker rather than trusting a page to name them. `medium` lowers each seat's effort one step and `small` lowers it two, and both spend fewer tokens.
+The defaults are the same as the `large` budget. Implementation and architecture run on `opus`, the three review panel seats run on `opus`, `sonnet`, and `inherit` so the panel is mixed whenever your chat runs a third model, and judgment and verification run on `inherit` and `sonnet`. Effort is `xhigh` for architecture and `high` everywhere else, and no seat ships above `xhigh`. `medium` lowers each seat's effort one step and `small` lowers it two, and both spend fewer tokens.
 
-You only override what you care about. A seat with no entry in `agents.overrides` keeps the default in its agent file under the plugin's `agents/` directory. To restore a default, delete that seat's entry. A rerun of `/setup-pstack` keeps any seat whose model differs from the default. When a plugin update changes a default, an override written before the update still pins the old one until you run `/setup-pstack` again. That run replaces the old defaults it recognizes, tells you which, and keeps your other choices. To drop a pin it does not recognize, delete that seat's entry first.
+You only override what you care about. A seat with no line keeps the default in its agent file under the plugin's `agents/` directory. To restore a default, delete that seat's line. A rerun of `/setup-pstack` keeps any line you already wrote.
 
-You might be wondering what happens if you use Auto. Set a seat to `inherit` and that agent follows the session model instead of carrying its own. `auto` means something different in Qoder, because it is a real alias that lets Qoder pick per turn rather than following you, so the two are not interchangeable the way they were upstream. Upstream also set panel size by writing a list of models on one seat, with one subagent per entry. Qoder binds one model to one agent, so this port ships three panel seats and the panel is three wide. A wider panel means authoring more agents under `agents/`. Setup also configures the three support seats, `pstack:pstack-explorer`, `pstack:pstack-mechanic`, and `pstack:comment-sicko`, and `/swarm` workers run on `pstack:pstack-verifier` unless a slice writes product code.
+`inherit` means the seat runs on the chat's own model. The `Agent` tool cannot take `inherit` as a value, so the dispatcher passes the chat's alias instead. Upstream set panel size by writing a list of models on one seat, with one subagent per entry. This edition ships three panel seats, so the panel is three wide, and because the model is a per-call parameter a dispatcher can run one seat twice on two models when it wants a wider bakeoff. Setup also configures the three support seats, `pstack:pstack-explorer`, `pstack:pstack-mechanic`, and `pstack:comment-sicko`, and `/swarm` workers run on `pstack:pstack-verifier` unless a slice writes product code.
 
 ## Accept the verification offers, or don't
 
@@ -40,7 +41,7 @@ If you're new to pstack, say yes. An agent that can check its own work keeps goi
 
 Then setup offers once to generate a formal verification skill with [`/create-formal-verification-skill`](../../skills/create-formal-verification-skill/SKILL.md), unless the project already has one. Tests check the cases someone thought to write. A formal verification skill checks one key property of your code, such as "a job never runs twice at once", in every case within a stated scope. Say yes when your code has concurrency, retries, a state machine, or a parser, where a bug is costly and tests rarely reach the case that breaks. Otherwise say no, and run it later if that changes. [Verify and ship](./06-verify-and-ship.md#prove-a-property-with-a-formal-verification-skill) covers it.
 
-After setup, start a new chat. Both the override and the rule apply to new sessions, so neither change reaches the chat you are in. If a seat still reports its old model in the new chat, restart Qoder, because Qoder documents no reload path for `agents.overrides` in the IDE.
+After setup, start a new chat. Claude Code loads `~/.claude/rules/` when a session starts, so the new lines are in context from the first turn there. In the chat you are in, ask the agent to read the file and the next dispatch uses it.
 
 ## Keep the cost in check
 
@@ -56,11 +57,11 @@ pstack spends extra tokens on subagents and review panels. That's the price of t
 Pick something real but small, and describe it the way you'd describe it to a colleague:
 
 ```text
-/poteto-mode add a --json flag to this command. text output stays byte-identical. verify both.
+/pstack:poteto-mode add a --json flag to this command. text output stays byte-identical. verify both.
 ```
 
 Watch the todo list. Its first items are the matched playbook's steps copied in, the Feature playbook for this prompt.
 
-From here you can type normal follow-ups. Qoder has no per-skill mode, so `/poteto-mode` does not stay attached for the whole chat on its own. Typing it loads the skill for the turns that need it, and it fades as the chat moves on. When you want the discipline on every turn, put it in a rule under `.qoder/rules/`, which is the mechanism Qoder does reload every turn, and accept that it then applies to the casual turns too. Otherwise start each new task with `/poteto-mode`.
+From here you can type normal follow-ups. Claude Code has no per-skill mode, so `/pstack:poteto-mode` does not stay attached for the whole chat on its own. Typing it loads the skill for the turns that need it, and it fades as the chat moves on. When you want the discipline on every turn, put it in `CLAUDE.md` or a rule under `~/.claude/rules/`, which Claude Code loads into every session, and accept that it then applies to the casual turns too. Otherwise start each new task with `/pstack:poteto-mode`.
 
 Next: [Route work through `/poteto-mode`](./02-poteto-mode.md).

@@ -609,8 +609,7 @@ def transform_skill(rel: str, text: str, upstream: Path, hits: Counter) -> str:
                     lines.append(line)
                     hits[f"frontmatter-restore:{key}"] += 1
     if manual and MANUAL_ONLY_NOTE not in body:
-        body = "\n" + MANUAL_ONLY_NOTE + "\n" + body if not body.startswith("\n") else (
-            "\n" + MANUAL_ONLY_NOTE + "\n" + body)
+        body = "\n" + MANUAL_ONLY_NOTE + "\n\n" + body.lstrip("\n")
         hits["manual-only-note"] += 1
     return join_frontmatter(lines, body)
 

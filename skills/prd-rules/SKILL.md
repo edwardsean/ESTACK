@@ -1,6 +1,6 @@
 ---
 name: prd-rules
-description: Turn a PRD into business-rule knowledge cards the orchestrator loads on demand. Three seats extract candidate rules and the gaps in them, a human confirms the contested ones, and only confirmed rules are written to .qoder/rules/. Use for /prd-rules, "extract business rules", "capture domain rules from this PRD", or when a task keeps hitting domain questions nobody has written down.
+description: Turn a PRD into business-rule knowledge cards the orchestrator loads on demand. Three seats extract candidate rules and the gaps in them, a human confirms the contested ones, and only confirmed rules are written as a project skill under .claude/skills/enterprise-<domain>/. Use for /prd-rules, "extract business rules", "capture domain rules from this PRD", or when a task keeps hitting domain questions nobody has written down.
 ---
 
 # PRD to business rules
@@ -64,11 +64,11 @@ Skip questions whose answer cannot change what gets built. A rule nobody will ev
 
 ## 5. Write the card
 
-Write `.claude/skills/enterprise-<domain>/SKILL.md`, with the domain in kebab case. Qoder loads project rules from `.qoder/rules/`, and `trigger: model_decision` is what makes the card load only for tasks that need it rather than on every message.
+Write `.claude/skills/enterprise-<domain>/SKILL.md`, with the domain in kebab case. Claude Code loads project skills from `.claude/skills/` by their `description`, which is what makes the card load only for tasks that need it rather than on every message. Do not write it to `.claude/rules/`, because Claude Code loads every file there into every session. Avoid a domain named `gates` or `seats`, which would collide with this plugin's own `enterprise-gates` and `enterprise-seats` skills in the listing.
 
 ```markdown
 ---
-trigger: model_decision
+name: enterprise-<domain>
 description: Use when working on <domain> in this repo, when changing <the behaviors this card constrains>, or when a <domain> requirement looks ambiguous. Holds the business rules confirmed from <PRD name>.
 ---
 

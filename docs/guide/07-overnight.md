@@ -4,7 +4,7 @@ Upstream calls this the overnight run. This is the payoff for everything before 
 
 ![She waves goodnight from the door while robots keep the factory running, one updating a DECISION LOG wall board under a BUILD LOOP ACTIVE sign.](./images/overnight.jpg)
 
-**Read this before the rest, because it is where the port loses the most.** Upstream runs this page's contract unattended, woken on a heartbeat by an editor feature that re-enters the run every hour. Qoder has no timer and no scheduled re-entry, so nothing restarts a run once the turn that started it ends. An agent cannot work while you sleep here, and any agent that tells you it will is wrong. Everything below still works as one long bounded pass that you stay reachable for, and the resume note is what makes stepping away safe. What you trade is a night of unattended iterations for one long turn with a ceiling you chose.
+**Read this before the rest.** Upstream runs this page's contract unattended, woken on a heartbeat by its editor's `/loop`. Claude Code ships `/loop` too, so the heartbeat works here: it re-runs a prompt on an interval, or self-paces when you give no interval. The limit is the session. A loop lives in the Claude Code session that armed it, so the machine stays on and the session stays open while it runs, and a closed laptop ends it. The resume note is what makes that ending safe.
 
 ## Earn the trust before a long run
 
@@ -15,7 +15,7 @@ A long run you don't trust just produces unchecked work faster, and the mess com
 - Every stage proves its work and can stop the line when the work misses the bar.
 - You've read a few transcripts and turned the repeated failures into tools, skills, or checks.
 
-Make a run autonomous only after all four hold. Until then, run it while you watch. In this port a run only advances inside a turn, so a long pass means one long turn rather than a night of them.
+Make a run autonomous only after all four hold. Until then, run it while you watch. A loop advances one iteration per wake, so a night of them is a night of commits you have to be ready to audit.
 
 ## The handoff contract
 
@@ -25,7 +25,7 @@ A good handoff has the goal, the finish condition, permissions, a ceiling, and a
 /poteto-mode im stepping away. migrate every caller to the new parser in a fresh worktree off <base>.
 done means zero old callers, all parser fixtures pass, old api deleted.
 keep a decision log. don't ask me before committing.
-keep going until done, and stop after 25 callers or 90 minutes, whichever lands first.
+/loop until done. stop after 25 callers or a few hours, whichever lands first.
 if you're truly stuck, stop early and write up why plus how to resume.
 ```
 
@@ -35,14 +35,15 @@ Walk through what each line buys you:
 - "done means..." turns the goal into checks every iteration can run.
 - "fresh worktree off `<base>`" keeps the run from colliding with anything else you have open.
 - "don't ask me before committing" pre-answers the permission the agent would otherwise block on.
-- The ceiling replaces upstream's hourly wake. Qoder has no timer to re-enter a run, so the pass ends when the turn ends whether you named a ceiling or not. Naming one in units the agent can count, callers migrated or minutes elapsed, is what turns that into a deliberate stop with a resume note instead of a truncation in the middle of an edit.
+- `/loop` is Claude Code's built-in wake mechanism, not a pstack skill. The [Autonomous run playbook](../../skills/poteto-mode/playbooks/autonomous-run.md) uses it to re-check the finish condition on events or a heartbeat.
+- The ceiling bounds the loop in units the agent can count, callers migrated or hours elapsed. It turns the end of the session into a deliberate stop with a resume note instead of a truncation in the middle of an edit.
 - The escape hatch lets it stop at a genuine dead end and write up why, which beats hours of creative goal reinterpretation.
 
 Because you'll review this work after stepping away, `/poteto-mode` routes it through [`/figure-it-out`](../../skills/figure-it-out/SKILL.md), which designs the run's phases before any code and wires in the decision log.
 
-To stop a run on purpose, tell the agent to pause, or that you're about to go offline or restart Qoder. The [Pause safely playbook](../../skills/poteto-mode/playbooks/pause-safely.md) finishes or backs out of the current step, commits a work-in-progress checkpoint, and writes a resume note. A fresh chat picks the work up from that note through the Session pickup playbook. Saying "keep going" never triggers a pause.
+To stop a run on purpose, tell the agent to pause, or that you're about to go offline or restart Claude Code. The [Pause safely playbook](../../skills/poteto-mode/playbooks/pause-safely.md) finishes or backs out of the current step, commits a work-in-progress checkpoint, and writes a resume note. A fresh chat picks the work up from that note through the Session pickup playbook. Saying "keep going" never triggers a pause.
 
-In this port the resume note matters more than it does upstream, because it is the only thing that survives. Upstream could wake the same run back up. Here the next pass is a new chat that reads the note, so a run that ends without one hands you a half-finished worktree and no way to know what was already tried.
+The resume note is what survives a closed session. `/loop` wakes the same run only while its session is open. After that the next pass is a new chat that reads the note, so a run that ends without one hands you a half-finished worktree and no way to know what was already tried.
 
 ## What one iteration does
 
@@ -76,7 +77,7 @@ For a quick status instead of an audit, run [`/ketchup`](../../skills/ketchup/SK
 
 ## When the run holds a queue, not a task
 
-The contract above drives one task to one finish condition. Some runs hold more, a queue of independent changes or a whole program. Two playbooks and one skill scale the same trust up. All three carry a ceiling in this port, because none of them can be woken to finish later.
+The contract above drives one task to one finish condition. Some runs hold more, a queue of independent changes or a whole program. Two playbooks and one skill scale the same trust up. All three carry a ceiling, because a loop ends with its session.
 
 [Autopilot-full](../../skills/poteto-mode/playbooks/autopilot-full.md) runs a queue of independent PRs to merged. Each PR gets one owner agent that carries it from build through merge, and no owner merges on its own verdict. A swarm of fresh verifiers checks the owner's code-ready head. A later rebase or minor fix gets one fresh verifier, and only new behavior or a large new diff calls the full swarm again. Only a clean verdict on the patch that merges authorizes the merge:
 
@@ -98,7 +99,7 @@ A whole program, such as a migration across many packages, has no playbook of it
 
 ## Run many projects in parallel
 
-Upstream gives one coordinator agent a persistent thread per project, with its subagents running in the cloud so the work continues when your laptop is closed. Qoder has neither a persistent project thread nor cloud agents, so the equivalent here is one chat and one worktree per body of work, and the coordinator is the chat you keep returning to. Nothing continues with the laptop closed. Start your prompts to that chat with `/poteto-mode`, and the subagents it spawns follow the playbooks. Each agent it starts reads [`worker.md`](../../skills/poteto-mode/worker.md) first, so workers hold to the kickoff's bar, decide reversible calls instead of asking you, and open PRs ready for review.
+Upstream gives one coordinator agent a persistent thread per project, with its subagents running in the cloud so the work continues when your laptop is closed. This edition assumes no cloud agents, so the equivalent here is one Claude Code session and one worktree per body of work, and the coordinator is the session you keep returning to, resumable with `claude --resume`. Nothing continues with the laptop closed. Start your prompts to that chat with `/poteto-mode`, and the subagents it spawns follow the playbooks. Each agent it starts reads [`worker.md`](../../skills/poteto-mode/worker.md) first, so workers hold to the kickoff's bar, decide reversible calls instead of asking you, and open PRs ready for review.
 
 A few habits help:
 
@@ -113,9 +114,9 @@ One prompt can carry a whole body of work, from research through execution:
 /poteto-mode refactor this repo so its architecture is more agent friendly. use /correct and /architect on past commits and review comments to find the mistakes agents make most here. use /recall for context from past chats. answer open questions with prototypes instead of asking me. come back with a plan backed by real data. once i approve it, run it with autopilot-stack or autopilot-full, and ask me which.
 ```
 
-## What the port cannot do here
+## What this edition does not ship
 
-Every run above still waits for you to start it, and in this port that is a hard limit rather than a habit to break. Upstream removes the step with scheduled and event-driven automations, and it ships a dormant automation pack for chat-hosted issue reports where one automation triages each report and another reproduces confirmed bugs. Qoder has no scheduler and no inbound webhook that can start a chat, and that pack's setup files are not part of this port, so there is nothing here to point an agent at. Do not wire up an external cron job to drive the IDE either, because nothing in this plugin was tested against that and a headless trigger has no session to run in.
+Every run above still waits for you to start it. Upstream removes that step with scheduled and event-driven automations, and it ships a dormant automation pack for chat-hosted issue reports where one automation triages each report and another reproduces confirmed bugs. That pack runs on its editor's automation runtime and is not part of this port, so there is nothing here to point an agent at. Claude Code's `/schedule` creates scheduled cloud routines on accounts that offer them, and a routine can start a stage of such a line, but nothing in this plugin was tested against one, so treat it as your own wiring rather than a supported path.
 
 The two rules that keep such a line trustworthy still transfer, and they are worth holding even when you start each stage by hand:
 

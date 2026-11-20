@@ -5,11 +5,14 @@ disable-model-invocation: true
 ---
 
 > Claude Code: pstack skills are manual-only, so the `Skill` tool refuses them. To run another pstack skill named here, read `${CLAUDE_PLUGIN_ROOT}/skills/<name>/SKILL.md` and follow it. Seats dispatch as `subagent_type: "pstack:<seat>"`.
+
 # Poteto mode
 
 Bundled skills live at `../<name>/SKILL.md` from this file, so put this file's absolute path in every `pstack:poteto-agent` prompt.
 
-This is the Qoder port of pstack. Seats replace per-call models, and the differences are listed in `../../COMPATIBILITY.md` from this file. Read that before you tell a user an upstream feature works here.
+This is the Claude Code edition of pstack. Roles are seats, each seat is a plugin subagent dispatched as `pstack:<seat>`, and the model and effort for each dispatch come from the seat's line in `~/.claude/rules/pstack-models.md`. The differences from upstream are listed in `../../COMPATIBILITY.md` from this file. Read that before you tell a user an upstream feature works here.
+
+Every pstack skill except `setup-pstack`, `setup-enterprise`, `prd-rules`, and the three seat and gate references is manual-only, so the `Skill` tool refuses it. When a step here names another pstack skill, read `../<name>/SKILL.md` from this file and follow it.
 
 ## Non-negotiables
 
@@ -98,9 +101,9 @@ In a repository with no policy file none of this applies and no prompt appears. 
 
 ## Subagents
 
-Qoder binds a model and an effort to an agent, not to a call. The `Agent` tool takes a `subagent_type` and a prompt and nothing about models. So each role is a **seat**, each seat is one Custom Agent, and you pick a seat instead of picking a model. The seat catalog lives in the `pstack-seats` skill, and the same table is at `skills/pstack-seats/SKILL.md` under the plugin root.
+Each role is a **seat**, and each seat is one plugin subagent with its own brief, tool list, default model, and default effort. You pick a seat by the job, and the seat's line in `~/.claude/rules/pstack-models.md` picks its model and effort for this call. The seat catalog lives in the `pstack-seats` skill, and the same table is at `skills/pstack-seats/SKILL.md` under the plugin root.
 
-**Use the seat that matches the job.** Dispatch through the `Agent` tool with its `subagent_type`:
+**Use the seat that matches the job.** Dispatch through the `Agent` tool with `subagent_type: "pstack:<seat>"`:
 
 | Job | Seat |
 |---|---|
@@ -117,17 +120,17 @@ The chat that receives `/poteto-mode` runs the playbook itself. Do not dispatch 
 
 **Defaults for every `Agent` call.** File pointers, not inlined context. The goal and the done predicate, stated. The absolute path of this skill's folder, so the delegate can read `worker.md` and the leaves. And the seat, chosen from the table above.
 
-`~/.claude/rules/pstack-models.md`, when `/setup-pstack` wrote one, records which model each seat runs on. Read it at task start when it exists. It changes which seat you pick only where it says a seat is pinned to the parent model, in which case dispatch `general-purpose` instead and say so. A seat with no line runs on its agent-file default.
+`~/.claude/rules/pstack-models.md`, when `/pstack:setup-pstack` wrote one, holds one `<seat>: <model> <effort>` line per configured seat. Claude Code loads it into every session, so read it from context, or read the file when it is not there. On every `Agent` call that dispatches a seat, pass that line's `model` and `effort`. `inherit` means this chat's model, so pass this chat's alias, or omit `model` when you do not know it and say so. A seat with no line gets neither parameter and runs on its agent-file default.
 
-**A panel is three seats.** `arena` and `interrogate` need independent attempts on different models. Dispatch `pstack:pstack-panel-1`, `pstack:pstack-panel-2`, and `pstack:pstack-panel-3` in one message so they run concurrently. One seat dispatched three times is not a panel, it is the same model guessing thrice. If the user needs a specific vendor in a specific seat, that is an `agents.overrides` change in `settings.json` plus a new chat, and `/setup-pstack` writes it. Say so rather than pretending a dispatch parameter did it.
+**A panel is three seats.** `arena` and `interrogate` need independent attempts on different models. Dispatch `pstack:pstack-panel-1`, `pstack:pstack-panel-2`, and `pstack:pstack-panel-3` in one message so they run concurrently. One seat dispatched three times is not a panel, it is the same model guessing thrice. If the user needs a specific model in a specific seat, pass it as `model` on that seat's call, and offer `/pstack:setup-pstack` to make it the standing choice. Every model is Anthropic's, so a three-model panel is still one vendor. Say so rather than calling it cross-vendor.
 
 **The judge is never the author, and never the parent's model if you can help it.** Upstream pstack requires the cross-judge to come from a different vendor than the parent, because a model grades its own output generously. Claude Code cannot deliver that, because every model it runs is Anthropic's. `pstack:pstack-judge` reports the model it ran on. If it matches the model that produced the candidates, report that the independence check did not hold and do not present the verdict as cross-vendor.
 
-**Match the seat to the job, and say when it does not fit.** Effort is fixed per seat. When the hardest or subtlest work lands on a seat pinned to `medium`, name the mismatch in your reply and offer the `agents.overrides` change that fixes it. Do not silently accept a weak seat on hard work, and do not claim you raised its reasoning.
+**Match the seat to the job, and say when it does not fit.** Effort is a per-call parameter. When the hardest or subtlest work lands on a seat configured at `medium`, raise `effort` on that call, name the change in your reply, and offer `/pstack:setup-pstack` if it should stick. Do not silently accept a weak seat on hard work, and do not claim you raised its reasoning when the call did not carry the parameter.
 
-**No cloud, no per-call background.** Upstream pstack spawns workers as cloud agents on their own machines and asks for each one to run detached from the turn that started it. Qoder has neither. Seats that need an isolated working copy carry `isolation: worktree`, which the plugin safety policy preserves, and `pstack-panel-*` and `pstack:pstack-verifier` already set it. For anything else, create a git worktree yourself and name its path. Detached execution here is a per-agent `background: true` default that needs background subagent sessions enabled in settings, not a per-call flag, so do not promise the user a detached run you cannot detach.
+**No cloud, background by default.** Upstream pstack spawns workers as cloud agents on their own machines. This edition assumes none, so every seat runs on this machine. Seats that need an isolated working copy carry `isolation: worktree`, and `pstack:pstack-panel-*`, `pstack:pstack-verifier`, and the five enterprise engineering seats already set it, so Claude Code runs each in a temporary git worktree. For any other seat that writes, pass `isolation: "worktree"` on the `Agent` call. Subagents run in the background by default and notify you when they finish, so dispatch independent work in one message, keep working, and read each result when its notification arrives.
 
-**No wake loop.** Qoder has no timer, so nothing re-invokes a skill on a schedule. It does have one wake path. A hook declared with `asyncRewake` runs in the background and, on exit 2, has the CLI inject a system reminder that wakes the model. That still needs a lifecycle event to start it, so it can watch for something inside a run and cannot restart one from nothing. Where an upstream playbook arms a repeat-until-done loop, drive the iterations yourself inside one run, or tell the user to re-invoke with the same prompt and hand back the resume note from `playbooks/pause-safely.md`. Say which you did.
+**The wake loop is `/loop`.** Claude Code's `/loop` command re-runs a prompt on an interval, or self-paces when no interval is given, so an upstream playbook that arms a repeat-until-done loop works as written. A watcher subagent can also wake you on an event, since a background subagent's completion notifies this chat. A loop dies with the session, so a run that has to survive a closed laptop still ends in the resume note from `playbooks/pause-safely.md`. Say which wake you armed.
 
 You own every subagent's work. Review the diff and write your own summary. A second opinion is the same brief on another seat.
 

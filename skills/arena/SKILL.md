@@ -5,6 +5,7 @@ disable-model-invocation: true
 ---
 
 > Claude Code: pstack skills are manual-only, so the `Skill` tool refuses them. To run another pstack skill named here, read `${CLAUDE_PLUGIN_ROOT}/skills/<name>/SKILL.md` and follow it. Seats dispatch as `subagent_type: "pstack:<seat>"`.
+
 # Arena
 
 Open a todo list with one entry per phase (Frame, Fan out, Cross-judge, Pick, Graft, Verify) before launching anything.
@@ -15,18 +16,18 @@ Every candidate gets the same prompt, so the prompt is the contract.
 
 1. State the artifact each candidate is producing.
 2. Derive the rubric, 3-6 concrete gradeable criteria for what success looks like on *this* task. It is the picker's tool in Phase D. Candidates only see the task.
-3. Pick the runners. They are the three panel seats, `pstack:pstack-panel-1`, `pstack:pstack-panel-2`, and `pstack:pstack-panel-3`. Qoder binds a model to an agent rather than to a call, so each seat is one model and `/setup-pstack` is what changes them. Read `Panel diversity:` in `~/.claude/rules/pstack-models.md` when that file exists, and say in the synthesis note which model each seat actually reported running on. Keep at least two runners. Spawn more seats for multiple design directions, and run one seat twice when the work is generation-bound rather than judgment-sensitive. If two seats report the same model, the panel has no diversity there. Say so rather than pretending the arms were independent.
+3. Pick the runners. They are the three panel seats, `pstack:pstack-panel-1`, `pstack:pstack-panel-2`, and `pstack:pstack-panel-3`. Each seat has a default model, and the seat's line in `~/.claude/rules/pstack-models.md` overrides it per call, so `/pstack:setup-pstack` is what changes them. Pass each line's `model` and `effort` on that seat's `Agent` call, read `Panel diversity:` in the same file, and say in the synthesis note which model each seat actually reported running on. Keep at least two runners. Spawn more seats for multiple design directions, and run one seat twice when the work is generation-bound rather than judgment-sensitive. If two seats report the same model, the panel has no diversity there. Say so rather than pretending the arms were independent.
 4. Give each candidate its own output location (a git worktree where possible, otherwise `/tmp/arena-<slug>/candidate-<n>/`), per the **separate-before-serializing-shared-state** principle skill. The three panel seats already carry `isolation: worktree`, so a candidate that only writes code needs no path of its own. Give one to any candidate that produces a document or a report file.
 
 ## Phase B: Fan out
 
-Spawn all N runners in one message with the `Agent` tool, one call per seat. One message is the whole of Qoder's parallelism here. There is no per-call background flag and no cloud environment, so the calls run as Qoder schedules them and you get every result when the message returns. Each prompt carries the task, the path to the shared grounding, its own output path, and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected. Tell each runner to report its model on its first line.
+Spawn all N runners in one message with the `Agent` tool, one call per seat, each with `subagent_type: "pstack:pstack-panel-<n>"` and the model and effort from its line. Subagents run in the background by default, so the runners work concurrently and each notifies you when it finishes. Wait for every notification before Phase C. Each prompt carries the task, the path to the shared grounding, its own output path, and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected. Tell each runner to report its model on its first line.
 
 If a candidate produces no output, proceed with N-1 and note the dropout.
 
 ## Phase C: Cross-judge
 
-After all Phase B candidates complete, spawn one read-only judge on the `pstack:pstack-judge` seat. The judge is never the author of a candidate, and it should not run on the model that is driving this chat. `/setup-pstack` records what it chose under `Judge independence from the parent model:` in `~/.claude/rules/pstack-models.md`. Qoder cannot check that at dispatch time, so ask the judge to report its model and compare it yourself. When the check did not hold, say that in the synthesis note instead of implying the judge was independent. While you read in Phase D, the judge scores each candidate, by path label, on each rubric criterion and recommends a base.
+After all Phase B candidates complete, spawn one read-only judge on the `pstack:pstack-judge` seat. The judge is never the author of a candidate, and it should not run on the model that is driving this chat. `/setup-pstack` records what it chose under `Judge independence from the parent model:` in `~/.claude/rules/pstack-models.md`. Every model Claude Code runs is Anthropic's, so the cross-vendor judge upstream asks for cannot exist here, and the most you can arrange is a different model by passing `model` on the judge's call. Ask the judge to report its model and compare it yourself. When the check did not hold, say that in the synthesis note instead of implying the judge was independent. While you read in Phase D, the judge scores each candidate, by path label, on each rubric criterion and recommends a base.
 
 ## Phase D: Pick a base
 

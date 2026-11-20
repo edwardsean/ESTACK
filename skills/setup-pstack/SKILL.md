@@ -1,17 +1,14 @@
 ---
 name: setup-pstack
-description: Configure which model each pstack and enterprise seat runs on, and at what reasoning effort. Qoder binds models to Custom Agents rather than to calls, so this writes settings.json agent overrides plus a rule that records the mapping. Use for /setup-pstack, "configure pstack models", "pstack budget", "configure enterprise seats", or changing pstack's model choices.
+description: Configure which model each pstack and enterprise seat runs on, and at what reasoning effort. Writes ~/.claude/rules/pstack-models.md, one line per seat, which the orchestrator reads to pass model and effort on every Agent call that dispatches a seat. Use for /setup-pstack, "configure pstack models", "pstack budget", "configure enterprise seats", or changing pstack's model choices.
 ---
 # Setup pstack
 
-pstack routes work to seats, and a seat is a Custom Agent. Qoder binds `model` and `effort` in agent frontmatter, and there is no per-call model parameter, so changing a seat's model means overriding the agent.
+pstack routes work to seats, and a seat is a plugin subagent registered as `pstack:<seat>`. Each seat's agent file carries a default `model` and `effort`. Claude Code's `Agent` tool also takes `model` and `effort` per call, and a per-call value wins over the frontmatter. So changing a seat's model means writing a line the dispatcher reads, not editing the plugin.
 
-Twenty-eight seats ship with this plugin. Ten are pstack's, routed by skills. Eighteen more are the enterprise roster, routed by the `/poteto-mode` orchestration loop. Both kinds are configured the same way here, and a repository that never runs an enterprise chain can skip those five family questions entirely.
+Twenty-eight seats ship with this plugin. Ten are pstack's, routed by skills. Eighteen more are the enterprise roster, routed by the `/pstack:poteto-mode` orchestration loop. Both kinds are configured the same way here, and a repository that never runs an enterprise chain can skip those five family questions entirely.
 
-This skill writes two files:
-
-1. `agents.overrides` in `settings.json`, which is what actually changes the model. Qoder documents no reload path for it in the IDE, so it takes a new chat to be read.
-2. `~/.claude/rules/pstack-models.md`, an Always Apply rule that records the mapping so the orchestrator and every seat report the truth about what ran.
+This skill writes one file, `~/.claude/rules/pstack-models.md`. Claude Code loads every `.md` file in `~/.claude/rules/` into each new session, so the seat lines are already in context when a skill dispatches. Every dispatching skill follows the same rule: find the seat's line, pass its `model` and `effort` on the `Agent` call, and when there is no line, pass neither and let the frontmatter decide.
 
 ## Seats
 
@@ -57,18 +54,17 @@ Eighteen more seats in five families, dispatched by the `/poteto-mode` orchestra
 
 ### 1. Establish what the user can actually run
 
-Do not enumerate models by guessing. Two sources, in order:
+The `Agent` tool's `model` parameter takes an alias: `opus`, `sonnet`, `haiku`, or `fable`. It does not take `inherit` or a full model id. The `effort` parameter takes `low`, `medium`, `high`, `xhigh`, or `max`, and the levels a model accepts depend on the model. Read the two enums from the `Agent` tool schema this session exposes, since that is the dependable source, and offer only values it lists.
 
-- Read `modelConfigs.aliases` and `modelConfigs.customAliases` from `~/.qoder/settings.json` and `<project>/.qoder/settings.json` when they exist. Those name real aliases.
-- Ask the user to paste the model names they see in Qoder's model picker, or to run `/model` and report the list.
+`inherit` is always valid as a line value and means "run on the chat's model". The `Agent` tool cannot take it, so a dispatcher resolves it to the alias of the model the chat is running on, and omits `model` when it does not know that. Say so when you offer it.
 
-The aliases `inherit`, `auto`, `haiku`, `sonnet`, and `opus` are always valid. Never write a concrete model name you have not confirmed the user has. An unconfirmed name makes the seat fail at dispatch, and the failure surfaces far from its cause.
+Check two environment variables before promising anything. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` makes Claude Code ignore both the frontmatter and the per-call model, and `CLAUDE_CODE_EFFORT_LEVEL` overrides every per-call effort. When either is set, say that this file will be read and not obeyed. The per-call `effort` parameter needs Claude Code v2.1.292 or later, so check `claude --version` and say so when it is older.
 
 ### 2. Load current state
 
-Read `agents.overrides` from `<project>/.qoder/settings.json`, then `<project>/.qoder/settings.local.json`, then `~/.qoder/settings.json`. Higher precedence wins per key. Treat any `pstack-*`, `ent-*`, `pstack:poteto-agent`, or `pstack:comment-sicko` entry as a prior choice.
+Read `~/.claude/rules/pstack-models.md` when it exists. Treat its seat lines as prior choices and its `# budget` line as the current budget.
 
-Read `~/.claude/rules/pstack-models.md` when it exists, and reconcile it against the overrides. When they disagree, the overrides are the truth, because they are what Qoder loads. Say so, and rewrite the rule to match.
+A file without a `# defaults: 3` line came from an older run or was written by hand. Read each value as `<model> <effort>`, take the seat's frontmatter effort where the effort token is missing, and drop any value whose model token is not `inherit` or a listed alias. Tell the user which values you kept, filled in, or dropped, then rewrite the file whole.
 
 ### 3. Ask, per role bucket
 
@@ -80,11 +76,13 @@ Prefer `AskUserQuestion` over free text. Ask the pstack seats in the buckets bel
 - Independent judgment (`pstack:pstack-judge`)
 - Verification (`pstack:pstack-verifier`)
 
-Offer the confirmed aliases and model names, plus `inherit` for "follow the session model". Support the three support seats (`pstack:pstack-explorer`, `pstack:pstack-mechanic`, `pstack:comment-sicko`) in one follow-up question rather than three.
+Offer the aliases the schema lists, plus `inherit` for "follow the chat's model". Ask the three support seats (`pstack:pstack-explorer`, `pstack:pstack-mechanic`, `pstack:comment-sicko`) in one follow-up question rather than three.
 
-For the panel bucket, explain the tradeoff before asking. Three seats on three different models give a real panel. Three seats on one model give three samples of the same judgment, which still catches nondeterminism but not blind spots. Let the user pick, and record which they picked.
+For the panel bucket, explain the tradeoff before asking. Three seats on three different models give the widest panel Claude Code can field. Three seats on one model give three samples of the same judgment, which still catches nondeterminism but not blind spots. Every model here is Anthropic's, so even three different models are one vendor. Let the user pick, and record which they picked.
 
-Then five more questions, one per enterprise family, each written per agent:
+For the judge, recommend a model that differs from the one the user usually chats on, since the judge defaults to `inherit` and an `inherit` judge is the parent model grading its own panel.
+
+Then five more questions, one per enterprise family:
 
 - Product and requirements (`pstack:ent-product-analyst`, `pstack:ent-business-analyst`, `pstack:ent-prd-agent`)
 - Architecture and design (`pstack:ent-system-architect`, `pstack:ent-api-architect`, `pstack:ent-database-architect`)
@@ -92,7 +90,7 @@ Then five more questions, one per enterprise family, each written per agent:
 - Quality and governance (`pstack:ent-qa-engineer`, `pstack:ent-security-engineer`, `pstack:ent-code-reviewer`, `pstack:ent-performance-engineer`)
 - Infra and operations (`pstack:ent-devops-engineer`, `pstack:ent-sre`, `pstack:ent-observability`)
 
-Ask each family as one question with one answer applied to every seat in it, and offer "split this family" as an option so a user who wants `pstack:ent-code-reviewer` on a different vendor than `pstack:ent-qa-engineer` can say so instead of editing JSON afterwards. Skip a family the repository will never dispatch, and say which ones you skipped.
+Ask each family as one question with one answer applied to every seat in it, and offer "split this family" as an option so a user who wants `pstack:ent-code-reviewer` on a different model than `pstack:ent-qa-engineer` can say so instead of editing the file afterwards. Skip a family the repository will never dispatch, and say which ones you skipped.
 
 One independence note matters more than the rest. Where the governance policy requires a review, `pstack:ent-code-reviewer` and `pstack:ent-security-engineer` should not sit on the same model as the engineering seats whose work they review, because a model grades its own output generously. Say that before asking the quality family, and record what the user chose.
 
@@ -102,119 +100,79 @@ Ask about effort separately, once, as a budget:
 - `medium` lowers each one step on the ladder `xhigh` > `high` > `medium` > `low`
 - `small` lowers each two steps
 
-Effort lives in agent frontmatter. Qoder's documented `agents.overrides` fields are enablement, tools, models, and run limits, and `model.reasoningEffort` is a session-level key, not a per-agent override. So an effort change means editing the plugin's agent file, which Qoder does not recommend and which an update overwrites. Tell the user that plainly. Offer the two honest options: accept the shipped effort, or keep a project-level copy of the agent under `.qoder/agents/` and accept that the plugin version shadows it. Do not claim an effort override you cannot write.
+A step below `low` stays at `low`. No seat runs above `xhigh` unless the user names `max` for it explicitly.
 
 ### 4. Validate
 
-Every model value you are about to write is either one of `inherit`, `auto`, `haiku`, `sonnet`, `opus`, or a name the user confirmed in step 1. Anything else stops the run and goes back to step 3.
+Every model token you are about to write is `inherit` or an alias the `Agent` tool schema lists. Every effort token is a level that schema lists. Anything else stops the run and goes back to step 3.
 
-### 5. Write the overrides
+### 5. Write the rule
 
-Merge into the target `settings.json`, preserving every unrelated key. Qoder deep-merges objects, so write only the pstack and enterprise entries. Ask which level before writing: project (`.qoder/settings.json`, committed and shared) or user (`~/.qoder/settings.json`, personal, all projects). Default to project for a team repo and say which you chose.
-
-```json
-{
-  "agents": {
-    "overrides": {
-      "poteto-agent":    { "modelConfig": { "model": "<confirmed>" } },
-      "pstack-architect":{ "modelConfig": { "model": "<confirmed>" } },
-      "pstack-panel-1":  { "modelConfig": { "model": "<confirmed>" } },
-      "pstack-panel-2":  { "modelConfig": { "model": "<confirmed>" } },
-      "pstack-panel-3":  { "modelConfig": { "model": "<confirmed>" } },
-      "pstack-judge":    { "modelConfig": { "model": "<confirmed>" } },
-      "pstack-verifier": { "modelConfig": { "model": "<confirmed>" } },
-      "pstack-explorer": { "modelConfig": { "model": "<confirmed>" } },
-      "pstack-mechanic": { "modelConfig": { "model": "<confirmed>" } },
-      "comment-sicko":   { "modelConfig": { "model": "<confirmed>" } },
-
-      "ent-product-analyst":      { "modelConfig": { "model": "<confirmed>" } },
-      "ent-business-analyst":     { "modelConfig": { "model": "<confirmed>" } },
-      "ent-prd-agent":            { "modelConfig": { "model": "<confirmed>" } },
-      "ent-system-architect":     { "modelConfig": { "model": "<confirmed>" } },
-      "ent-api-architect":        { "modelConfig": { "model": "<confirmed>" } },
-      "ent-database-architect":   { "modelConfig": { "model": "<confirmed>" } },
-      "ent-backend-engineer":     { "modelConfig": { "model": "<confirmed>" } },
-      "ent-frontend-engineer":    { "modelConfig": { "model": "<confirmed>" } },
-      "ent-mobile-engineer":      { "modelConfig": { "model": "<confirmed>" } },
-      "ent-database-engineer":    { "modelConfig": { "model": "<confirmed>" } },
-      "ent-integration-engineer": { "modelConfig": { "model": "<confirmed>" } },
-      "ent-qa-engineer":          { "modelConfig": { "model": "<confirmed>" } },
-      "ent-security-engineer":    { "modelConfig": { "model": "<confirmed>" } },
-      "ent-code-reviewer":        { "modelConfig": { "model": "<confirmed>" } },
-      "ent-performance-engineer": { "modelConfig": { "model": "<confirmed>" } },
-      "ent-devops-engineer":      { "modelConfig": { "model": "<confirmed>" } },
-      "ent-sre":                  { "modelConfig": { "model": "<confirmed>" } },
-      "ent-observability":        { "modelConfig": { "model": "<confirmed>" } }
-    }
-  }
-}
-```
-
-Omit any seat the user left on its plugin default, including a whole enterprise family the repository will never dispatch. A shorter file is a truer one.
-
-### 6. Write the rule
-
-Write `~/.claude/rules/pstack-models.md` as an Always Apply rule. Overwrite the whole file so re-runs stay idempotent.
+Write `~/.claude/rules/pstack-models.md` with no frontmatter. Overwrite the whole file so re-runs stay idempotent. One line per seat, `<seat>: <model> <effort>`, with the seat name as its agent file names it, no `pstack:` prefix. Omit a seat the user left on its plugin default, including a whole enterprise family the repository will never dispatch. A shorter file is a truer one, and an omitted seat runs on its frontmatter.
 
 ```markdown
-# pstack model configuration
+# pstack model configuration for Claude Code
+# Written by /pstack:setup-pstack. One line per seat: `<seat>: <model> <effort>`.
+# Before an Agent call to `pstack:<seat>`, pass this line's model and effort on the call.
+# `inherit` means the chat's own model: pass the chat's alias, or omit `model` when unknown.
+# No line for a seat: pass neither, and the seat's frontmatter decides.
+# defaults: 3
+# budget: <large | medium | small>
 
-Written by /setup-pstack. One line per seat. Delete a line to fall back to the
-plugin default in the pstack-seats or enterprise-seats rule.
+poteto-agent: <model> <effort>
+pstack-architect: <model> <effort>
+pstack-panel-1: <model> <effort>
+pstack-panel-2: <model> <effort>
+pstack-panel-3: <model> <effort>
+pstack-judge: <model> <effort>
+pstack-verifier: <model> <effort>
+pstack-explorer: <model> <effort>
+pstack-mechanic: <model> <effort>
+comment-sicko: <model> <effort>
 
-# defaults: 2
+ent-product-analyst: <model> <effort>
+ent-business-analyst: <model> <effort>
+ent-prd-agent: <model> <effort>
+ent-system-architect: <model> <effort>
+ent-api-architect: <model> <effort>
+ent-database-architect: <model> <effort>
+ent-backend-engineer: <model> <effort>
+ent-frontend-engineer: <model> <effort>
+ent-mobile-engineer: <model> <effort>
+ent-database-engineer: <model> <effort>
+ent-integration-engineer: <model> <effort>
+ent-qa-engineer: <model> <effort>
+ent-security-engineer: <model> <effort>
+ent-code-reviewer: <model> <effort>
+ent-performance-engineer: <model> <effort>
+ent-devops-engineer: <model> <effort>
+ent-sre: <model> <effort>
+ent-observability: <model> <effort>
 
-poteto-agent: <model>
-pstack-architect: <model>
-pstack-panel-1: <model>
-pstack-panel-2: <model>
-pstack-panel-3: <model>
-pstack-judge: <model>
-pstack-verifier: <model>
-pstack-explorer: <model>
-pstack-mechanic: <model>
-comment-sicko: <model>
-
-ent-product-analyst: <model>
-ent-business-analyst: <model>
-ent-prd-agent: <model>
-ent-system-architect: <model>
-ent-api-architect: <model>
-ent-database-architect: <model>
-ent-backend-engineer: <model>
-ent-frontend-engineer: <model>
-ent-mobile-engineer: <model>
-ent-database-engineer: <model>
-ent-integration-engineer: <model>
-ent-qa-engineer: <model>
-ent-security-engineer: <model>
-ent-code-reviewer: <model>
-ent-performance-engineer: <model>
-ent-devops-engineer: <model>
-ent-sre: <model>
-ent-observability: <model>
-
-Panel diversity: <three distinct models | one model, three samples>
-Judge independence from the parent model: <holds | does not hold | unknown>
-Reviewer independence from the engineering seats: <holds | does not hold | not configured>
+Swarm workers: <seat, default pstack-verifier>
+Panel diversity: <three distinct models | two distinct models | one model, three samples>
+Judge independence from the parent model: <different model, same vendor | same model, does not hold | unknown>
+Reviewer independence from the engineering seats: <different model, same vendor | same model, does not hold | not configured>
 ```
 
-The `# defaults: 2` line marks this schema version. Version 2 is the one that carries the enterprise roster. A rule reading `# defaults: 1`, or one with no version line at all, came from an older run and is missing 18 seats, so rewrite it whole rather than appending to it.
+The `# defaults: 3` line marks this schema version. Version 3 is the first to carry an effort token, and the first written for Claude Code. Never put these lines in `CLAUDE.md`, which is project-scoped and committed.
 
-### 7. Confirm
+### 6. Confirm
 
-Tell the user what was written and where, and that a new chat is needed before `agents.overrides` is read, plus a restart if a seat still reports its old model. Name the seats left on plugin defaults, and the enterprise families skipped entirely, since a skipped family is the difference between "on its default" and "this repo will never dispatch it". State plainly whether the judge seat is now independent from the parent model, because that is the one property upstream pstack guarantees and this port cannot check at dispatch time. Say the same about the reviewer seats, because an enterprise chain leans on that independence for every review its governance policy requires.
+Tell the user what was written and where, and that it applies to new sessions, since Claude Code loads `~/.claude/rules/` when a session starts. In a session that is already open, the orchestrator can read the file directly, so an edit applies to the next dispatch once it is read. Name the seats left on plugin defaults, and the enterprise families skipped entirely, since a skipped family is the difference between "on its default" and "this repo will never dispatch it".
 
-### 8. Offer a verification skill (optional)
+State plainly what independence holds. A judge on a different model than the parent is a different model from the same vendor, not the cross-vendor judge upstream pstack asks for, and a judge on the same model is no independence at all. Say the same about the reviewer seats, because an enterprise chain leans on that independence for every review its governance policy requires.
 
-Check whether the project has a way to drive the real app for proof (a `verify-*` skill, or an existing harness). If not, offer once: "want a project-local verification skill, so agents can drive the app the way a user does and prove changes work? I can generate one with /create-verification-skill." On yes, invoke `/create-verification-skill`. On no, move on without pushing.
+### 7. Offer a verification skill (optional)
 
-Qoder resolves project skills from `.claude/skills/<name>/SKILL.md`, so that is where the generated skill goes.
+Check whether the project has a way to drive the real app for proof (a `verify-*` skill, or an existing harness). If not, offer once: "want a project-local verification skill, so agents can drive the app the way a user does and prove changes work? I can generate one with /pstack:create-verification-skill." On yes, read and follow `${CLAUDE_PLUGIN_ROOT}/skills/create-verification-skill/SKILL.md`. On no, move on without pushing.
 
-### 9. Offer a formal verification skill (optional)
+Claude Code resolves project skills from `.claude/skills/<name>/SKILL.md`, so that is where the generated skill goes.
 
-Check whether the project already has a formal verification skill. If not, offer once: "want a formal verification skill, so agents can prove a key property of your code holds in every case in scope, not only the cases tests reach? I can generate one with /create-formal-verification-skill." On yes, invoke it. On no, move on without pushing.
+### 8. Offer a formal verification skill (optional)
 
-## What this port cannot do
+Check whether the project already has a formal verification skill. If not, offer once: "want a formal verification skill, so agents can prove a key property of your code holds in every case in scope, not only the cases tests reach? I can generate one with /pstack:create-formal-verification-skill." On yes, read and follow `${CLAUDE_PLUGIN_ROOT}/skills/create-formal-verification-skill/SKILL.md`. On no, move on without pushing.
 
-Upstream `/setup-pstack` detects entitled model slugs from the running session and writes reasoning levels per role. Qoder exposes neither to a skill. This version asks instead of detecting, and it configures models but not per-seat effort. Both gaps are recorded in `COMPATIBILITY.md`. Do not paper over them by inventing slugs or claiming an effort write succeeded.
+## What this skill cannot do
+
+It cannot make a judge independent of the vendor that trained the author, because every model Claude Code runs is Anthropic's. It cannot force a model when `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set. And it writes a rule a dispatcher reads, so a dispatch that skips the lookup runs on the frontmatter default. Every seat reports the model it ran on in its first line for exactly that reason, and the orchestrator cites the report rather than this file.

@@ -69,16 +69,17 @@ elif raw=$(gh pr list --author "@me" --state all --limit 1000 \
 fi
 [ -s "$prs" ] || echo "[]" > "$prs"
 
-# Transcripts live at ~/.qoder/cache/projects/<slug>/conversation-history, where
-# <slug> is the workspace folder name plus an opaque hash. The hash cannot be
-# derived from the repo path, so match every project dir whose slug starts with
-# this repo's folder name. LAST_CHAT stays "-" when nothing matches, which makes
-# a worktree look stale; the warning below says why.
-slug_prefix="$(basename "$main_wt")-"
-transcripts=$(find "$HOME/.qoder/cache/projects" -maxdepth 2 -type d \
-	-path "*/${slug_prefix}*/conversation-history" 2>/dev/null)
+# Transcripts live at ~/.claude/projects/<slug>/<session>.jsonl, where <slug> is
+# the workspace path with each "/" and "." turned into "-". A chat opened inside a
+# worktree has its own slug, and worktrees Claude Code makes for subagents sit
+# under <repo>/.claude/worktrees/, so match every project dir whose slug starts
+# with this repo's slug. LAST_CHAT stays "-" when nothing matches, which makes a
+# worktree look stale; the warning below says why.
+slug=$(printf '%s' "$main_wt" | sed 's#[/.]#-#g')
+transcripts=$(find "$HOME/.claude/projects" -mindepth 1 -maxdepth 1 -type d \
+	-name "${slug}*" 2>/dev/null)
 if [ -z "$transcripts" ]; then
-	echo "# warning: no transcript dir matched ${slug_prefix}* under ~/.qoder/cache/projects, so LAST_CHAT and BUCKET ignore chat recency" >&2
+	echo "# warning: no transcript dir matched ${slug}* under ~/.claude/projects, so LAST_CHAT and BUCKET ignore chat recency" >&2
 fi
 now=$(date +%s)
 

@@ -1,15 +1,16 @@
 ---
 name: automate-me
-description: "Use for \"automate me\", \"create/update/refresh my -mode skill\", \"turn/capture my preferences or working style into a skill\", or wanting agents to follow how the user works. Drafts or revises a personal -mode skill via create-skill + unslop, optionally pulling fresh evidence from recent transcripts. Runs only when the user types /automate-me, or when the poteto-mode orchestrator routes to it."
+description: "Use for \"automate me\", \"create/update/refresh my -mode skill\", \"turn/capture my preferences or working style into a skill\", or wanting agents to follow how the user works. Drafts or revises a personal -mode skill via an authoring pass + unslop, optionally pulling fresh evidence from recent transcripts. Runs only when the user types /automate-me, or when the poteto-mode orchestrator routes to it."
 disable-model-invocation: true
 ---
 
 > Claude Code: pstack skills are manual-only, so the `Skill` tool refuses them. To run another pstack skill named here, read `${CLAUDE_PLUGIN_ROOT}/skills/<name>/SKILL.md` and follow it. Seats dispatch as `subagent_type: "pstack:<seat>"`.
+
 # Automate me
 
 A guided flow for turning the user's working conventions into a skill agents will follow. The output is one `-mode` skill tailored to them (e.g. `jay-mode`, `priya-mode`).
 
-This skill orchestrates three others: an inline mining pass (see step 1), the skill-authoring skill the session offers (such as `skill-creator` or `writing-skills`), or a hand-written `SKILL.md` (authoring), and the **unslop** skill (prose discipline). It sequences them. It doesn't replace them.
+This skill orchestrates three others: an inline mining pass (see step 1), an authoring pass (the skill-authoring skill the session offers, such as `skill-creator` or `writing-skills`, or a hand-written `SKILL.md`), and the **unslop** skill (prose discipline). It sequences them. It doesn't replace them.
 
 ## Flow
 
@@ -27,7 +28,7 @@ Update mode changes the rest of the flow:
 
 ### 1. Mine their history
 
-Locate the active workspace's transcripts before fanning out. They live at `~/.qoder/cache/projects/<slug>/conversation-history/<id>/<id>.jsonl`, where `<slug>` is the workspace folder name plus an opaque hash, like `MyApp-1a2b3c4d`. The hash is not derivable from the path, so list `~/.qoder/cache/projects/` and match this workspace's folder name. Use only that directory. Don't glob across `~/.claude/projects/*/`. That crosses workspace boundaries and reads private chats from unrelated projects. Each line is one JSON object with a `role` and a `message`, and it holds only user and assistant turns.
+Locate the active workspace's transcripts before fanning out. They live at `~/.claude/projects/<slug>/<session>.jsonl`, where `<slug>` is the workspace path with each `/` and `.` changed to `-`, so `/Users/you/proj` is `-Users-you-proj`. Use only that directory. Don't glob across `~/.claude/projects/*/`. That crosses workspace boundaries and reads private chats from unrelated projects. Each line is one JSON object with a `type`. Mine only the `user` and `assistant` lines, read their `message`, and skip the bookkeeping types (`system`, `attachment`, `file-history-snapshot`, and the rest). A `<session>/subagents/` folder holds subagent transcripts, which carry the agent's turns, not the user's, so skip it.
 
 Survey recent agent conversations within that scope for recurring patterns. Run multiple parallel subagents across slices of history (e.g. last 2-4 weeks, split into 3 slices so each has enough material). Dispatch them all in one message on the `pstack:pstack-explorer` seat, since mining transcripts is read-only work. Name the seat rather than a reasoning level, since each seat carries its own effort. Each slice mining subagent reads transcripts from the workspace-scoped path the parent provides, looks for the signals below, and returns a short structured list of patterns it saw with evidence pointers. Default signals worth hunting:
 
@@ -70,13 +71,13 @@ Use the skill-authoring skill the session offers (such as `skill-creator` or `wr
 - Path: preserve an existing mode skill's category. For a new mode, use `.claude/skills/<handle>/<handle>-mode/SKILL.md` when the repo has an established personal category for that handle. Otherwise default to `.claude/skills/<handle>-mode/SKILL.md` in the project (or `~/.claude/skills/<handle>-mode/` if the user prefers a personal skill).
 - Handle: the user's first name or chosen identifier.
 - Frontmatter `description`: trigger on their name + `/<handle>-mode` + "work in their style", not on generic keywords like "write code" or "review PR".
-- Frontmatter formatting: follow `create-skill`'s YAML rules. Keep `description` as one YAML scalar. Quote it or use `description: >-` with indented continuation lines when punctuation or wrapping requires it.
-- Frontmatter fields: Qoder documents only `name` and `description` for a skill. `name` is lowercase letters, numbers, and hyphens, at most 64 characters. `description` is at most 1024 characters and is the only signal the model gets when it decides whether to load the skill.
-- Manual-only triggering: Qoder has no frontmatter switch for it, so encode the intent in the `description` prose instead. End the description with a line like `Runs only when the user types /<handle>-mode, or when the poteto-mode orchestrator routes to it.` That is what this port does for its own manual skills. It is a strong hint, not an enforced lock, so tell the user the model can still load the skill on its own reading of the description.
+- Frontmatter formatting: follow standard YAML rules. Keep `description` as one YAML scalar. Quote it or use `description: >-` with indented continuation lines when punctuation or wrapping requires it.
+- Frontmatter fields: `name` and `description` are the two that matter. `name` is lowercase letters, numbers, and hyphens, at most 64 characters. Claude Code truncates `description` at 1,536 characters in the skill listing, and it is the only signal the model gets when it decides whether to load the skill, so put the trigger first.
+- Manual-only triggering: set `disable-model-invocation: true` when the user wants the mode only on `/<handle>-mode`. Claude Code then refuses the `Skill` tool for it and keeps it out of the model's context, which is an enforced lock rather than a hint. That is what this plugin does for its own manual skills. Leave it off when the user wants the model to pick the mode up from the description.
 
 ### 5. Iterate on prose
 
-Apply the **unslop** skill and `create-skill`'s writing guidelines to every line.
+Apply the **unslop** skill and the authoring skill's writing guidelines, when one ran, to every line.
 
 Show the draft to the user and take feedback. Expect multiple iterations. Cut ruthlessly. A mode skill is not a manual.
 
@@ -95,12 +96,12 @@ Work in a worktree off main. Commit and open a PR. Don't push to main directly.
 
 ## Evaluation
 
-A `-mode` skill is subjective output. A `create-skill`-style test/iterate benchmark loop isn't useful here. Vibe-check with the user: does it read like them? Did it miss anything? Then ship.
+A `-mode` skill is subjective output. A skill-authoring test/iterate benchmark loop isn't useful here. Vibe-check with the user: does it read like them? Did it miss anything? Then ship.
 
 Run a description-optimization loop only if the skill's trigger accuracy turns out to be a problem in practice.
 
 ## When not to use
 
-- User wants a task-specific skill (not working conventions): `create-skill` alone, no mining required.
+- User wants a task-specific skill (not working conventions): the authoring pass alone, no mining required.
 - User wants to capture one narrow workflow (e.g. "how I write commit messages"). That's a regular skill, not a mode skill.
 
