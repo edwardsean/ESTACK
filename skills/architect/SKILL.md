@@ -15,7 +15,7 @@ For a large or contested design, run the **arena** skill instead of sketching al
 
 This chat runs the sketch by default. Delegate to the `pstack:pstack-architect` seat through the `Agent` tool, with `subagent_type: "pstack:pstack-architect"`, when the design spans more systems than one turn holds comfortably, or when the shape should be argued by a seat that will not write the code it constrains.
 
-That seat carries the architecture model and the highest effort of any seat in this port, so delegating is how a design gets the planning model rather than whatever model the chat happens to run. Qoder binds a model to an agent and offers no per-call model parameter, which is why the seat exists at all.
+That seat carries the architecture model and the highest effort of any seat in this port, so delegating is how a design gets the planning model rather than whatever model the chat happens to run. Claude Code could pass a model per call, but the seat also carries the architecture brief and the tool list, which is why it stays a seat.
 
 Give the delegate file pointers rather than inlined context, plus these:
 

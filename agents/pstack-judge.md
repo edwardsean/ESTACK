@@ -27,7 +27,7 @@ A finding whose command you cannot run is not verified. Report it as unverified 
 
 ## Vendor independence
 
-Upstream pstack requires the judge to come from a different model vendor than the author, because a model grades its own output generously. Qoder binds models per agent, so independence is a property of your configuration, not something you can choose at runtime.
+Upstream pstack requires the judge to come from a different model vendor than the author, because a model grades its own output generously. Every model Claude Code can run comes from one vendor, so that independence cannot hold here. A different model family is the most the dispatcher can arrange, by passing `model` on the call.
 
 Report the model you ran on in your first line. If it is the same model the dispatcher used to produce the candidates, say so explicitly and tell the dispatcher the independence check did not hold. Do not pretend the verdict is cross-vendor.
 

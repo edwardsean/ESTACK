@@ -324,6 +324,93 @@ RULES: list[tuple[str, str, str, str]] = [
      "The transcript scan is slow, so run it in the background and read the table when it finishes.",
      "Claude Code runs background shell commands."),
 
+    ("C74", r"Drive a long or stubborn hunt by running the passes yourself inside this run, since Qoder has "
+            r"no timer to re-enter it for you\. Say when you stop and hand back a resume note per "
+            r"`pause-safely\.md`\.",
+     "Drive a long or stubborn hunt with Claude Code's `/loop` command (a built-in, not a pstack skill).",
+     "Upstream's step, with the host renamed."),
+    ("C75", r"which blocks until it reports `COMPLETE` at the ceiling\. Qoder has no timer to re-enter this "
+            r"run, so run it inside this turn with a ceiling you can defend, and say when you hit it rather "
+            r"than leaving the stack half-landed\.",
+     "under `/loop` until it reports `COMPLETE` at the ceiling.",
+     "Upstream's step; Claude Code ships /loop."),
+    ("C76", r"Qoder runs every seat on this machine, so a stack of N verifiers is N worktrees and N checkouts "
+            r"sharing one disk and one CPU\.",
+     "Claude Code runs every seat on this machine, so a stack of N verifiers is N worktrees and N "
+     "checkouts sharing one disk and one CPU.",
+     "Still true: no cloud agent is assumed."),
+    ("C77", r"Upstream's version of this recipe says \"do not stop\", and Qoder stops anyway when the turn "
+            r"ends, so the ceiling and the resume note are what separate a deliberate stop from a truncation "
+            r"in the middle of an edit\.",
+     "Upstream's version of this recipe says \"do not stop\". `/loop` re-enters the run, and the ceiling "
+     "and the resume note are still what separate a deliberate stop from a truncation in the middle of "
+     "an edit.",
+     "Claude Code has /loop, so the stop is no longer forced."),
+    ("C78", r"because a worktree is the only isolation Qoder offers\.",
+     "or dispatch with `isolation: \"worktree\"` so Claude Code makes one per subagent.",
+     "Agent tool isolation."),
+    ("C79", r"- \*\*Treating `auto` as \"follow my chat\"\.\*\* `inherit` is the alias that follows the session "
+            r"model\. `auto` lets Qoder pick per turn, which is a different thing\.",
+     "- **Leaving every seat on `inherit`.** `inherit` follows the session model, so a panel of three "
+     "`inherit` seats is one model guessing three times.",
+     "Claude Code has no `auto` alias; the pitfall that survives is the collapsed panel."),
+    ("C80", r"Qoder has no per-skill mode, so start each new task with `/poteto-mode` again, or move the "
+            r"discipline you want into a rule under `\.qoder/rules/`\.",
+     "Claude Code has no per-skill mode, so start each new task with `/pstack:poteto-mode` again, or move "
+     "the discipline you want into `CLAUDE.md` or a rule under `~/.claude/rules/`.",
+     "Claude Code loads CLAUDE.md and ~/.claude/rules/ into every session."),
+    ("C81", r"Qoder has no cloud agent and hands out no second machine, so the isolation on offer is a git "
+            r"worktree, one directory per agent sharing this machine's disk and CPU\.",
+     "This port assumes no cloud agent and no second machine, so the isolation on offer is a git "
+     "worktree, one directory per agent sharing this machine's disk and CPU. Claude Code makes one per "
+     "subagent when the dispatch passes `isolation: \"worktree\"`.",
+     "Agent tool isolation."),
+    ("C82", r"through Qoder's built-in `/create-skill`",
+     "through the skill-authoring skill your session offers, or by hand",
+     "Claude Code ships no create-skill built-in."),
+    ("C83", r"`~/Library/Application Support/Qoder` \(`SharedClientCache` grows largest, then `CachedData`, "
+            r"`CachedExtensionVSIXs`, `Cache`, and `logs`, plus `User/globalStorage/state\.vscdb\.backup`\) "
+            r"and `~/\.qoder/logs`",
+     "old session transcripts under `~/.claude/projects/` (only ones the user agrees are done with)",
+     "Claude Code's disk growth is its transcript store, not an editor cache."),
+    ("C84", r"Qoder enforces the restriction through the agent's tool list instead\.",
+     "Claude Code enforces the restriction through the agent's tool list instead.",
+     "Same mechanism."),
+    ("C85", r"\*\*Port note\.\*\* In this Qoder build", "**Port note.** In this build",
+     "Read-only reviewer is unchanged; the host name was incidental."),
+    ("C86", r"Qoder binds a model to an agent and offers no per-call model parameter, which is why the seat "
+            r"exists at all\.",
+     "Claude Code could pass a model per call, but the seat also carries the architecture brief and the "
+     "tool list, which is why it stays a seat.",
+     "Claude Code has per-call model; the seat survives for its contract."),
+    ("C87", r"Qoder binds models per agent, so independence is a property of your configuration, not "
+            r"something you can choose at runtime\.",
+     "Every model Claude Code can run comes from one vendor, so that independence cannot hold here. "
+     "A different model family is the most the dispatcher can arrange, by passing `model` on the call.",
+     "Judge independence stays unachievable, for a different reason."),
+    ("C88", r"Enterprise approval gates for the pstack Qoder port\.",
+     "Enterprise approval gates for the pstack Claude Code plugin.", "Host naming in the hook module."),
+    ("C90", r"Qoder hands a hook its event as JSON on stdin", "Claude Code hands a hook its event as JSON on stdin",
+     "Same hook I/O contract: JSON on stdin, verdict on stdout plus exit code."),
+    ("C91", r"hookEventName is required or Qoder rejects the whole blob\.",
+     "hookEventName is required inside hookSpecificOutput.", "Claude Code hook output contract."),
+    ("C92", r"# Qoder sets this when the seat", "# Claude Code sets this when the seat",
+     "stop_hook_active is a documented SubagentStop input field."),
+    # enterprise-seats: the override section.
+    ("C89", r"Same mechanism as the pstack seats\. A seat's model lives in its agent frontmatter and "
+            r"`settings\.json` overrides it\. Run `/setup-pstack` to write the overrides, which asks once per "
+            r"family, or edit them by hand:\n\n```json\n\{\n  \"agents\": \{\n    \"overrides\": \{\n      "
+            r"\"ent-code-reviewer\": \{ \"modelConfig\": \{ \"model\": \"<your model name>\" \} \}\n    \}\n  "
+            r"\}\n\}\n```\n\nEffort cannot be overridden and stays frontmatter-only\. Start a new chat after "
+            r"editing, since Qoder documents no reload path for `agents\.overrides` in the IDE\. ",
+     "Same mechanism as the pstack seats. A seat's model and effort live in its agent frontmatter, and "
+     "the orchestrator overrides both on the `Agent` call when `~/.claude/rules/pstack-models.md` has a "
+     "line for that seat. Run `/pstack:setup-pstack` to write the lines, which asks once per family and "
+     "writes one line per seat, or edit them by hand:\n\n```\nent-code-reviewer: opus xhigh\n```\n\n"
+     "Edits apply to the next dispatch, with no restart, because the orchestrator reads the line at "
+     "dispatch time. ",
+     "Claude Code takes model and effort per Agent call."),
+
     # --- Seat dispatch names -------------------------------------------------
     # Applied last among prose rules. `subagent_type` gets the quoted scoped
     # name, every other backticked seat name gets the scope prefix.

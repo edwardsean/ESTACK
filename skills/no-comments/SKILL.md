@@ -11,7 +11,7 @@ Spawn Comment Sicko. Act on accepted findings.
 
 Defer to Comment Sicko's fresh perspective.
 
-**Port note.** In this Qoder build the `pstack:comment-sicko` seat is read-only. It has `Read`, `Grep`, `Glob`, and `Bash`, and no write tools, so it reports comments to delete and symbols to reshape and never edits anything. You own every edit. Its `deletion count` is the count of comments it flagged, not the count it removed, and there is no diff to inspect from it. Upstream shipped the same contract in its README while its agent file claimed write access. This port resolves that contradiction toward read-only, so a runaway reviewer cannot touch the tree.
+**Port note.** In this build the `pstack:comment-sicko` seat is read-only. It has `Read`, `Grep`, `Glob`, and `Bash`, and no write tools, so it reports comments to delete and symbols to reshape and never edits anything. You own every edit. Its `deletion count` is the count of comments it flagged, not the count it removed, and there is no diff to inspect from it. Upstream shipped the same contract in its README while its agent file claimed write access. This port resolves that contradiction toward read-only, so a runaway reviewer cannot touch the tree.
 
 ## Scope
 

@@ -92,7 +92,7 @@ continue
 keep going until done
 ```
 
-Short works because the playbook holds the structure, and the todo list it writes carries the steps across the turns of one task even after the skill itself fades. Qoder has no per-skill mode, so start each new task with `/poteto-mode` again, or move the discipline you want into a rule under `.qoder/rules/`. [Set up pstack](./01-setup.md#run-your-first-task) covers both. Your words carry the intent, and the skill carries the rigor.
+Short works because the playbook holds the structure, and the todo list it writes carries the steps across the turns of one task even after the skill itself fades. Claude Code has no per-skill mode, so start each new task with `/pstack:poteto-mode` again, or move the discipline you want into `CLAUDE.md` or a rule under `~/.claude/rules/`. [Set up pstack](./01-setup.md#run-your-first-task) covers both. Your words carry the intent, and the skill carries the rigor.
 
 ## Switch tasks with "new task"
 
@@ -106,7 +106,7 @@ A long chat accumulates context from the last task. When you change subjects, sa
 
 ## Give parallel work its own worktree
 
-If you run several agents against one repository on one computer, they will fight over the working tree, the ports, and the build output. Upstream solved this with a cloud subagent that got its own VM and branch, so it could install dependencies and run your app without touching your machine. Qoder has no cloud agent and hands out no second machine, so the isolation on offer is a git worktree, one directory per agent sharing this machine's disk and CPU. Ask for the worktree up front:
+If you run several agents against one repository on one computer, they will fight over the working tree, the ports, and the build output. Upstream solved this with a cloud subagent that got its own VM and branch, so it could install dependencies and run your app without touching your machine. This port assumes no cloud agent and no second machine, so the isolation on offer is a git worktree, one directory per agent sharing this machine's disk and CPU. Claude Code makes one per subagent when the dispatch passes `isolation: "worktree"`. Ask for the worktree up front:
 
 ```text
 /poteto-mode new task. branch off <base> in a fresh worktree, then port the parser change there.

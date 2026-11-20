@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Enterprise approval gates for the pstack Qoder port.
+"""Enterprise approval gates for the pstack Claude Code plugin.
 
 One module behind two thin shell entry points. It classifies a tool call
 against the gate patterns a project opted into, asks a human before a gated
 action runs, records what actually ran, and reports a gated action that ran
 with no ask behind it.
 
-Qoder hands a hook its event as JSON on stdin and reads the verdict from stdout
+Claude Code hands a hook its event as JSON on stdin and reads the verdict from stdout
 plus the exit code. Exit 0 lets stdout be parsed as JSON. Exit 2 blocks and
 gives stderr to the agent. Every subcommand here exits 0 except `backstop`,
 which exits 2 when it finds an ungated action.
@@ -226,7 +226,7 @@ def identity(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def emit_ask(label: str, command: str, pattern: str) -> None:
-    """Ask the human. hookEventName is required or Qoder rejects the whole blob."""
+    """Ask the human. hookEventName is required inside hookSpecificOutput."""
     shown = command if len(command) <= 400 else command[:400] + "..."
     payload = {
         "hookSpecificOutput": {
@@ -322,7 +322,7 @@ def run_backstop(event: dict[str, Any]) -> int:
     either and this finds nothing. That is a real limit and it is recorded in
     COMPATIBILITY.md rather than papered over here.
     """
-    # Qoder sets this when the seat is already continuing because a stop hook
+    # Claude Code sets this when the seat is already continuing because a stop hook
     # blocked it. Blocking again would loop forever on the same log, so the
     # second pass reports nothing and lets the seat finish.
     if event.get("stop_hook_active"):

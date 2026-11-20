@@ -73,16 +73,10 @@ Color reads as family within this roster, one color per family, so a reply namin
 
 ## Changing a seat's model
 
-Same mechanism as the pstack seats. A seat's model lives in its agent frontmatter and `settings.json` overrides it. Run `/setup-pstack` to write the overrides, which asks once per family, or edit them by hand:
+Same mechanism as the pstack seats. A seat's model and effort live in its agent frontmatter, and the orchestrator overrides both on the `Agent` call when `~/.claude/rules/pstack-models.md` has a line for that seat. Run `/pstack:setup-pstack` to write the lines, which asks once per family and writes one line per seat, or edit them by hand:
 
-```json
-{
-  "agents": {
-    "overrides": {
-      "ent-code-reviewer": { "modelConfig": { "model": "<your model name>" } }
-    }
-  }
-}
+```
+ent-code-reviewer: opus xhigh
 ```
 
-Effort cannot be overridden and stays frontmatter-only. Start a new chat after editing, since Qoder documents no reload path for `agents.overrides` in the IDE. When `~/.claude/rules/pstack-models.md` exists it records what `/setup-pstack` wrote and takes precedence over the tables above for reporting.
+Edits apply to the next dispatch, with no restart, because the orchestrator reads the line at dispatch time. When `~/.claude/rules/pstack-models.md` exists it records what `/setup-pstack` wrote and takes precedence over the tables above for reporting.

@@ -122,7 +122,7 @@ You get an answer, a prompt to send, and a link to the source. Nothing runs unti
 im stepping away, keep going autonomously until every fixture passes, and stop after 60 minutes or 20 fixtures, whichever lands first. keep a decision log i can audit, and write a resume note when you stop.
 ```
 
-The full contract is on the [long run page](./07-overnight.md). The short form works once the task and finish condition are already in the conversation. Upstream's version of this recipe says "do not stop", and Qoder stops anyway when the turn ends, so the ceiling and the resume note are what separate a deliberate stop from a truncation in the middle of an edit.
+The full contract is on the [long run page](./07-overnight.md). The short form works once the task and finish condition are already in the conversation. Upstream's version of this recipe says "do not stop". `/loop` re-enters the run, and the ceiling and the resume note are still what separate a deliberate stop from a truncation in the middle of an edit.
 
 ## Redirect a drifting run
 
@@ -167,13 +167,13 @@ To watch the catch-up instead, run [`/ketchup-video`](../../skills/ketchup-video
 - **Leading with your theory of the cause.** The agent searches wherever you pointed. Ask it to restate the problem first, then share your hunch.
 - **Taking the first design.** One attempt locks in the first shape the model thought of. Ask for prototypes or `/architect` and pick from evidence.
 - **Polishing an abstract plan.** Adversarial review of a plan with no code behind it invents risks that will never happen. Settle the open questions with prototypes, then review what got built.
-- **Parallel agents in one worktree.** They overwrite each other, and nobody can tell which agent changed what. Say "own worktree per attempt", because a worktree is the only isolation Qoder offers.
+- **Parallel agents in one worktree.** They overwrite each other, and nobody can tell which agent changed what. Say "own worktree per attempt", or dispatch with `isolation: "worktree"` so Claude Code makes one per subagent.
 - **Looping before you trust the loop.** A loop that can't verify its own work only makes unchecked work faster. Get the verification skill working first.
 - **Trusting an unvetted number.** A warm cache or a skipped code path can fake a speedup. Run `/benchmark-checklist` before the number goes anywhere.
 - **Correcting the same mistake by hand.** A correction in chat helps one run. `/correct` fixes the repo so no later run repeats it.
 - **Using `/arena` for coverage.** `/arena` repeats one design or code brief, then picks a base and grafts the best parts. `/swarm` partitions slices or declared race arms and aggregates one report.
 - **Accepting every review comment.** Bots and humans both file real catches and noise in one list. `/interrogate` keeps only the findings a rerun proves and lists what it dropped and why, and you can override either way.
-- **Treating `auto` as "follow my chat".** `inherit` is the alias that follows the session model. `auto` lets Qoder pick per turn, which is a different thing. [Setup](./01-setup.md) covers the seats.
+- **Leaving every seat on `inherit`.** `inherit` follows the session model, so a panel of three `inherit` seats is one model guessing three times. [Setup](./01-setup.md) covers the seats.
 - **Reporting success off a green build.** A build proves it compiles. Ask for the real command, flow, stored value, or profile, and expect the evidence in the reply.
 - **Writing a `SKILL.md` freehand.** Route it through the [Authoring or modifying a skill playbook](../../skills/poteto-mode/playbooks/authoring-a-skill.md) so validation and review happen.
 
