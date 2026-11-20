@@ -1,0 +1,22 @@
+{
+  "name": "pstack",
+  "version": "0.15.43",
+  "description": "Rigorous agent workflows from pstack by Lauren Tan, ported to Claude Code from its Qoder edition. A playbook-routing orchestrator, three-seat review panels, parallel arenas and swarms, independent verification, and 24 engineering principles, with each seat's model and effort set per call. Includes an enterprise layer: 18 specialist seats, 12 enterprise playbooks, PRD-to-business-rule cards, and opt-in approval-gate hooks on push, deploy, and migration commands.",
+  "author": {
+    "name": "Lauren Tan"
+  },
+  "homepage": "https://github.com/cursor/plugins/tree/main/pstack",
+  "repository": "https://github.com/cursor/plugins",
+  "license": "MIT",
+  "keywords": [
+    "pstack",
+    "poteto-mode",
+    "workflow",
+    "principles",
+    "agent-style",
+    "subagents",
+    "unslop",
+    "enterprise",
+    "approval-gates"
+  ]
+}

@@ -14,7 +14,7 @@
    7. Do it cheaper.
 
    When an earlier mantra meets the target, stop.
-3. Plan the fix from the trace. If it crosses a function boundary, `architect` first. Delegate implementation to a subagent using the `pstack:poteto-agent` seat. Name the seat rather than a reasoning level, since each seat carries its own effort. Review the diff. Capture a post-fix trace.
+3. Plan the fix from the trace. If it crosses a function boundary, `architect` first. Delegate implementation to a subagent using the `pstack:poteto-agent` seat. Pick each subagent's seat and reasoning level for the job. Start from the seat's line in `~/.claude/rules/pstack-models.md` and pass `effort` on the `Agent` call, higher than the line when the job needs it. Review the diff. Capture a post-fix trace.
    Apply the **sequence-verifiable-units** principle skill, verifying each attempt before trying the next.
 4. Parse and compare the artifacts (JSON to sqlite, diff). "Inconclusive" or wrong-surface is not a pass. Flag it.
 5. Cite the measurement in the PR.

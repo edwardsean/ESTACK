@@ -1,6 +1,6 @@
 ### Bug fix
 
-**You own this task. Plan, review, verify.** Delegate investigation and the fix to subagents, stay in the lead. Name the seat rather than a reasoning level, since each seat carries its own effort. See the Subagents section.
+**You own this task. Plan, review, verify.** Delegate investigation and the fix to subagents, stay in the lead. Pick each subagent's seat and reasoning level for the job. Start from the seat's line in `~/.claude/rules/pstack-models.md` and pass `effort` on the `Agent` call, higher than the line when the job needs it. See the Subagents section.
 
 Be scientific. Every shipped line traces to runtime evidence. Belt-and-suspenders that "might help" is a hypothesis, not a fix. It does not ship. When evidence refutes a hypothesis, revert what it motivated. The smallest change the evidence justifies ships, nothing more.
 

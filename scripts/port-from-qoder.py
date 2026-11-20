@@ -402,6 +402,14 @@ RULES: list[tuple[str, str, str, str]] = [
      "dispatch time. ",
      "Claude Code takes model and effort per Agent call."),
 
+    ("C93", r"Name the seat rather than a reasoning level, since each seat carries its own effort\.",
+     "Pick each subagent's seat and reasoning level for the job. Start from the seat's line in "
+     "`~/.claude/rules/pstack-models.md` and pass `effort` on the `Agent` call, higher than the line when "
+     "the job needs it.",
+     "Claude Code takes effort per Agent call, so upstream's per-call reasoning choice returns."),
+    ("C94", r"in agent mode because readonly strips MCP access",
+     "on `general-purpose`, because it keeps the session's MCP servers and the read-only seats declare none",
+     "A plugin seat's tools allowlist carries no MCP tools; general-purpose inherits them."),
     # --- Seat dispatch names -------------------------------------------------
     # Applied last among prose rules. `subagent_type` gets the quoted scoped
     # name, every other backticked seat name gets the scope prefix.

@@ -4,7 +4,7 @@
   "plugin": "/Users/edwardseanalexander/Documents/AnterAja/SAMB/KTP-OCR/pstack-claude",
   "ported": 192,
   "excluded": 0,
-  "adapted": 117,
+  "adapted": 119,
   "hand_owned_seeded": 0,
   "hand_owned_protected": 15,
   "renames": {
@@ -374,6 +374,16 @@
       "replacement": "Same mechanism as the pstack seats. A seat's model and effort live in its agent frontmatter, and the orchestrator overrides both on the `Agent` call when `~/.claude/rules/pstack-models.md` has a line for that seat. Run `/pstack:setup-pstack` to write the lines, which asks once per family and writes one line per seat, or edit them by hand:\n\n```\nent-code-reviewer: opus xhigh\n```\n\nEdits apply to the next dispatch, with no restart, because the orchestrator reads the line at dispatch time. ",
       "reason": "Claude Code takes model and effort per Agent call."
     },
+    "C93": {
+      "pattern": "Name the seat rather than a reasoning level, since each seat carries its own effort\\.",
+      "replacement": "Pick each subagent's seat and reasoning level for the job. Start from the seat's line in `~/.claude/rules/pstack-models.md` and pass `effort` on the `Agent` call, higher than the line when the job needs it.",
+      "reason": "Claude Code takes effort per Agent call, so upstream's per-call reasoning choice returns."
+    },
+    "C94": {
+      "pattern": "in agent mode because readonly strips MCP access",
+      "replacement": "on `general-purpose`, because it keeps the session's MCP servers and the read-only seats declare none",
+      "reason": "A plugin seat's tools allowlist carries no MCP tools; general-purpose inherits them."
+    },
     "M01": {
       "pattern": "`performance`",
       "replacement": "`opus`",
@@ -468,6 +478,8 @@
     "C90": 1,
     "C91": 1,
     "C92": 1,
+    "C93": 16,
+    "C94": 1,
     "M01": 45,
     "M02": 35,
     "M03": 8,
