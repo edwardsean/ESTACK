@@ -1,0 +1,635 @@
+{
+  "source": "/Users/edwardseanalexander/Documents/AnterAja/SAMB/KTP-OCR/pstack-qoder",
+  "upstream": "/Users/edwardseanalexander/Documents/AnterAja/SAMB/KTP-OCR/pstack-source/harness/pstack/claude-code",
+  "plugin": "/Users/edwardseanalexander/Documents/AnterAja/SAMB/KTP-OCR/pstack-claude",
+  "ported": 207,
+  "excluded": 0,
+  "adapted": 129,
+  "hand_owned_seeded": 15,
+  "hand_owned_protected": 0,
+  "renames": {
+    "rules/pstack-seats.md": "skills/pstack-seats/SKILL.md",
+    "rules/enterprise-seats.md": "skills/enterprise-seats/SKILL.md",
+    "rules/enterprise-gates.md": "skills/enterprise-gates/SKILL.md",
+    "hooks/enterprise-gates.json": "hooks/hooks.json"
+  },
+  "rules": {
+    "C01": {
+      "pattern": "QODER_PLUGIN_ROOT",
+      "replacement": "CLAUDE_PLUGIN_ROOT",
+      "reason": "Claude Code exports CLAUDE_PLUGIN_ROOT to plugin hook commands."
+    },
+    "C02": {
+      "pattern": "QODER_PROJECT_DIR",
+      "replacement": "CLAUDE_PROJECT_DIR",
+      "reason": "Claude Code exports CLAUDE_PROJECT_DIR to every command hook."
+    },
+    "C03": {
+      "pattern": "\\.qoder/enterprise/",
+      "replacement": ".claude/enterprise/",
+      "reason": "Project policy lives beside the rest of the project's Claude Code config."
+    },
+    "C04": {
+      "pattern": "`\\.qoder/rules/enterprise-<domain>\\.md`",
+      "replacement": "`.claude/skills/enterprise-<domain>/SKILL.md`",
+      "reason": "A model_decision rule card becomes a project skill, which loads on demand by description."
+    },
+    "C05": {
+      "pattern": "\\.qoder/rules/enterprise-\\*\\.md",
+      "replacement": ".claude/skills/enterprise-*/SKILL.md",
+      "reason": "Same move, glob form."
+    },
+    "C06": {
+      "pattern": "(?<![~/])\\.qoder/rules/pstack-models\\.md",
+      "replacement": "~/.claude/rules/pstack-models.md",
+      "reason": "Upstream's Claude edition keeps the model choices in a user rule, which Claude Code loads into every session."
+    },
+    "C07": {
+      "pattern": "~/\\.qoder/skills/",
+      "replacement": "~/.claude/skills/",
+      "reason": "Claude Code user skill path."
+    },
+    "C08": {
+      "pattern": "(?<![~/])\\.qoder/skills/",
+      "replacement": ".claude/skills/",
+      "reason": "Claude Code project skill path."
+    },
+    "C09": {
+      "pattern": "~/\\.qoder/plugins/",
+      "replacement": "~/.claude/plugins/",
+      "reason": "Claude Code plugin cache root."
+    },
+    "C10": {
+      "pattern": "\\.qoder-plugin/plugin\\.json",
+      "replacement": ".claude-plugin/plugin.json",
+      "reason": "Claude Code manifest path."
+    },
+    "C11": {
+      "pattern": "existing rule cards under `\\.qoder/rules/`",
+      "replacement": "existing rule cards under `.claude/skills/enterprise-*/`",
+      "reason": "Rule cards are project skills here."
+    },
+    "C12": {
+      "pattern": "`~/\\.qoder/cache/projects/<slug>/conversation-history/<id>/<id>\\.jsonl`, where `<slug>` is the workspace folder name plus (?:a short|an opaque) hash, like `MyApp-1a2b3c4d`\\. The hash is not derivable from the path, so list `~/\\.qoder/cache/projects/` and match the folder name instead of building the slug",
+      "replacement": "`~/.claude/projects/<slug>/<session>.jsonl`, where `<slug>` is the workspace path with each `/` and `.` changed to `-` (so `/Users/you/proj` is `-Users-you-proj`). The newest `.jsonl` directly in that folder is the current session, and `<session>/subagents/` holds its subagent transcripts",
+      "reason": "Claude Code transcript layout, from upstream's Claude Code adapter."
+    },
+    "C13": {
+      "pattern": "under the active workspace's `conversation-history/` directory \\(listed under `~/\\.qoder/cache/projects/`\\)",
+      "replacement": "in the active workspace's folder under `~/.claude/projects/` (the workspace path with each `/` and `.` changed to `-`)",
+      "reason": "Claude Code transcript layout."
+    },
+    "C14": {
+      "pattern": "under the active workspace's `conversation-history/` directory \\(the system prompt names the path\\. Do not glob across `~/\\.qoder/cache/projects/\\*/`",
+      "replacement": "in the active workspace's folder under `~/.claude/projects/` (the workspace path with each `/` and `.` changed to `-`. Do not glob across `~/.claude/projects/*/`",
+      "reason": "Same, with the cross-workspace warning kept."
+    },
+    "C15": {
+      "pattern": "Find this workspace's directory under `~/\\.qoder/cache/projects/` and use only the `conversation-history/` folder inside it\\.",
+      "replacement": "Find this workspace's folder under `~/.claude/projects/` and use only the `.jsonl` files inside it.",
+      "reason": "Same, as an instruction."
+    },
+    "C16": {
+      "pattern": "`~/\\.qoder/cache/projects/\\*/`",
+      "replacement": "`~/.claude/projects/*/`",
+      "reason": "Cross-workspace glob root."
+    },
+    "C17": {
+      "pattern": "`conversation-history/`",
+      "replacement": "`~/.claude/projects/<slug>/`",
+      "reason": "Bare transcript dir mention."
+    },
+    "C20": {
+      "pattern": "`rules/enterprise-gates\\.md`",
+      "replacement": "`skills/enterprise-gates/SKILL.md`",
+      "reason": "Rule moved into a skill."
+    },
+    "C21": {
+      "pattern": "`rules/enterprise-seats\\.md`",
+      "replacement": "`skills/enterprise-seats/SKILL.md`",
+      "reason": "Rule moved into a skill."
+    },
+    "C22": {
+      "pattern": "`rules/pstack-seats\\.md`",
+      "replacement": "`skills/pstack-seats/SKILL.md`",
+      "reason": "Rule moved into a skill."
+    },
+    "C23": {
+      "pattern": "the \\*\\*enterprise-seats\\*\\* rule",
+      "replacement": "the **enterprise-seats** skill",
+      "reason": "Rule moved into a skill."
+    },
+    "C24": {
+      "pattern": "the \\*\\*enterprise-gates\\*\\* rule",
+      "replacement": "the **enterprise-gates** skill",
+      "reason": "Rule moved into a skill."
+    },
+    "C25": {
+      "pattern": "the `pstack-seats` rule",
+      "replacement": "the `pstack-seats` skill",
+      "reason": "Rule moved into a skill."
+    },
+    "C26": {
+      "pattern": "the `enterprise-gates` rule",
+      "replacement": "the `enterprise-gates` skill",
+      "reason": "Rule moved into a skill."
+    },
+    "C30": {
+      "pattern": "Your (?:`model` and `effort`|model and effort) are fixed by this file or by `agents\\.overrides\\.([\\w-]+)` in `settings\\.json`, and you cannot change them per task\\.",
+      "replacement": "Your `model` and `effort` default to this file's frontmatter. The dispatcher can override both on the `Agent` call, from the `\\1` line in `~/.claude/rules/pstack-models.md`, and you cannot change them mid-task.",
+      "reason": "Claude Code takes model and effort per Agent call."
+    },
+    "C31": {
+      "pattern": "(?:Y|y)our (?:`model` and `effort`|model and effort) are fixed by this file or by `agents\\.overrides\\.([\\w-]+)` in `settings\\.json`\\.",
+      "replacement": "Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `\\1` line in `~/.claude/rules/pstack-models.md`.",
+      "reason": "Same, sentence form."
+    },
+    "C32": {
+      "pattern": "and your model and effort are fixed by this file or by `agents\\.overrides\\.([\\w-]+)` in `settings\\.json`\\.",
+      "replacement": "and your model and effort default to this file's frontmatter, which the dispatcher can override on the `Agent` call from the `\\1` line in `~/.claude/rules/pstack-models.md`.",
+      "reason": "Same, clause form."
+    },
+    "C33": {
+      "pattern": "Your `model` defaults to `auto`, which resolves to the session model unless `agents\\.overrides\\.pstack-panel-3` in `settings\\.json` pins something else\\. Pin this seat to a third vendor when you want a genuine cross-vendor panel; leaving it on `auto` can collapse the panel to two distinct models\\.",
+      "replacement": "Your `model` defaults to `inherit`, the session model, unless the dispatcher passes another on the `Agent` call from the `pstack-panel-3` line in `~/.claude/rules/pstack-models.md`. Every model Claude Code can run is one vendor's, so this seat adds a third model, not a third vendor, and leaving it on `inherit` collapses the panel to two distinct models whenever the session runs `opus` or `sonnet`.",
+      "reason": "No cross-vendor seat exists in Claude Code."
+    },
+    "C34": {
+      "pattern": "If the dispatcher needs this seat on a specific model for vendor diversity, it sets that through `agents\\.overrides` before the run\\.",
+      "replacement": "If the dispatcher needs this seat on a specific model for diversity, it passes `model` on the `Agent` call.",
+      "reason": "Per-call model."
+    },
+    "C35": {
+      "pattern": "`agents\\.overrides` in `settings\\.json` can repin a seat, so the configured default is not evidence of what produced the design\\.",
+      "replacement": "The dispatcher can pass a different `model` on the `Agent` call, so the configured default is not evidence of what produced the design.",
+      "reason": "Per-call model."
+    },
+    "C36": {
+      "pattern": "so the answer does not change if a user swaps the seat for a different agent through `agents\\.overrides`\\.",
+      "replacement": "so the answer does not change if a user repoints the seat's model in `~/.claude/rules/pstack-models.md`.",
+      "reason": "Per-call model."
+    },
+    "C37": {
+      "pattern": "You are a Qoder Custom Agent\\. Your `model` and `effort` are fixed by this file, or by an `agents\\.overrides\\.poteto-agent` entry in `settings\\.json`\\. You cannot change them per task, and you cannot ask for a different model\\.",
+      "replacement": "You are a Claude Code plugin subagent, registered as `pstack:poteto-agent`. Your `model` and `effort` default to this file's frontmatter, and your parent can override both on the `Agent` call from the `poteto-agent` line in `~/.claude/rules/pstack-models.md`. You cannot change them mid-task.",
+      "reason": "Per-call model."
+    },
+    "C38": {
+      "pattern": "There is no cloud environment and no per-call background flag\\. When a step needs an isolated working copy, use a git worktree you create yourself and name its path in your report\\.",
+      "replacement": "There is no cloud environment. Subagents run in the background by default and notify their parent when they finish. When a step needs an isolated working copy, dispatch with `isolation: \"worktree\"` on the `Agent` call, or use a git worktree you create yourself, and name its path in your report.",
+      "reason": "Claude Code subagents run in the background by default, and the Agent tool takes isolation."
+    },
+    "C40": {
+      "pattern": "`isolation: worktree` is set here, so Qoder gives you a separate checkout; report its path so the dispatcher can read your artifact\\.",
+      "replacement": "`isolation: worktree` is set here, so Claude Code runs you in a temporary git worktree; report its path and branch so the dispatcher can read your artifact.",
+      "reason": "Claude Code subagent frontmatter supports isolation: worktree."
+    },
+    "C45": {
+      "pattern": "^## Qoder specifics$",
+      "replacement": "## Claude Code specifics",
+      "reason": "Retitle, content adapted by the rules above."
+    },
+    "C46": {
+      "pattern": "^## Qoder port note$",
+      "replacement": "## Claude Code port note",
+      "reason": "Retitle."
+    },
+    "C50": {
+      "pattern": "enforced by Qoder hooks, which sit outside the model",
+      "replacement": "enforced by Claude Code hooks, which sit outside the model",
+      "reason": "Same mechanism, both hosts."
+    },
+    "C51": {
+      "pattern": "also enforced by Qoder hooks that sit outside the model",
+      "replacement": "also enforced by Claude Code hooks that sit outside the model",
+      "reason": "Same."
+    },
+    "C52": {
+      "pattern": "\\| Qoder hooks, outside the model \\|",
+      "replacement": "| Claude Code hooks, outside the model |",
+      "reason": "Same."
+    },
+    "C53": {
+      "pattern": "relative to the project root Qoder opened",
+      "replacement": "relative to the project root Claude Code started in",
+      "reason": "CLAUDE_PROJECT_DIR is the session's start directory."
+    },
+    "C54": {
+      "pattern": "inside the environment Qoder runs hooks in",
+      "replacement": "inside the environment Claude Code runs hooks in",
+      "reason": "Same."
+    },
+    "C55": {
+      "pattern": "Errors land in Qoder's diagnostic output rather than in the chat\\.",
+      "replacement": "Errors land in Claude Code's debug output rather than in the chat. Run `claude --debug`, or open `/hooks` to confirm the three pstack hooks are registered.",
+      "reason": "Claude Code's hook diagnostics."
+    },
+    "C56": {
+      "pattern": "plugin agents have `mcpServers` stripped by Qoder's safety policy",
+      "replacement": "Claude Code ignores `mcpServers` on plugin agents",
+      "reason": "Documented Claude Code plugin subagent restriction."
+    },
+    "C57": {
+      "pattern": "since Qoder strips `mcpServers` from plugin-shipped definitions along with `hooks` and `permissionMode`",
+      "replacement": "since Claude Code ignores `mcpServers` on plugin-shipped subagents, along with `hooks` and `permissionMode`",
+      "reason": "Same restriction, Claude Code wording."
+    },
+    "C58": {
+      "pattern": "Qoder's built-in `/create-skill` skill",
+      "replacement": "the skill-authoring skill the session offers (such as `skill-creator` or `writing-skills`), or a hand-written `SKILL.md`",
+      "reason": "Claude Code ships no create-skill built-in."
+    },
+    "C59": {
+      "pattern": "Qoder caps a question at four options and allows at most four questions per call",
+      "replacement": "`AskUserQuestion` caps a question at four options and allows at most four questions per call",
+      "reason": "Same tool limit."
+    },
+    "C60": {
+      "pattern": "A developer works in the Qoder IDE and invokes a skill",
+      "replacement": "A developer works in Claude Code and invokes a skill",
+      "reason": "Host naming."
+    },
+    "C61": {
+      "pattern": "Nothing here proves that Qoder dispatches an `ent-` seat at runtime\\. `qodercli` is",
+      "replacement": "Nothing here proves that Claude Code dispatches an `ent-` seat at runtime. A live session is",
+      "reason": "Host naming; see the hand-checked follow-on sentence."
+    },
+    "C62": {
+      "pattern": "The cards are `model_decision` rules, which is what makes",
+      "replacement": "The cards are project skills, loaded by description, which is what makes",
+      "reason": "Rule cards are skills here."
+    },
+    "C63": {
+      "pattern": "Tool integrations from this layer are documented rather than built\\. Qoder strips",
+      "replacement": "Tool integrations from this layer are documented rather than built. Claude Code ignores",
+      "reason": "Same restriction."
+    },
+    "C64": {
+      "pattern": "\\bQoder publishes no vendor behind a model alias, so\\b",
+      "replacement": "Every model Claude Code can run comes from one vendor, so",
+      "reason": "Judge independence still cannot hold, for a different reason."
+    },
+    "C65": {
+      "pattern": "\\bQoder cannot check that at dispatch time\\.",
+      "replacement": "Claude Code cannot deliver that, because every model it runs is Anthropic's.",
+      "reason": "Same."
+    },
+    "C66": {
+      "pattern": "Qoder publishes no vendor behind a model alias",
+      "replacement": "every model Claude Code runs comes from one vendor",
+      "reason": "Same, mid-sentence."
+    },
+    "C70": {
+      "pattern": "Repeat per component until the diff is zero, driving each pass yourself, since Qoder has no timer that re-enters a run\\.",
+      "replacement": "`/loop` per component until the diff is zero.",
+      "reason": "Claude Code ships /loop; upstream's step returns."
+    },
+    "C71": {
+      "pattern": "give the agent that predicate",
+      "replacement": "give `/loop` that predicate",
+      "reason": "Same."
+    },
+    "C72": {
+      "pattern": "keep going until done\\.",
+      "replacement": "/loop until done.",
+      "reason": "Same, inside a pasted prompt."
+    },
+    "C73": {
+      "pattern": "The transcript scan is slow, so let it finish before you read the table\\. Qoder has no per-call background flag for a shell command inside a subagent\\.",
+      "replacement": "The transcript scan is slow, so run it in the background and read the table when it finishes.",
+      "reason": "Claude Code runs background shell commands."
+    },
+    "M01": {
+      "pattern": "`performance`",
+      "replacement": "`opus`",
+      "reason": "Qoder performance alias is Claude Code opus."
+    },
+    "M02": {
+      "pattern": "`efficient`",
+      "replacement": "`sonnet`",
+      "reason": "Qoder efficient alias is Claude Code sonnet."
+    },
+    "M03": {
+      "pattern": "`lite`",
+      "replacement": "`haiku`",
+      "reason": "Qoder lite alias is Claude Code haiku."
+    },
+    "M04": {
+      "pattern": "`auto`(?=( \\|)|, high \\|| \\| high)",
+      "replacement": "`inherit`",
+      "reason": "Seat-table cells only; prose `auto` is hand-checked."
+    }
+  },
+  "substitutions": {
+    "C01": 3,
+    "C02": 6,
+    "C03": 39,
+    "C04": 2,
+    "C05": 4,
+    "C06": 13,
+    "C07": 3,
+    "C08": 13,
+    "C09": 2,
+    "C10": 1,
+    "C11": 1,
+    "C12": 1,
+    "C13": 2,
+    "C14": 1,
+    "C16": 3,
+    "C20": 3,
+    "C21": 3,
+    "C22": 3,
+    "C23": 2,
+    "C24": 3,
+    "C25": 1,
+    "C30": 2,
+    "C31": 19,
+    "C33": 1,
+    "C34": 1,
+    "C35": 1,
+    "C36": 1,
+    "C37": 1,
+    "C38": 1,
+    "C40": 3,
+    "C45": 23,
+    "C46": 1,
+    "C50": 1,
+    "C51": 1,
+    "C52": 1,
+    "C53": 1,
+    "C54": 1,
+    "C55": 1,
+    "C56": 1,
+    "C57": 1,
+    "C58": 3,
+    "C59": 1,
+    "C60": 1,
+    "C61": 1,
+    "C62": 1,
+    "C63": 1,
+    "C64": 4,
+    "C65": 1,
+    "C70": 1,
+    "C71": 1,
+    "C72": 1,
+    "C73": 1,
+    "M01": 45,
+    "M02": 35,
+    "M03": 8,
+    "M04": 6,
+    "S01": 4,
+    "S03": 259,
+    "frontmatter-restore:disable-model-invocation": 57,
+    "frontmatter-restore:paths": 1,
+    "hooks:drop-name": 3,
+    "manual-only-note": 57,
+    "model:auto->inherit": 2,
+    "model:efficient->sonnet": 10,
+    "model:lite->haiku": 1,
+    "model:performance->opus": 15,
+    "rule->skill:model_decision": 3
+  },
+  "rules_that_did_not_fire": [
+    "C15",
+    "C17",
+    "C26",
+    "C32",
+    "C66",
+    "S02"
+  ],
+  "hand_rewrites": [
+    "skills/poteto-mode/SKILL.md",
+    "skills/setup-pstack/SKILL.md",
+    "skills/poteto-help/SKILL.md",
+    "skills/pstack-seats/SKILL.md",
+    "docs/MODEL-ROUTING.md",
+    "skills/arena/SKILL.md",
+    "skills/swarm/SKILL.md",
+    "skills/automate-me/SKILL.md",
+    "skills/make-bot-ui/SKILL.md",
+    "skills/prd-rules/SKILL.md",
+    "skills/poteto-mode/scripts/worktree-audit.sh",
+    "skills/poteto-mode/playbooks/autonomous-run.md",
+    "skills/poteto-mode/playbooks/autopilot-full.md",
+    "docs/guide/01-setup.md",
+    "docs/guide/07-overnight.md"
+  ],
+  "port_authored": [
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "README.md",
+    "COMPATIBILITY.md",
+    "PORTING-NOTES.md",
+    "CONNECTORS.md",
+    "PROGRESS.md",
+    "scripts/selftest.py",
+    "scripts/selftest.sh",
+    "scripts/test-gates.py"
+  ],
+  "gate_failures": [
+    "agents/pstack-judge.md:30: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:7: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:10: Qoder brand, path, or CLI -> 'qoder'",
+    "docs/guide/01-setup.md:10: Qoder brand, path, or CLI -> 'qoder'",
+    "docs/guide/01-setup.md:13: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:15: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:15: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:25: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:27: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:31: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:31: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:31: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:43: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:43: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:64: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:64: Qoder brand, path, or CLI -> 'qoder'",
+    "docs/guide/01-setup.md:64: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/01-setup.md:64: Qoder config path -> '.qoder/'",
+    "docs/guide/01-setup.md:25: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "docs/guide/01-setup.md:29: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "docs/guide/01-setup.md:43: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "docs/guide/02-poteto-mode.md:95: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/02-poteto-mode.md:95: Qoder brand, path, or CLI -> 'qoder'",
+    "docs/guide/02-poteto-mode.md:109: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/02-poteto-mode.md:95: Qoder config path -> '.qoder/'",
+    "docs/guide/07-overnight.md:7: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/07-overnight.md:38: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/07-overnight.md:43: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/07-overnight.md:101: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/07-overnight.md:118: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/09-make-it-yours.md:13: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/09-make-it-yours.md:60: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/10-recipes-and-pitfalls.md:125: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/10-recipes-and-pitfalls.md:170: Qoder brand, path, or CLI -> 'Qoder'",
+    "docs/guide/10-recipes-and-pitfalls.md:176: Qoder brand, path, or CLI -> 'Qoder'",
+    "hooks/scripts/enterprise_hooks.py:2: Qoder brand, path, or CLI -> 'Qoder'",
+    "hooks/scripts/enterprise_hooks.py:9: Qoder brand, path, or CLI -> 'Qoder'",
+    "hooks/scripts/enterprise_hooks.py:229: Qoder brand, path, or CLI -> 'Qoder'",
+    "hooks/scripts/enterprise_hooks.py:325: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/architect/SKILL.md:18: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/arena/SKILL.md:18: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/arena/SKILL.md:23: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/arena/SKILL.md:23: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/arena/SKILL.md:29: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/automate-me/SKILL.md:30: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/automate-me/SKILL.md:30: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/automate-me/SKILL.md:74: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/automate-me/SKILL.md:75: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/automate-me/SKILL.md:30: Qoder config path -> '.qoder/'",
+    "skills/automate-me/SKILL.md:30: Qoder config path -> '.qoder/'",
+    "skills/automate-me/SKILL.md:30: Qoder transcript directory -> 'conversation-history'",
+    "skills/automate-me/SKILL.md:30: Qoder transcript root -> 'cache/projects'",
+    "skills/automate-me/SKILL.md:30: Qoder transcript root -> 'cache/projects'",
+    "skills/enterprise-seats/SKILL.md:88: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/enterprise-seats/SKILL.md:88: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "skills/enterprise-seats/SKILL.md:82: Qoder override field -> 'modelConfig'",
+    "skills/how/SKILL.md:16: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/make-bot-ui/SKILL.md:3: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/make-bot-ui/SKILL.md:3: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/make-bot-ui/SKILL.md:10: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/make-bot-ui/SKILL.md:16: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/make-bot-ui/SKILL.md:33: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/make-bot-ui/SKILL.md:35: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/make-bot-ui/SKILL.md:39: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/make-bot-ui/SKILL.md:35: Qoder product term for a subagent -> 'Custom Agent'",
+    "skills/no-comments/SKILL.md:14: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:12: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:39: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:39: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/poteto-help/SKILL.md:39: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/poteto-help/SKILL.md:45: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:47: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:47: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:49: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:49: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:55: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:58: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/poteto-help/SKILL.md:61: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:117: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:117: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:133: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:141: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:141: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/poteto-help/SKILL.md:146: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:147: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-help/SKILL.md:58: Qoder config path -> '.qoder/'",
+    "skills/poteto-help/SKILL.md:141: Qoder config path -> '.qoder/'",
+    "skills/poteto-help/SKILL.md:40: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "skills/poteto-help/SKILL.md:49: Qoder product term for a subagent -> 'Custom Agent'",
+    "skills/poteto-mode/SKILL.md:12: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/SKILL.md:101: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/SKILL.md:128: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/SKILL.md:130: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/SKILL.md:122: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "skills/poteto-mode/SKILL.md:126: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "skills/poteto-mode/SKILL.md:101: Qoder product term for a subagent -> 'Custom Agent'",
+    "skills/poteto-mode/playbooks/autonomous-run.md:6: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/playbooks/autopilot-full.md:7: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/playbooks/autopilot-full.md:14: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/playbooks/autopilot-full.md:24: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/playbooks/bug-fix.md:8: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/playbooks/shipping.md:5: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/playbooks/shipping.md:9: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/playbooks/worktree-cleanup.md:8: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/poteto-mode/playbooks/worktree-cleanup.md:8: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/poteto-mode/playbooks/worktree-cleanup.md:8: Qoder config path -> '.qoder/'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:72: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:78: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:81: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:72: Qoder config path -> '.qoder/'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:78: Qoder config path -> '.qoder/'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:81: Qoder config path -> '.qoder/'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:72: Qoder transcript directory -> 'conversation-history'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:79: Qoder transcript directory -> 'conversation-history'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:72: Qoder transcript root -> 'cache/projects'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:78: Qoder transcript root -> 'cache/projects'",
+    "skills/poteto-mode/scripts/worktree-audit.sh:81: Qoder transcript root -> 'cache/projects'",
+    "skills/prd-rules/SKILL.md:3: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/prd-rules/SKILL.md:67: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/prd-rules/SKILL.md:67: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/prd-rules/SKILL.md:3: Qoder config path -> '.qoder/'",
+    "skills/prd-rules/SKILL.md:67: Qoder config path -> '.qoder/'",
+    "skills/prd-rules/SKILL.md:67: Qoder rule trigger -> 'model_decision'",
+    "skills/prd-rules/SKILL.md:71: Qoder rule trigger -> 'model_decision'",
+    "skills/prd-rules/SKILL.md:67: Qoder rule frontmatter -> 'trigger: m'",
+    "skills/prd-rules/SKILL.md:71: Qoder rule frontmatter -> 'trigger: m'",
+    "skills/pstack-seats/SKILL.md:7: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/pstack-seats/SKILL.md:44: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/pstack-seats/SKILL.md:46: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/pstack-seats/SKILL.md:46: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/pstack-seats/SKILL.md:46: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/pstack-seats/SKILL.md:44: Qoder config path -> '.qoder/'",
+    "skills/pstack-seats/SKILL.md:46: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "skills/pstack-seats/SKILL.md:38: Qoder override field -> 'modelConfig'",
+    "skills/pstack-seats/SKILL.md:9: Qoder rule trigger -> 'model_decision'",
+    "skills/pstack-seats/SKILL.md:9: Qoder rule trigger -> 'always_on'",
+    "skills/pstack-seats/SKILL.md:9: Qoder rule trigger -> 'always_on'",
+    "skills/pstack-seats/SKILL.md:3: Qoder product term for a subagent -> 'Custom Agent'",
+    "skills/pstack-seats/SKILL.md:7: Qoder product term for a subagent -> 'Custom Agent'",
+    "skills/setup-pstack/SKILL.md:3: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/setup-pstack/SKILL.md:7: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/setup-pstack/SKILL.md:13: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/setup-pstack/SKILL.md:62: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/setup-pstack/SKILL.md:62: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/setup-pstack/SKILL.md:63: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/setup-pstack/SKILL.md:69: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/setup-pstack/SKILL.md:69: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/setup-pstack/SKILL.md:69: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/setup-pstack/SKILL.md:71: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/setup-pstack/SKILL.md:105: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/setup-pstack/SKILL.md:105: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/setup-pstack/SKILL.md:105: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/setup-pstack/SKILL.md:113: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/setup-pstack/SKILL.md:113: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/setup-pstack/SKILL.md:113: Qoder brand, path, or CLI -> 'qoder'",
+    "skills/setup-pstack/SKILL.md:212: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/setup-pstack/SKILL.md:220: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/setup-pstack/SKILL.md:62: Qoder config path -> '.qoder/'",
+    "skills/setup-pstack/SKILL.md:62: Qoder config path -> '.qoder/'",
+    "skills/setup-pstack/SKILL.md:69: Qoder config path -> '.qoder/'",
+    "skills/setup-pstack/SKILL.md:69: Qoder config path -> '.qoder/'",
+    "skills/setup-pstack/SKILL.md:69: Qoder config path -> '.qoder/'",
+    "skills/setup-pstack/SKILL.md:105: Qoder config path -> '.qoder/'",
+    "skills/setup-pstack/SKILL.md:113: Qoder config path -> '.qoder/'",
+    "skills/setup-pstack/SKILL.md:113: Qoder config path -> '.qoder/'",
+    "skills/setup-pstack/SKILL.md:13: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "skills/setup-pstack/SKILL.md:69: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "skills/setup-pstack/SKILL.md:105: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "skills/setup-pstack/SKILL.md:206: Qoder settings.json per-agent override -> 'agents.overrides'",
+    "skills/setup-pstack/SKILL.md:62: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:62: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:119: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:120: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:121: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:122: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:123: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:124: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:125: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:126: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:127: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:128: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:130: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:131: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:132: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:133: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:134: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:135: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:136: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:137: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:138: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:139: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:140: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:141: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:142: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:143: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:144: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:145: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:146: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:147: Qoder override field -> 'modelConfig'",
+    "skills/setup-pstack/SKILL.md:3: Qoder product term for a subagent -> 'Custom Agent'",
+    "skills/setup-pstack/SKILL.md:7: Qoder product term for a subagent -> 'Custom Agent'",
+    "skills/swarm/SKILL.md:23: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/swarm/SKILL.md:28: Qoder brand, path, or CLI -> 'Qoder'",
+    "skills/swarm/SKILL.md:30: Qoder brand, path, or CLI -> 'Qoder'"
+  ]
+}
