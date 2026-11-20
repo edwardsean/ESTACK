@@ -193,7 +193,7 @@ playbook a composition chain names exists, and that every agent's frontmatter is
 conformant. `scripts/test-gates.py` drives the real gate entry points against
 recorded hook events.
 
-Nothing here proves that Claude Code dispatches an `ent-` seat at runtime. A live session is
-absent on the machine this was built on, so the enterprise roster has never been
-observed running. That gap is recorded in [COMPATIBILITY.md](../COMPATIBILITY.md)
+Nothing here proves that Claude Code dispatches an `ent-` seat at runtime. The static
+checks and `claude plugin validate` pass, but no live session has dispatched one,
+so the enterprise roster has never been observed running. That gap is recorded in [COMPATIBILITY.md](../COMPATIBILITY.md)
 alongside the four missing views.

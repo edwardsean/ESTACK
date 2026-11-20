@@ -235,9 +235,9 @@
       "reason": "Host naming."
     },
     "C61": {
-      "pattern": "Nothing here proves that Qoder dispatches an `ent-` seat at runtime\\. `qodercli` is",
-      "replacement": "Nothing here proves that Claude Code dispatches an `ent-` seat at runtime. A live session is",
-      "reason": "Host naming; see the hand-checked follow-on sentence."
+      "pattern": "Nothing here proves that Qoder dispatches an `ent-` seat at runtime\\. `qodercli` is\\nabsent on the machine this was built on, so the enterprise roster has never been\\nobserved running\\.",
+      "replacement": "Nothing here proves that Claude Code dispatches an `ent-` seat at runtime. The static\nchecks and `claude plugin validate` pass, but no live session has dispatched one,\nso the enterprise roster has never been observed running.",
+      "reason": "Host naming; the evidence gap is the same."
     },
     "C62": {
       "pattern": "The cards are `model_decision` rules, which is what makes",

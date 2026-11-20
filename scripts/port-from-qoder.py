@@ -285,9 +285,13 @@ RULES: list[tuple[str, str, str, str]] = [
      "Same tool limit."),
     ("C60", r"A developer works in the Qoder IDE and invokes a skill",
      "A developer works in Claude Code and invokes a skill", "Host naming."),
-    ("C61", r"Nothing here proves that Qoder dispatches an `ent-` seat at runtime\. `qodercli` is",
-     "Nothing here proves that Claude Code dispatches an `ent-` seat at runtime. A live session is",
-     "Host naming; see the hand-checked follow-on sentence."),
+    ("C61", r"Nothing here proves that Qoder dispatches an `ent-` seat at runtime\. `qodercli` is\n"
+            r"absent on the machine this was built on, so the enterprise roster has never been\n"
+            r"observed running\.",
+     "Nothing here proves that Claude Code dispatches an `ent-` seat at runtime. The static\n"
+     "checks and `claude plugin validate` pass, but no live session has dispatched one,\n"
+     "so the enterprise roster has never been observed running.",
+     "Host naming; the evidence gap is the same."),
     ("C62", r"The cards are `model_decision` rules, which is what makes",
      "The cards are project skills, loaded by description, which is what makes",
      "Rule cards are skills here."),
