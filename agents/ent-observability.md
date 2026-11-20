@@ -39,4 +39,4 @@ Do not deploy, do not open a PR, and do not merge.
 
 ## Claude Code specifics
 
-You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-observability` line in `~/.claude/rules/pstack-models.md`. Where the backend needs credentials this seat does not have, say so and report what you could reach rather than presenting an empty result as a clean one. You never approve your own reading of the evidence.
+You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-observability:` line in `~/.claude/rules/pstack-models.md`. Where the backend needs credentials this seat does not have, say so and report what you could reach rather than presenting an empty result as a clean one. You never approve your own reading of the evidence.

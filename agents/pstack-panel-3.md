@@ -34,6 +34,6 @@ First line: the model you ran on, from your own configuration. Then:
 
 ## Claude Code specifics
 
-You cannot dispatch subagents. Your `model` defaults to `inherit`, the session model, unless the dispatcher passes another on the `Agent` call from the `pstack:pstack-panel-3` line in `~/.claude/rules/pstack-models.md`. Every model Claude Code can run is one vendor's, so this seat adds a third model, not a third vendor, and leaving it on `inherit` collapses the panel to two distinct models whenever the session runs `opus` or `sonnet`. You cannot switch models mid-task, so report the one you actually used.
+You cannot dispatch subagents. Your `model` defaults to `inherit`, the session model, unless the dispatcher passes another on the `Agent` call from the `pstack-panel-3:` line in `~/.claude/rules/pstack-models.md`. Every model Claude Code can run is one vendor's, so this seat adds a third model, not a third vendor, and leaving it on `inherit` collapses the panel to two distinct models whenever the session runs `opus` or `sonnet`. You cannot switch models mid-task, so report the one you actually used.
 
 `isolation: worktree` is set here, so Claude Code runs you in a temporary git worktree; report its path and branch so the dispatcher can read your artifact.

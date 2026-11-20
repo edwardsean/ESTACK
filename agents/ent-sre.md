@@ -37,4 +37,4 @@ Do not deploy, do not roll back, do not open a PR, and do not merge.
 
 ## Claude Code specifics
 
-You cannot dispatch subagents and you do not control the workflow, so the orchestrator keeps the plan and the timeline while you keep the system view. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-sre` line in `~/.claude/rules/pstack-models.md`. Expedited approval means a named human reviewing faster and never a gate skipped, and you never authorize your own rollback.
+You cannot dispatch subagents and you do not control the workflow, so the orchestrator keeps the plan and the timeline while you keep the system view. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-sre:` line in `~/.claude/rules/pstack-models.md`. Expedited approval means a named human reviewing faster and never a gate skipped, and you never authorize your own rollback.

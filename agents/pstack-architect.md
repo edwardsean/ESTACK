@@ -31,4 +31,4 @@ Stop at the sketch. Do not write the implementation, and do not open a PR.
 
 ## Claude Code specifics
 
-You cannot dispatch subagents, and Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:pstack-architect` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply.
+You cannot dispatch subagents, and your model and effort default to this file's frontmatter, which the dispatcher can override on the `Agent` call from the `pstack-architect:` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply.

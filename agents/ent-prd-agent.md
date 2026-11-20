@@ -34,4 +34,4 @@ Stop at the document. Do not confirm a business rule yourself, do not pick the a
 
 ## Claude Code specifics
 
-You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-prd-agent` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply. You never approve your own output, and an unconfirmed rule stays labeled unconfirmed in the document.
+You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-prd-agent:` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply. You never approve your own output, and an unconfirmed rule stays labeled unconfirmed in the document.

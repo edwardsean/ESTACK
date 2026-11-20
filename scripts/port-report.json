@@ -84,20 +84,10 @@
       "replacement": "in the active workspace's folder under `~/.claude/projects/` (the workspace path with each `/` and `.` changed to `-`. Do not glob across `~/.claude/projects/*/`",
       "reason": "Same, with the cross-workspace warning kept."
     },
-    "C15": {
-      "pattern": "Find this workspace's directory under `~/\\.qoder/cache/projects/` and use only the `conversation-history/` folder inside it\\.",
-      "replacement": "Find this workspace's folder under `~/.claude/projects/` and use only the `.jsonl` files inside it.",
-      "reason": "Same, as an instruction."
-    },
     "C16": {
       "pattern": "`~/\\.qoder/cache/projects/\\*/`",
       "replacement": "`~/.claude/projects/*/`",
       "reason": "Cross-workspace glob root."
-    },
-    "C17": {
-      "pattern": "`conversation-history/`",
-      "replacement": "`~/.claude/projects/<slug>/`",
-      "reason": "Bare transcript dir mention."
     },
     "C20": {
       "pattern": "`rules/enterprise-gates\\.md`",
@@ -129,29 +119,24 @@
       "replacement": "the `pstack-seats` skill",
       "reason": "Rule moved into a skill."
     },
-    "C26": {
-      "pattern": "the `enterprise-gates` rule",
-      "replacement": "the `enterprise-gates` skill",
-      "reason": "Rule moved into a skill."
-    },
     "C30": {
       "pattern": "Your (?:`model` and `effort`|model and effort) are fixed by this file or by `agents\\.overrides\\.([\\w-]+)` in `settings\\.json`, and you cannot change them per task\\.",
-      "replacement": "Your `model` and `effort` default to this file's frontmatter. The dispatcher can override both on the `Agent` call, from the `\\1` line in `~/.claude/rules/pstack-models.md`, and you cannot change them mid-task.",
+      "replacement": "Your `model` and `effort` default to this file's frontmatter. The dispatcher can override both on the `Agent` call, from the `\\1:` line in `~/.claude/rules/pstack-models.md`, and you cannot change them mid-task.",
       "reason": "Claude Code takes model and effort per Agent call."
     },
     "C31": {
-      "pattern": "(?:Y|y)our (?:`model` and `effort`|model and effort) are fixed by this file or by `agents\\.overrides\\.([\\w-]+)` in `settings\\.json`\\.",
-      "replacement": "Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `\\1` line in `~/.claude/rules/pstack-models.md`.",
+      "pattern": "Your (?:`model` and `effort`|model and effort) are fixed by this file or by `agents\\.overrides\\.([\\w-]+)` in `settings\\.json`\\.",
+      "replacement": "Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `\\1:` line in `~/.claude/rules/pstack-models.md`.",
       "reason": "Same, sentence form."
     },
     "C32": {
       "pattern": "and your model and effort are fixed by this file or by `agents\\.overrides\\.([\\w-]+)` in `settings\\.json`\\.",
-      "replacement": "and your model and effort default to this file's frontmatter, which the dispatcher can override on the `Agent` call from the `\\1` line in `~/.claude/rules/pstack-models.md`.",
+      "replacement": "and your model and effort default to this file's frontmatter, which the dispatcher can override on the `Agent` call from the `\\1:` line in `~/.claude/rules/pstack-models.md`.",
       "reason": "Same, clause form."
     },
     "C33": {
       "pattern": "Your `model` defaults to `auto`, which resolves to the session model unless `agents\\.overrides\\.pstack-panel-3` in `settings\\.json` pins something else\\. Pin this seat to a third vendor when you want a genuine cross-vendor panel; leaving it on `auto` can collapse the panel to two distinct models\\.",
-      "replacement": "Your `model` defaults to `inherit`, the session model, unless the dispatcher passes another on the `Agent` call from the `pstack-panel-3` line in `~/.claude/rules/pstack-models.md`. Every model Claude Code can run is one vendor's, so this seat adds a third model, not a third vendor, and leaving it on `inherit` collapses the panel to two distinct models whenever the session runs `opus` or `sonnet`.",
+      "replacement": "Your `model` defaults to `inherit`, the session model, unless the dispatcher passes another on the `Agent` call from the `pstack-panel-3:` line in `~/.claude/rules/pstack-models.md`. Every model Claude Code can run is one vendor's, so this seat adds a third model, not a third vendor, and leaving it on `inherit` collapses the panel to two distinct models whenever the session runs `opus` or `sonnet`.",
       "reason": "No cross-vendor seat exists in Claude Code."
     },
     "C34": {
@@ -171,7 +156,7 @@
     },
     "C37": {
       "pattern": "You are a Qoder Custom Agent\\. Your `model` and `effort` are fixed by this file, or by an `agents\\.overrides\\.poteto-agent` entry in `settings\\.json`\\. You cannot change them per task, and you cannot ask for a different model\\.",
-      "replacement": "You are a Claude Code plugin subagent, registered as `pstack:poteto-agent`. Your `model` and `effort` default to this file's frontmatter, and your parent can override both on the `Agent` call from the `poteto-agent` line in `~/.claude/rules/pstack-models.md`. You cannot change them mid-task.",
+      "replacement": "You are a Claude Code plugin subagent, registered as `pstack:poteto-agent`. Your `model` and `effort` default to this file's frontmatter, and your parent can override both on the `Agent` call from the `poteto-agent:` line in `~/.claude/rules/pstack-models.md`. You cannot change them mid-task.",
       "reason": "Per-call model."
     },
     "C38": {
@@ -273,11 +258,6 @@
       "pattern": "\\bQoder cannot check that at dispatch time\\.",
       "replacement": "Claude Code cannot deliver that, because every model it runs is Anthropic's.",
       "reason": "Same."
-    },
-    "C66": {
-      "pattern": "Qoder publishes no vendor behind a model alias",
-      "replacement": "every model Claude Code runs comes from one vendor",
-      "reason": "Same, mid-sentence."
     },
     "C70": {
       "pattern": "Repeat per component until the diff is zero, driving each pass yourself, since Qoder has no timer that re-enters a run\\.",
@@ -418,24 +398,28 @@
   "substitutions": {
     "C01": 3,
     "C02": 6,
-    "C03": 36,
-    "C04": 1,
-    "C05": 2,
-    "C06": 2,
-    "C07": 1,
-    "C08": 7,
-    "C09": 1,
+    "C03": 39,
+    "C04": 2,
+    "C05": 4,
+    "C06": 13,
+    "C07": 3,
+    "C08": 13,
+    "C09": 2,
     "C10": 1,
     "C11": 1,
     "C12": 1,
     "C13": 2,
     "C14": 1,
-    "C16": 2,
+    "C16": 3,
     "C20": 3,
-    "C21": 2,
-    "C22": 1,
+    "C21": 3,
+    "C22": 3,
+    "C23": 2,
+    "C24": 3,
+    "C25": 1,
     "C30": 2,
-    "C31": 19,
+    "C31": 18,
+    "C32": 1,
     "C33": 1,
     "C34": 1,
     "C35": 1,
@@ -446,17 +430,21 @@
     "C45": 23,
     "C46": 1,
     "C50": 1,
+    "C51": 1,
     "C52": 1,
     "C53": 1,
     "C54": 1,
     "C55": 1,
+    "C56": 1,
     "C57": 1,
-    "C58": 1,
+    "C58": 3,
+    "C59": 1,
     "C60": 1,
     "C61": 1,
     "C62": 1,
     "C63": 1,
-    "C64": 2,
+    "C64": 4,
+    "C65": 1,
     "C70": 1,
     "C71": 1,
     "C72": 1,
@@ -480,37 +468,23 @@
     "C90": 1,
     "C91": 1,
     "C92": 1,
-    "M01": 15,
-    "M02": 8,
-    "S01": 3,
-    "S03": 109,
-    "frontmatter-restore:disable-model-invocation": 51,
+    "M01": 45,
+    "M02": 35,
+    "M03": 8,
+    "M04": 6,
+    "S01": 4,
+    "S03": 236,
+    "frontmatter-restore:disable-model-invocation": 57,
     "frontmatter-restore:paths": 1,
     "hooks:drop-name": 3,
-    "manual-only-note": 51,
+    "manual-only-note": 57,
     "model:auto->inherit": 2,
     "model:efficient->sonnet": 10,
     "model:lite->haiku": 1,
     "model:performance->opus": 15,
-    "rule->skill:model_decision": 2
+    "rule->skill:model_decision": 3
   },
-  "rules_that_did_not_fire": [
-    "C15",
-    "C17",
-    "C23",
-    "C24",
-    "C25",
-    "C26",
-    "C32",
-    "C51",
-    "C56",
-    "C59",
-    "C65",
-    "C66",
-    "M03",
-    "M04",
-    "S02"
-  ],
+  "rules_that_did_not_fire": [],
   "hand_rewrites": [
     "skills/poteto-mode/SKILL.md",
     "skills/setup-pstack/SKILL.md",

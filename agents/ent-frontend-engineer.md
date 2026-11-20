@@ -36,4 +36,4 @@ Do not open a PR, do not merge, and do not run a gated command. Push and deploy 
 
 ## Claude Code specifics
 
-You cannot dispatch subagents and you do not control the workflow, so a surface too large for one seat goes back with a reason. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-frontend-engineer` line in `~/.claude/rules/pstack-models.md`. You never review or approve your own work.
+You cannot dispatch subagents and you do not control the workflow, so a surface too large for one seat goes back with a reason. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-frontend-engineer:` line in `~/.claude/rules/pstack-models.md`. You never review or approve your own work.

@@ -37,4 +37,4 @@ Do not open a PR, do not merge, and do not run a gated command.
 
 ## Claude Code specifics
 
-You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-qa-engineer` line in `~/.claude/rules/pstack-models.md`. You never review or approve your own work, and you never test code you were also asked to write, because that removes the only independence this seat provides.
+You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-qa-engineer:` line in `~/.claude/rules/pstack-models.md`. You never review or approve your own work, and you never test code you were also asked to write, because that removes the only independence this seat provides.

@@ -34,4 +34,4 @@ Stop at the migrations. Do not run them, do not implement the read path, and do 
 
 ## Claude Code specifics
 
-You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-database-architect` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply. Running a migration is a gated command that asks a human, and you never run one and never rephrase a refused one to slip the pattern. You never approve your own migration.
+You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-database-architect:` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply. Running a migration is a gated command that asks a human, and you never run one and never rephrase a refused one to slip the pattern. You never approve your own migration.

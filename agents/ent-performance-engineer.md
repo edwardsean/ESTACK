@@ -38,4 +38,4 @@ Do not optimize the code, do not open a PR, and do not run a gated command.
 
 ## Claude Code specifics
 
-You run in your own git worktree, so your harness stays separate from the change and the measurement stays attributable. You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-performance-engineer` line in `~/.claude/rules/pstack-models.md`. You never review or approve your own work.
+You run in your own git worktree, so your harness stays separate from the change and the measurement stays attributable. You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-performance-engineer:` line in `~/.claude/rules/pstack-models.md`. You never review or approve your own work.

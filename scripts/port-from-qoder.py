@@ -175,12 +175,7 @@ RULES: list[tuple[str, str, str, str]] = [
      "in the active workspace's folder under `~/.claude/projects/` (the workspace path with each `/` and `.` "
      "changed to `-`. Do not glob across `~/.claude/projects/*/`",
      "Same, with the cross-workspace warning kept."),
-    ("C15", r"Find this workspace's directory under `~/\.qoder/cache/projects/` and use only the "
-            r"`conversation-history/` folder inside it\.",
-     "Find this workspace's folder under `~/.claude/projects/` and use only the `.jsonl` files inside it.",
-     "Same, as an instruction."),
     ("C16", r"`~/\.qoder/cache/projects/\*/`", "`~/.claude/projects/*/`", "Cross-workspace glob root."),
-    ("C17", r"`conversation-history/`", "`~/.claude/projects/<slug>/`", "Bare transcript dir mention."),
 
     # --- Rules became skills ----------------------------------------------
     ("C20", r"`rules/enterprise-gates\.md`", "`skills/enterprise-gates/SKILL.md`", "Rule moved into a skill."),
@@ -189,7 +184,6 @@ RULES: list[tuple[str, str, str, str]] = [
     ("C23", r"the \*\*enterprise-seats\*\* rule", "the **enterprise-seats** skill", "Rule moved into a skill."),
     ("C24", r"the \*\*enterprise-gates\*\* rule", "the **enterprise-gates** skill", "Rule moved into a skill."),
     ("C25", r"the `pstack-seats` rule", "the `pstack-seats` skill", "Rule moved into a skill."),
-    ("C26", r"the `enterprise-gates` rule", "the `enterprise-gates` skill", "Rule moved into a skill."),
 
     # --- Per-seat model overrides -----------------------------------------
     # Qoder: settings.json agents.overrides. Claude Code: the dispatcher passes
@@ -197,25 +191,25 @@ RULES: list[tuple[str, str, str, str]] = [
     ("C30", r"Your (?:`model` and `effort`|model and effort) are fixed by this file or by "
             r"`agents\.overrides\.([\w-]+)` in `settings\.json`, and you cannot change them per task\.",
      r"Your `model` and `effort` default to this file's frontmatter. The dispatcher can override both on "
-     r"the `Agent` call, from the `\1` line in `~/.claude/rules/pstack-models.md`, and you cannot change "
+     r"the `Agent` call, from the `\1:` line in `~/.claude/rules/pstack-models.md`, and you cannot change "
      r"them mid-task.",
      "Claude Code takes model and effort per Agent call."),
-    ("C31", r"(?:Y|y)our (?:`model` and `effort`|model and effort) are fixed by this file or by "
+    ("C31", r"Your (?:`model` and `effort`|model and effort) are fixed by this file or by "
             r"`agents\.overrides\.([\w-]+)` in `settings\.json`\.",
      r"Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both "
-     r"on the `Agent` call from the `\1` line in `~/.claude/rules/pstack-models.md`.",
+     r"on the `Agent` call from the `\1:` line in `~/.claude/rules/pstack-models.md`.",
      "Same, sentence form."),
     ("C32", r"and your model and effort are fixed by this file or by `agents\.overrides\.([\w-]+)` in "
             r"`settings\.json`\.",
      r"and your model and effort default to this file's frontmatter, which the dispatcher can override on "
-     r"the `Agent` call from the `\1` line in `~/.claude/rules/pstack-models.md`.",
+     r"the `Agent` call from the `\1:` line in `~/.claude/rules/pstack-models.md`.",
      "Same, clause form."),
     ("C33", r"Your `model` defaults to `auto`, which resolves to the session model unless "
             r"`agents\.overrides\.pstack-panel-3` in `settings\.json` pins something else\. Pin this seat to "
             r"a third vendor when you want a genuine cross-vendor panel; leaving it on `auto` can collapse "
             r"the panel to two distinct models\.",
      "Your `model` defaults to `inherit`, the session model, unless the dispatcher passes another on the "
-     "`Agent` call from the `pstack-panel-3` line in `~/.claude/rules/pstack-models.md`. Every model "
+     "`Agent` call from the `pstack-panel-3:` line in `~/.claude/rules/pstack-models.md`. Every model "
      "Claude Code can run is one vendor's, so this seat adds a third model, not a third vendor, and "
      "leaving it on `inherit` collapses the panel to two distinct models whenever the session runs "
      "`opus` or `sonnet`.",
@@ -240,7 +234,7 @@ RULES: list[tuple[str, str, str, str]] = [
             r"and you cannot ask for a different model\.",
      "You are a Claude Code plugin subagent, registered as `pstack:poteto-agent`. Your `model` and "
      "`effort` default to this file's frontmatter, and your parent can override both on the `Agent` "
-     "call from the `poteto-agent` line in `~/.claude/rules/pstack-models.md`. You cannot change them "
+     "call from the `poteto-agent:` line in `~/.claude/rules/pstack-models.md`. You cannot change them "
      "mid-task.",
      "Per-call model."),
     ("C38", r"There is no cloud environment and no per-call background flag\. When a step needs an isolated "
@@ -306,9 +300,6 @@ RULES: list[tuple[str, str, str, str]] = [
     ("C65", r"\bQoder cannot check that at dispatch time\.",
      "Claude Code cannot deliver that, because every model it runs is Anthropic's.",
      "Same."),
-    ("C66", r"Qoder publishes no vendor behind a model alias",
-     "every model Claude Code runs comes from one vendor",
-     "Same, mid-sentence."),
 
     # --- /loop is real in Claude Code ---------------------------------------
     # The Qoder lever turned each /loop into a manual fallback. These undo that
@@ -441,7 +432,6 @@ def build_seat_rules(seats: list[str]) -> list[tuple[str, str, str, str]]:
     return [
         ("S01", rf"subagent_type:\s*\"?({alt})\"?(?![\w:-])", r'subagent_type: "pstack:\1"',
          "Plugin subagents register as pstack:<name>."),
-        ("S02", rf"`subagent_type`\s+`({alt})`", r'`subagent_type` `pstack:\1`', "Same, prose form."),
         ("S03", rf"(?<=`)({alt})(?=`)", r"pstack:\1",
          "Backticked seat names are dispatch targets; scope them."),
     ]
@@ -762,6 +752,9 @@ def main(argv: list[str]) -> int:
         dst = PLUGIN_ROOT / rel_dst
         hand = rel_dst in HAND_REWRITES
         if hand and HAND_OWNED_SEED_ONLY and dst.exists():
+            # Adapt in memory only, so the hit counts mean the same thing on
+            # every run: a rule at zero matched nothing in the Qoder tree.
+            adapt(rel_src, rel_dst, src.read_text(encoding="utf-8"), upstream, seats, hits, [])
             protected += 1
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -792,7 +785,7 @@ def main(argv: list[str]) -> int:
     print("\nsubstitution counts:")
     for key, count in sorted(hits.items(), key=lambda item: (-item[1], item[0])):
         print(f"  {count:4d}  {key}")
-    all_ids = [r[0] for r in RULES + ALIAS_RULES] + ["S01", "S02", "S03"]
+    all_ids = [r[0] for r in RULES + ALIAS_RULES] + ["S01", "S03"]
     silent = [i for i in all_ids if hits[i] == 0]
 
     print(f"\nhand-owned files: {len(HAND_REWRITES)}")

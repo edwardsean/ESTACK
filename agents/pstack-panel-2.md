@@ -34,6 +34,6 @@ First line: the model you ran on, from your own configuration. Then:
 
 ## Claude Code specifics
 
-You cannot dispatch subagents. Your `model` and `effort` default to this file's frontmatter. The dispatcher can override both on the `Agent` call, from the `pstack:pstack-panel-2` line in `~/.claude/rules/pstack-models.md`, and you cannot change them mid-task. `isolation: worktree` is set here, so Claude Code runs you in a temporary git worktree; report its path and branch so the dispatcher can read your artifact.
+You cannot dispatch subagents. Your `model` and `effort` default to this file's frontmatter. The dispatcher can override both on the `Agent` call, from the `pstack-panel-2:` line in `~/.claude/rules/pstack-models.md`, and you cannot change them mid-task. `isolation: worktree` is set here, so Claude Code runs you in a temporary git worktree; report its path and branch so the dispatcher can read your artifact.
 
 If the dispatcher needs this seat on a specific model for diversity, it passes `model` on the `Agent` call. You cannot switch models mid-task, so report the one you actually used.

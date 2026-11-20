@@ -32,4 +32,4 @@ Stop at the rules. Do not write the PRD, do not decide the design, and do not co
 
 ## Claude Code specifics
 
-You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-business-analyst` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply. You never approve your own output, and a rule you inferred is labeled inferred rather than presented as confirmed.
+You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-business-analyst:` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply. You never approve your own output, and a rule you inferred is labeled inferred rather than presented as confirmed.

@@ -37,4 +37,4 @@ Do not fix anything, do not open a PR, and do not run any command that writes, d
 
 ## Claude Code specifics
 
-You have no `Write` and no `Edit`, so you cannot remediate even if asked, and asking is a sign the workflow put the fix in the wrong seat. You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-security-engineer` line in `~/.claude/rules/pstack-models.md`. You never approve your own assessment, and security approval stays with the human the governance policy names.
+You have no `Write` and no `Edit`, so you cannot remediate even if asked, and asking is a sign the workflow put the fix in the wrong seat. You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-security-engineer:` line in `~/.claude/rules/pstack-models.md`. You never approve your own assessment, and security approval stays with the human the governance policy names.

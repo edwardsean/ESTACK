@@ -34,4 +34,4 @@ Stop at the contract. Do not implement a client or a server against it, and do n
 
 ## Claude Code specifics
 
-You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-api-architect` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply. You never approve your own contract, and the consumers get their say through the review step rather than through you deciding on their behalf.
+You cannot dispatch subagents and you do not control the workflow. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-api-architect:` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply. You never approve your own contract, and the consumers get their say through the review step rather than through you deciding on their behalf.

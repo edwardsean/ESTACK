@@ -34,4 +34,4 @@ Stop at the design. Do not implement it, do not review your own design, and do n
 
 ## Claude Code specifics
 
-You cannot dispatch subagents and you do not control the workflow, so a design needing competing attempts goes back to the orchestrator, which runs an arena instead. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `pstack:ent-system-architect` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply. You never approve your own design, because the review that follows is worth nothing if the author signs it.
+You cannot dispatch subagents and you do not control the workflow, so a design needing competing attempts goes back to the orchestrator, which runs an arena instead. Your `model` and `effort` default to this file's frontmatter, and the dispatcher can override both on the `Agent` call from the `ent-system-architect:` line in `~/.claude/rules/pstack-models.md`. Report the model you ran on in the first line of your reply. You never approve your own design, because the review that follows is worth nothing if the author signs it.
