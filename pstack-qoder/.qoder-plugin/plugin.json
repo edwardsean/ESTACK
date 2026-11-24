@@ -1,0 +1,35 @@
+{
+  "name": "pstack-qoder",
+  "displayName": "pstack for Qoder",
+  "version": "0.15.43",
+  "description": "Rigorous agent workflows ported from pstack to Qoder. A playbook-routing orchestrator, three-seat review panels, parallel arenas and swarms, independent verification, and 24 engineering principles, with each role bound to its own configurable model.",
+  "author": {
+    "name": "Lauren Tan"
+  },
+  "homepage": "https://github.com/cursor/plugins/tree/main/pstack",
+  "repository": "https://github.com/cursor/plugins",
+  "license": "MIT",
+  "logo": "./assets/logo.png",
+  "keywords": [
+    "qoder-plugin",
+    "pstack",
+    "poteto-mode",
+    "workflow",
+    "principles",
+    "agent-style",
+    "subagents",
+    "unslop"
+  ],
+  "category": "developer-tools",
+  "tags": [
+    "skill",
+    "workflow",
+    "principles",
+    "review",
+    "planning"
+  ],
+  "skills": "./skills/",
+  "agents": "./agents/",
+  "rules": "./rules/",
+  "hooks": "./hooks/enterprise-gates.json"
+}

@@ -1,0 +1,23 @@
+---
+name: architect
+description: "Sketch types, signatures, and module structure before code, then stay in the loop while implementation fills in. Use for /architect, 'architect this', 'design this', or non-trivial work where jumping to code would lock in the wrong shape. Runs only when the user types /architect, or when the poteto-mode orchestrator routes to it."
+---
+# Architect
+
+Before writing code, trace every system the change touches, then sketch two different shapes for it (types, signatures, module boundaries) and pick the one where each piece of state has one owner, each task has one way to do it, and callers need to know least. Redesign instead of patching if workarounds repeat.
+
+For a large or contested design, run the **arena** skill instead of sketching alone.
+
+## The seat
+
+This chat runs the sketch by default. Delegate to the `pstack-architect` seat through the `Agent` tool, with `subagent_type: pstack-architect`, when the design spans more systems than one turn holds comfortably, or when the shape should be argued by a seat that will not write the code it constrains.
+
+That seat carries the architecture model and the highest effort of any seat in this port, so delegating is how a design gets the planning model rather than whatever model the chat happens to run. Qoder binds a model to an agent and offers no per-call model parameter, which is why the seat exists at all.
+
+Give the delegate file pointers rather than inlined context, plus these:
+
+- The systems the change touches, by path.
+- The constraint you cannot move.
+- The done predicate, meaning two shapes sketched and one picked, with the fact that decided it.
+
+Ask it to report the model it ran on in its first line, and cite that in your summary. `agents.overrides` in `settings.json` can repin a seat, so the configured default is not evidence of what produced the design.
