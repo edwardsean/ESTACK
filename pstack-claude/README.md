@@ -22,6 +22,12 @@ Qoder edition had to give up (per-call model and effort, background subagents,
 `/loop`, real manual-only skills), and one thing is still out of reach, a judge
 from a different model vendor.
 
+## How it works
+
+![How estack works: your goal goes to one orchestrator, which picks a playbook and a delegation mode, dispatches seats, verifies the result, and stops at a human approval gate before push, deploy, or migration](../docs/images/how-it-works.png)
+
+The [estack README](../README.md) explains each part of this diagram in plain words.
+
 ## Install
 
 The estack repository root is a marketplace named `estack`. Inside a Claude
