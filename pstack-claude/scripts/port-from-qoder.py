@@ -17,13 +17,14 @@ Usage:
     python3 scripts/port-from-qoder.py [QODER_ROOT] [UPSTREAM_CLAUDE_ROOT]
 
 QODER_ROOT defaults to ../pstack-qoder. UPSTREAM_CLAUDE_ROOT defaults to
-../pstack-source/harness/pstack/claude-code, read only for the skill
+../upstream/claude-code, read only for the skill
 frontmatter switches Qoder could not express. Neither tree is ever written.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sys
@@ -736,7 +737,7 @@ def is_excluded(rel: str) -> bool:
 def main(argv: list[str]) -> int:
     source = Path(argv[0]).expanduser().resolve() if argv else (PLUGIN_ROOT.parent / "pstack-qoder").resolve()
     upstream = (Path(argv[1]).expanduser().resolve() if len(argv) > 1 else
-                (PLUGIN_ROOT.parent / "pstack-source" / "harness" / "pstack" / "claude-code").resolve())
+                (PLUGIN_ROOT.parent / "upstream" / "claude-code").resolve())
     for label, path in (("qoder port", source), ("upstream claude edition", upstream)):
         if not path.is_dir():
             print(f"error: {label} not found: {path}", file=sys.stderr)
@@ -822,9 +823,9 @@ def main(argv: list[str]) -> int:
         print("\ngate: clean, no Qoder-only or Cursor-only constructs outside provenance docs, no dashes anywhere")
 
     report = {
-        "source": str(source),
-        "upstream": str(upstream),
-        "plugin": str(PLUGIN_ROOT),
+        "source": Path(os.path.relpath(source, PLUGIN_ROOT.parent)).as_posix(),
+        "upstream": Path(os.path.relpath(upstream, PLUGIN_ROOT.parent)).as_posix(),
+        "plugin": Path(os.path.relpath(PLUGIN_ROOT, PLUGIN_ROOT.parent)).as_posix(),
         "ported": copied,
         "excluded": excluded,
         "adapted": adapted,

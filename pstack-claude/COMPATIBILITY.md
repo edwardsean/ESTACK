@@ -24,7 +24,7 @@ validate .` passes on the result.
 
 Source: the Qoder edition at `../pstack-qoder` (pstack 0.15.43 plus its
 enterprise layer), read only. Upstream's own Claude Code edition at
-`../pstack-source/harness/pstack/claude-code`, read only, for frontmatter and
+`../upstream/claude-code`, read only, for frontmatter and
 transcript conventions.
 
 ## Summary

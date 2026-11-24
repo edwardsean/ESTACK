@@ -24,20 +24,25 @@ from a different model vendor.
 
 ## Install
 
-The repository is its own marketplace. Inside a Claude Code session:
+The estack repository root is a marketplace named `estack`. Inside a Claude
+Code session:
 
 ```text
-/plugin marketplace add /Users/edwardseanalexander/Documents/AnterAja/SAMB/KTP-OCR/pstack-claude
-/plugin install pstack@pstack-claude
+/plugin marketplace add edwardsean/ESTACK
+/plugin install pstack@estack
 ```
 
 Or from a shell:
 
 ```bash
-claude plugin marketplace add /Users/edwardseanalexander/Documents/AnterAja/SAMB/KTP-OCR/pstack-claude
-claude plugin install pstack@pstack-claude
-claude plugin list            # shows pstack@pstack-claude, enabled
+claude plugin marketplace add edwardsean/ESTACK
+claude plugin install pstack@estack
+claude plugin list            # shows pstack@estack, enabled
 ```
+
+To work on a local clone instead, add the clone's root folder in place of
+`edwardsean/ESTACK`. This folder is also a marketplace of its own,
+`pstack-claude`, if you add it directly.
 
 Then start a new session, or run `/reload-plugins`. Nothing changes until you
 invoke a skill. Edits to a locally added marketplace take effect at the next
@@ -46,10 +51,10 @@ session start or on `/reload-plugins`.
 To try it for one session without installing anything:
 
 ```bash
-claude --plugin-dir /Users/edwardseanalexander/Documents/AnterAja/SAMB/KTP-OCR/pstack-claude
+claude --plugin-dir ./pstack-claude     # from the estack root
 ```
 
-To remove it: `claude plugin marketplace remove pstack-claude`, which also
+To remove it: `claude plugin marketplace remove estack`, which also
 uninstalls the plugin.
 
 ## Use it
@@ -194,6 +199,6 @@ Upstream: https://github.com/cursor/plugins/tree/main/pstack/ at version 0.15.43
 by Lauren Tan, MIT licensed. `LICENSE` is carried through unchanged, and so is
 `assets/logo.png`. The Qoder edition and its enterprise layer were read from
 `../pstack-qoder`, and upstream's own Claude Code edition from
-`../pstack-source/harness/pstack/claude-code`, for the skill frontmatter switches
+`../upstream/claude-code`, for the skill frontmatter switches
 and the transcript layout. Neither tree was written to. This port is not endorsed
 by or affiliated with the upstream author.

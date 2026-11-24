@@ -1,7 +1,7 @@
 {
-  "source": "/Users/edwardseanalexander/Documents/AnterAja/SAMB/KTP-OCR/pstack-qoder",
-  "upstream": "/Users/edwardseanalexander/Documents/AnterAja/SAMB/KTP-OCR/pstack-source/harness/pstack/claude-code",
-  "plugin": "/Users/edwardseanalexander/Documents/AnterAja/SAMB/KTP-OCR/pstack-claude",
+  "source": "pstack-qoder",
+  "upstream": "upstream/claude-code",
+  "plugin": "pstack-claude",
   "ported": 192,
   "excluded": 0,
   "adapted": 119,

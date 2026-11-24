@@ -17,7 +17,7 @@ python3 scripts/port-from-qoder.py [QODER_ROOT] [UPSTREAM_CLAUDE_ROOT]
 
 `QODER_ROOT` defaults to `../pstack-qoder`, the source of truth, including its
 enterprise layer. `UPSTREAM_CLAUDE_ROOT` defaults to
-`../pstack-source/harness/pstack/claude-code`, upstream's own Claude Code
+`../upstream/claude-code`, upstream's own Claude Code
 edition, read only for the two skill frontmatter switches the Qoder edition had
 to drop. Neither tree is ever written.
 
