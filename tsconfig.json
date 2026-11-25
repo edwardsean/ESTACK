@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["adapters/**/*.ts"]
+  "include": ["adapters/*.ts", "vitest.config.ts"]
 }
