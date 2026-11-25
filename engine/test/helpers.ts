@@ -13,3 +13,20 @@ export function makeRepo(): string {
   git("commit", "--allow-empty", "-m", "init");
   return dir;
 }
+
+import type { Exec, ExecResult } from "../src/exec";
+import { realExec } from "../src/exec";
+
+/** Scripted `gh` results keyed by the joined args (e.g. "pr view URL --json url"); everything else runs for real. */
+export function fakeExec(responses: Record<string, Partial<ExecResult>>): Exec {
+  return {
+    run(file, args, opts) {
+      if (file === "gh") {
+        const r = responses[args.join(" ")];
+        return { code: 1, stdout: "", stderr: "no scripted response", timedOut: false, durationMs: 0, ...r };
+      }
+      return realExec.run(file, args, opts);
+    },
+    shell: (command, opts) => realExec.shell(command, opts),
+  };
+}
