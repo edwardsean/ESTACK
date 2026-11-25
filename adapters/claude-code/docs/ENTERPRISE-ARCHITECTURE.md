@@ -37,7 +37,7 @@ gives eighteen, and the port ships eighteen literal agent files under `agents/`,
 prefixed `ent-`. The cost is 28 model bindings to configure instead of 10, which
 is why `/setup-models` asks one question per family rather than one per seat.
 
-**The approval gates, `/prd-rules`, and `/setup` were extended, not
+**The approval gates, `/prd-rules`, and `/estack:setup` were extended, not
 rebuilt.** Those three shipped earlier in this program and already covered Layer 2
 gate enforcement, Layer 3 business rules, and steps 11 and 13 of the Layer 6
 pipeline. This work adds to them. Nothing was duplicated, and no second gate
@@ -83,7 +83,7 @@ has to live at user or project level. `skills/enterprise-seats/SKILL.md` says so
 
 ## Layer 3, knowledge, rules, and governance
 
-Three stores, all opt-in per repository, all seeded by `/setup`.
+Three stores, all opt-in per repository, all seeded by `/estack:setup`.
 
 **Knowledge** covers ten kinds: architecture docs, microservice catalog, service
 ownership map, API documentation, database schemas, ADRs, business requirements,

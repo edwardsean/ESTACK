@@ -95,3 +95,31 @@ test("diffTree reports changed, missing and extra paths", () => {
   writeFileSync(join(out, "c.md"), "extra");
   expect(diffTree(out, tree)).toEqual(["a.md", "b.md", "c.md"]);
 });
+
+test("misspelled tokens fail instead of shipping", () => {
+  for (const bad of ["{{estack:models-file}}", "{{estack:NS}}", "{{ estack:ns }}", "{{estack:ns}"]) {
+    expect(() => renderText(`x ${bad} y`, TOKENS, "s.md")).toThrow("s.md: malformed token");
+  }
+});
+
+test("text files without a known extension are rendered", () => {
+  const core = tempDir();
+  put(core, "bin/tool", "#!/bin/sh\necho {{estack:ns}}\n", 0o755);
+  put(core, "data.tsv", "a\t{{estack:ns}}\n");
+  const tree = buildTree(core, TOKENS);
+  expect(tree.get("bin/tool")?.content.toString()).toBe("#!/bin/sh\necho estack\n");
+  expect(tree.get("data.tsv")?.content.toString()).toBe("a\testack\n");
+});
+
+test("a token inside a binary file fails the build", () => {
+  const core = tempDir();
+  put(core, "blob.bin", Buffer.concat([Buffer.from([0xff, 0x00]), Buffer.from("{{estack:ns}}")]));
+  expect(() => buildTree(core, TOKENS)).toThrow("blob.bin: token in a binary file");
+});
+
+test("invalid UTF-8 is copied verbatim, not corrupted", () => {
+  const core = tempDir();
+  const latin1 = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]); // "café\n" in Latin-1
+  put(core, "note.md", latin1);
+  expect(buildTree(core, TOKENS).get("note.md")?.content.equals(latin1)).toBe(true);
+});

@@ -302,7 +302,7 @@ def test_malformed_policy_fails_closed() -> None:
         code, _, err = run("gate-check.sh", bash_event("git push origin main"), box)
         check(
             "a policy from a future schema blocks and says to re-run setup",
-            code == 2 and "setup" in err,
+            code == 2 and "Re-run /{{estack:ns}}:setup." in err,
             f"exit={code} stderr={err!r}",
         )
     finally:
@@ -588,7 +588,7 @@ def main() -> int:
     print(f"passed {PASSED}, failed 0")
     print("PASS: the gate scripts behave correctly against recorded hook events")
     print("Not proven here: that a live Claude Code session fires these hooks.")
-    print("That needs one gated command in an opted-in repo; see /setup step 6.")
+    print("That needs one gated command in an opted-in repo; see /{{estack:ns}}:setup step 6.")
     return 0
 
 

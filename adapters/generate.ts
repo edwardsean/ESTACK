@@ -1,7 +1,7 @@
 // Builds an adapter's file tree from core/. Agent independent: an adapter
 // supplies only its token values and its output directory.
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 
 export type Tokens = Record<string, string>;
 export interface TreeFile {
@@ -10,17 +10,32 @@ export interface TreeFile {
 }
 export type Tree = Map<string, TreeFile>;
 
-export const TEXT_SUFFIXES: ReadonlySet<string> = new Set([".md", ".json", ".sh", ".py", ".ts", ".txt", ".yaml", ".yml"]);
-
 const TOKEN = /\{\{estack:([a-z_]+)\}\}/g;
+// Anything still shaped like a token after rendering is a typo, e.g. {{estack:models-file}}.
+const RESIDUE = /\{\{\s*estack\b[^\n]{0,40}/i;
+const TOKEN_BYTES = Buffer.from("{{estack:");
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const JUNK_NAMES = new Set([".DS_Store", "__pycache__"]);
 
 export function renderText(text: string, tokens: Tokens, file: string): string {
-  return text.replace(TOKEN, (_match, name: string) => {
+  const rendered = text.replace(TOKEN, (_match, name: string) => {
     const value = tokens[name];
     if (value === undefined) throw new Error(`${file}: unknown token {{estack:${name}}}`);
     return value;
   });
+  const residue = RESIDUE.exec(rendered);
+  if (residue) throw new Error(`${file}: malformed token ${residue[0]}`);
+  return rendered;
+}
+
+// Text means valid UTF-8 with no NUL byte; everything else is copied byte for byte.
+function decodeText(raw: Buffer): string | undefined {
+  if (raw.includes(0)) return undefined;
+  try {
+    return UTF8.decode(raw);
+  } catch {
+    return undefined;
+  }
 }
 
 function isJunk(name: string): boolean {
@@ -43,7 +58,9 @@ export function buildTree(coreDir: string, tokens: Tokens): Tree {
   for (const rel of walk(coreDir)) {
     const path = join(coreDir, rel);
     const raw = readFileSync(path);
-    const content = TEXT_SUFFIXES.has(extname(rel)) ? Buffer.from(renderText(raw.toString("utf8"), tokens, rel), "utf8") : raw;
+    const text = decodeText(raw);
+    if (text === undefined && raw.includes(TOKEN_BYTES)) throw new Error(`${rel}: token in a binary file`);
+    const content = text === undefined ? raw : Buffer.from(renderText(text, tokens, rel), "utf8");
     tree.set(rel, { content, mode: statSync(path).mode & 0o777 });
   }
   return tree;

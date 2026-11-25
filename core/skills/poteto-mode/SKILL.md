@@ -89,7 +89,7 @@ Read the leaf skill in full for any principle you apply. Each entry names when i
 
 ## Gates
 
-The pause above is prose, and prose is a request a model can decline under pressure. In a repository that opted in through `/setup`, the same pauses are also enforced by Claude Code hooks that sit outside the model, so a gated command stops and asks a human whether or not the run remembers to.
+The pause above is prose, and prose is a request a model can decline under pressure. In a repository that opted in through `/{{estack:ns}}:setup`, the same pauses are also enforced by Claude Code hooks that sit outside the model, so a gated command stops and asks a human whether or not the run remembers to.
 
 Three classes are gated by default, meaning push and PR, deploy and infrastructure, and database migration and data. The project's `.claude/enterprise/gates.json` is the authority on which, and it can narrow, widen, or disable each one. What to do when a gate fires, refuses, or fails to fire is in the **enterprise-gates** skill.
 

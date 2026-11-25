@@ -6,7 +6,7 @@ description: Use before running git push, opening or merging a PR, deploying, ch
 
 This plugin can ship approval gates that stop a destructive or outward-facing shell command and ask a human before it runs. They are enforced by Claude Code hooks, which sit outside the model, so no amount of reasoning inside a turn talks one out of firing.
 
-A gate is only live in a repository that opted in by writing `.claude/enterprise/gates.json`. `/setup` writes that file. In any other repository these gates do nothing at all.
+A gate is only live in a repository that opted in by writing `.claude/enterprise/gates.json`. `/estack:setup` writes that file. In any other repository these gates do nothing at all.
 
 ## What gets gated
 

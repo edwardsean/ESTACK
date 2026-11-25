@@ -416,15 +416,22 @@ def check_gate() -> None:
 
 
 # Built from pieces so this file does not trip its own check.
-OLD_NAMES_RE = re.compile("|".join(["p" + "stack:", "p" + "stack-models", "setup-p" + "stack", "setup-" + "enterprise"]))
+OLD_NAMES_RE = re.compile("|".join([
+    "p" + "stack:", "p" + "stack-models", "setup-p" + "stack", "setup-" + "enterprise",
+    r"\bp" + r"stack-(architect|explorer|judge|mechanic|verifier|panel-|seats)",
+]))
 
 
 def check_no_old_names() -> None:
     count = 0
     for path in sorted(PLUGIN_ROOT.rglob("*")):
-        if ".git" in path.parts or not path.is_file() or path.suffix not in {".md", ".json", ".sh", ".py", ".ts"}:
+        if ".git" in path.parts or not path.is_file():
             continue
-        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue  # binary, e.g. images
+        for line_no, line in enumerate(text.splitlines(), 1):
             if OLD_NAMES_RE.search(line):
                 count += 1
                 fail("names", f"{path.relative_to(PLUGIN_ROOT)}:{line_no}: old plugin name -> {line.strip()[:80]!r}")

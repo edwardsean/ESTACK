@@ -5,7 +5,7 @@
 # every Bash call, so a repo that never opted in pays one file test and one exit
 # instead of an interpreter start. Policy itself lives in the project's
 # .claude/enterprise/gates.json and is read by enterprise_hooks.py, which keeps
-# one source of truth that /setup can widen per repo.
+# one source of truth that /{{estack:ns}}:setup can widen per repo.
 #
 # This script fails closed. A gate that cannot evaluate is not a gate, and
 # letting the action through would be the one failure mode nobody notices.

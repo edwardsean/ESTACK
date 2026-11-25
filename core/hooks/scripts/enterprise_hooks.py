@@ -13,7 +13,7 @@ which exits 2 when it finds an ungated action.
 
 Policy lives in the project rather than in the plugin, so one install serves
 many repos with different gate rules. The file is `.claude/enterprise/gates.json`
-and `/setup` writes it. Nothing here gates a repo that has no such
+and `/{{estack:ns}}:setup` writes it. Nothing here gates a repo that has no such
 file, which is what keeps the plugin quiet everywhere else.
 
 Correlation. `tool_use_id` arrives on both PreToolUse and PostToolUse, so an
@@ -37,7 +37,7 @@ SCHEMA = 1
 CONFIG_RELPATH = Path(".claude/enterprise/gates.json")
 DEFAULT_AUDIT_RELPATH = Path(".claude/enterprise/approvals.jsonl")
 
-# What /setup writes into a project's gates.json, where it becomes
+# What /{{estack:ns}}:setup writes into a project's gates.json, where it becomes
 # editable. The plugin never gates from this table, so a project that deletes a
 # class really does lose it rather than falling back to a shipped default.
 #
@@ -82,7 +82,7 @@ DEFAULT_GATES: dict[str, dict[str, Any]] = {
 
 
 def default_config() -> dict[str, Any]:
-    """The config /setup writes on a first run.
+    """The config /{{estack:ns}}:setup writes on a first run.
 
     A deep copy, because callers edit what they get. Returning DEFAULT_GATES by
     reference let one caller's edit change the defaults for every later caller in
@@ -139,7 +139,7 @@ def load_config(project: Path) -> dict[str, Any] | None:
     if config.get("schema") != SCHEMA:
         refuse(
             f"{CONFIG_RELPATH} has schema {config.get('schema')!r}, "
-            f"this plugin writes schema {SCHEMA}. Re-run /setup."
+            f"this plugin writes schema {SCHEMA}. Re-run /{{estack:ns}}:setup."
         )
     gates = config.get("gates")
     if not isinstance(gates, dict):
