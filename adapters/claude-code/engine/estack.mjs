@@ -14606,7 +14606,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, type TEXT NOT NULL, goal TEXT NOT NULL,
   done_check TEXT NOT NULL, status TEXT NOT NULL, branch TEXT NOT NULL, cwd TEXT NOT NULL,
-  created_by TEXT NOT NULL, created_at TEXT NOT NULL
+  base_sha TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE TABLE task_bindings (
   task_id INTEGER NOT NULL REFERENCES tasks(id), actor TEXT NOT NULL, role TEXT NOT NULL,
@@ -34548,7 +34548,7 @@ function openEngine(cwd, deps = {}) {
   const repo = findRepo(cwd);
   const policy = loadPolicy(repo);
   const db = openDb(join3(repo.estackDir, "state.db"));
-  return { db, policy, repo, exec: deps.exec ?? realExec, now: deps.now ?? (() => /* @__PURE__ */ new Date()) };
+  return { db, policy, repo, exec: deps.exec ?? realExec, now: deps.now ?? (() => /* @__PURE__ */ new Date()), cwd };
 }
 
 // engine/src/tasks.ts
@@ -34583,18 +34583,32 @@ function listOpen(e) {
   const ids = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' ORDER BY id").all();
   return ids.map((r) => view(e, r.id));
 }
+var EVIDENCE_TIMEOUT_MS = 3e4;
+function runBounded(e, cwd, file2, args) {
+  const r = e.exec.run(file2, args, { cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  if (r.timedOut) bad("gh/git timed out");
+  return r;
+}
 function startTask(e, input2) {
   const steps = e.policy.task_types[input2.type];
   if (!steps) throw new EngineError("POLICY_INVALID", `unknown task type "${input2.type}"`);
   if (input2.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input2.branch}`);
-  const cwd = input2.cwd ?? e.repo.root;
-  const branch = input2.branch ?? (e.exec.run("git", ["branch", "--show-current"], { cwd }).stdout.trim() || "HEAD");
+  const top = runBounded(e, input2.cwd ?? e.cwd, "git", ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0) throw new EngineError("NOT_A_REPO", `not a git repository: ${input2.cwd ?? e.cwd}`);
+  const cwd = top.stdout.trim();
+  const branch = input2.branch ?? runBounded(e, cwd, "git", ["branch", "--show-current"]).stdout.trim();
+  if (input2.branch === void 0 && !branch) {
+    throw new EngineError("POLICY_INVALID", `${cwd} is not on a branch (detached HEAD): pass a branch`);
+  }
+  const head = runBounded(e, cwd, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
+  if (!branch || head.code !== 0) throw new EngineError("POLICY_INVALID", `no such branch: "${branch}"`);
+  const base_sha = head.stdout.trim();
   const now = iso(e);
   const by = actorId(input2.actor);
   return tx(e, () => {
     const r = e.db.prepare(
-      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, created_by, created_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)"
-    ).run(input2.title, input2.type, input2.goal, input2.done_check, branch, cwd, by, now);
+      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)"
+    ).run(input2.title, input2.type, input2.goal, input2.done_check, branch, cwd, base_sha, by, now);
     const id = Number(r.lastInsertRowid);
     steps.forEach((name, i) => e.db.prepare("INSERT INTO steps (task_id, name, ordinal, status) VALUES (?, ?, ?, 'pending')").run(id, name, i));
     e.db.prepare("INSERT INTO task_bindings (task_id, actor, role, bound_at) VALUES (?, ?, ?, ?)").run(id, by, input2.actor.agent_id ? "worker" : "cto", now);
@@ -34617,7 +34631,6 @@ function finishStep(e, task_id, step) {
 function bad(message) {
   throw new EngineError("BAD_EVIDENCE", message);
 }
-var EVIDENCE_TIMEOUT_MS = 3e4;
 function assertNext(v, step) {
   if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
   if (!v.next || v.next.name !== step) {
@@ -34625,22 +34638,23 @@ function assertNext(v, step) {
   }
 }
 function checkEvidence(e, v, step, ev, actor) {
-  const run = (file2, args) => {
-    const r = e.exec.run(file2, args, { cwd: v.task.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-    if (r.timedOut) bad("gh/git timed out");
-    return r;
-  };
+  const run = (file2, args) => runBounded(e, v.task.cwd, file2, args);
   switch (ev.kind) {
     case "note":
       if (!ev.text || !ev.text.trim()) bad("a note must not be blank");
       return { text: ev.text };
     case "commit": {
       if (!/^[0-9a-fA-F]{4,64}$/.test(ev.sha ?? "")) bad(`not a valid commit sha: ${ev.sha}`);
-      if (run("git", ["cat-file", "-e", `${ev.sha}^{commit}`]).code !== 0) bad(`commit ${ev.sha} does not exist`);
-      if (run("git", ["merge-base", "--is-ancestor", ev.sha, v.task.branch]).code !== 0) {
+      const found = run("git", ["rev-parse", "--verify", "--quiet", `${ev.sha}^{commit}`]);
+      if (found.code !== 0) bad(`commit ${ev.sha} does not exist`);
+      const sha = found.stdout.trim();
+      if (run("git", ["merge-base", "--is-ancestor", sha, `refs/heads/${v.task.branch}`]).code !== 0) {
         bad(`commit ${ev.sha} is not on the task branch ${v.task.branch}`);
       }
-      return { sha: ev.sha };
+      const old = run("git", ["merge-base", "--is-ancestor", sha, v.task.base_sha]).code;
+      if (old === 0) bad(`commit predates the task: ${ev.sha} is already in its base ${v.task.base_sha}`);
+      if (old !== 1) bad(`git could not compare commit ${ev.sha} with the task's base ${v.task.base_sha}`);
+      return { sha };
     }
     case "pr":
       if (!/^https:\/\/\S+\/pull\/\d+$/.test(ev.url ?? "")) bad(`not a pull request url: ${ev.url}`);
@@ -34687,6 +34701,12 @@ function runCheck(e, input2) {
   }
   const command = e.policy.commands[input2.step];
   if (!command) throw new EngineError("POLICY_INVALID", `policy.yaml has no commands.${input2.step}`);
+  const on = runBounded(e, v.task.cwd, "git", ["branch", "--show-current"]).stdout.trim();
+  if (on !== v.task.branch) {
+    throw new EngineError("BAD_EVIDENCE", `worktree ${v.task.cwd} is on ${on || "no branch"}, task is on ${v.task.branch}`);
+  }
+  const head = runBounded(e, v.task.cwd, "git", ["rev-parse", "HEAD"]);
+  const head_sha = head.code === 0 ? head.stdout.trim() : null;
   const r = e.exec.shell(command, { cwd: v.task.cwd, timeoutMs: input2.timeout_ms ?? DEFAULT_CHECK_TIMEOUT_MS });
   const result = {
     ok: r.code === 0 && !r.timedOut,
@@ -34701,7 +34721,7 @@ function runCheck(e, input2) {
     if (cur.next?.name !== input2.step) {
       throw new EngineError("OUT_OF_ORDER", `step "${input2.step}" is not next; the next step is "${cur.next?.name}"`);
     }
-    insertEvidence(e, input2.task_id, input2.step, "command", result.ok, { command, ...result }, input2.actor);
+    insertEvidence(e, input2.task_id, input2.step, "command", result.ok, { command, ...result, head_sha }, input2.actor);
     logEvent(e, input2.actor, "evidence", input2.task_id, { step: input2.step, kind: "command", ok: result.ok });
     if (result.ok) {
       const closed = finishStep(e, input2.task_id, input2.step);

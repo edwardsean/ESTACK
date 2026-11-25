@@ -7,7 +7,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, type TEXT NOT NULL, goal TEXT NOT NULL,
   done_check TEXT NOT NULL, status TEXT NOT NULL, branch TEXT NOT NULL, cwd TEXT NOT NULL,
-  created_by TEXT NOT NULL, created_at TEXT NOT NULL
+  base_sha TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE TABLE task_bindings (
   task_id INTEGER NOT NULL REFERENCES tasks(id), actor TEXT NOT NULL, role TEXT NOT NULL,

@@ -18,7 +18,7 @@ export const actorId = (a: Actor): string => `${a.session_id}/${a.agent_id ?? "m
 
 export interface Task {
   id: number; title: string; type: string; goal: string; done_check: string;
-  status: TaskStatus; branch: string; cwd: string; created_by: string; created_at: string;
+  status: TaskStatus; branch: string; cwd: string; base_sha: string; created_by: string; created_at: string;
 }
 export interface Step {
   task_id: number; name: string; ordinal: number; status: StepStatus; done_at: string | null;

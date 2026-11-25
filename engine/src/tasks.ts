@@ -1,4 +1,5 @@
 import type { Engine } from "./engine";
+import type { ExecResult } from "./exec";
 import {
   EngineError, STEP_EVIDENCE, actorId,
   type Actor, type Evidence, type EvidenceKind, type Step, type Task,
@@ -49,21 +50,39 @@ export function listOpen(e: Engine): TaskView[] {
   return ids.map((r) => view(e, r.id));
 }
 
+/** Every git/gh call the engine makes to check state is bounded. */
+export const EVIDENCE_TIMEOUT_MS = 30_000;
+
+/** Run git/gh with the evidence timeout; a timeout is BAD_EVIDENCE. */
+export function runBounded(e: Engine, cwd: string, file: string, args: string[]): ExecResult {
+  const r = e.exec.run(file, args, { cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  if (r.timedOut) bad("gh/git timed out");
+  return r;
+}
+
 export function startTask(e: Engine, input: {
   title: string; type: string; goal: string; done_check: string; actor: Actor; cwd?: string; branch?: string;
 }): TaskView {
   const steps = e.policy.task_types[input.type];
   if (!steps) throw new EngineError("POLICY_INVALID", `unknown task type "${input.type}"`);
   if (input.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input.branch}`);
-  const cwd = input.cwd ?? e.repo.root;
-  const branch = input.branch
-    ?? (e.exec.run("git", ["branch", "--show-current"], { cwd }).stdout.trim() || "HEAD");
+  // The task's worktree is the top level of the caller's checkout, so checks run where the work happens.
+  const top = runBounded(e, input.cwd ?? e.cwd, "git", ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0) throw new EngineError("NOT_A_REPO", `not a git repository: ${input.cwd ?? e.cwd}`);
+  const cwd = top.stdout.trim();
+  const branch = input.branch ?? runBounded(e, cwd, "git", ["branch", "--show-current"]).stdout.trim();
+  if (input.branch === undefined && !branch) {
+    throw new EngineError("POLICY_INVALID", `${cwd} is not on a branch (detached HEAD): pass a branch`);
+  }
+  const head = runBounded(e, cwd, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
+  if (!branch || head.code !== 0) throw new EngineError("POLICY_INVALID", `no such branch: "${branch}"`);
+  const base_sha = head.stdout.trim();
   const now = iso(e);
   const by = actorId(input.actor);
   return tx(e, () => {
     const r = e.db.prepare(
-      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, created_by, created_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)",
-    ).run(input.title, input.type, input.goal, input.done_check, branch, cwd, by, now);
+      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)",
+    ).run(input.title, input.type, input.goal, input.done_check, branch, cwd, base_sha, by, now);
     const id = Number(r.lastInsertRowid);
     steps.forEach((name, i) =>
       e.db.prepare("INSERT INTO steps (task_id, name, ordinal, status) VALUES (?, ?, ?, 'pending')").run(id, name, i));
@@ -95,9 +114,6 @@ function bad(message: string): never {
   throw new EngineError("BAD_EVIDENCE", message);
 }
 
-/** Every git/gh call made to check evidence is bounded. */
-export const EVIDENCE_TIMEOUT_MS = 30_000;
-
 function assertNext(v: TaskView, step: string): void {
   if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
   if (!v.next || v.next.name !== step) {
@@ -107,22 +123,24 @@ function assertNext(v: TaskView, step: string): void {
 
 /** Check the evidence (may spawn git/gh, so it runs outside any transaction) and return the payload to store. */
 function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, actor: Actor): Record<string, unknown> {
-  const run = (file: string, args: string[]) => {
-    const r = e.exec.run(file, args, { cwd: v.task.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-    if (r.timedOut) bad("gh/git timed out");
-    return r;
-  };
+  const run = (file: string, args: string[]) => runBounded(e, v.task.cwd, file, args);
   switch (ev.kind) {
     case "note":
       if (!ev.text || !ev.text.trim()) bad("a note must not be blank");
       return { text: ev.text };
     case "commit": {
       if (!/^[0-9a-fA-F]{4,64}$/.test(ev.sha ?? "")) bad(`not a valid commit sha: ${ev.sha}`);
-      if (run("git", ["cat-file", "-e", `${ev.sha}^{commit}`]).code !== 0) bad(`commit ${ev.sha} does not exist`);
-      if (run("git", ["merge-base", "--is-ancestor", ev.sha, v.task.branch]).code !== 0) {
+      const found = run("git", ["rev-parse", "--verify", "--quiet", `${ev.sha}^{commit}`]);
+      if (found.code !== 0) bad(`commit ${ev.sha} does not exist`);
+      const sha = found.stdout.trim();
+      if (run("git", ["merge-base", "--is-ancestor", sha, `refs/heads/${v.task.branch}`]).code !== 0) {
         bad(`commit ${ev.sha} is not on the task branch ${v.task.branch}`);
       }
-      return { sha: ev.sha };
+      // Only work made after the task started counts: the commit must not already be in the base.
+      const old = run("git", ["merge-base", "--is-ancestor", sha, v.task.base_sha]).code;
+      if (old === 0) bad(`commit predates the task: ${ev.sha} is already in its base ${v.task.base_sha}`);
+      if (old !== 1) bad(`git could not compare commit ${ev.sha} with the task's base ${v.task.base_sha}`);
+      return { sha };
     }
     case "pr":
       if (!/^https:\/\/\S+\/pull\/\d+$/.test(ev.url ?? "")) bad(`not a pull request url: ${ev.url}`);

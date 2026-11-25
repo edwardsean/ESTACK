@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { writeFileSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openEngine, type Engine } from "../src/engine";
 import { runCheck } from "../src/checks";
@@ -10,13 +12,16 @@ import { makeRepo } from "./helpers";
 
 const cto: Actor = { session_id: "s1" };
 
-function setup(commands: Record<string, string>, type = "feature") {
-  const dir = makeRepo();
+function writeCommands(dir: string, commands: Record<string, string>) {
   initRepo(dir);
   const p = join(dir, ".estack", "policy.yaml");
   const lines = Object.entries(commands).map(([k, v]) => `  ${k}: "${v}"`).join("\n");
   const text = readFileSync(p, "utf8").replace(/commands:[\s\S]*$/, `commands:\n${lines}\n`);
   writeFileSync(p, text);
+}
+function setup(commands: Record<string, string>, type = "feature") {
+  const dir = makeRepo();
+  writeCommands(dir, commands);
   const e = openEngine(dir);
   const t = startTask(e, { title: "t", type, goal: "g", done_check: "d", actor: cto, cwd: dir });
   return { e, id: t.task.id };
@@ -91,5 +96,40 @@ describe("runCheck", () => {
   test("run_check on a non-command step is BAD_EVIDENCE", () => {
     const { e, id } = setup({ test: "true" });
     expect(code(() => runCheck(e, { task_id: id, step: "plan", actor: cto })).code).toBe("BAD_EVIDENCE");
+  });
+  test("the command evidence records the tested HEAD sha", () => {
+    const { e, id } = setup({ test: "true" });
+    toTest(e, id);
+    runCheck(e, { task_id: id, step: "test", actor: cto });
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: e.repo.root, encoding: "utf8" }).trim();
+    expect(getTask(e, id).evidence.at(-1)!.payload.head_sha).toBe(head);
+  });
+
+  test("run_check refuses when the task's worktree is on another branch", () => {
+    const dir = makeRepo();
+    writeCommands(dir, { test: "true" });
+    execFileSync("git", ["branch", "feat-x"], { cwd: dir });
+    const e = openEngine(dir);
+    const id = startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, branch: "feat-x" }).task.id;
+    toTest(e, id);
+    const err = code(() => runCheck(e, { task_id: id, step: "test", actor: cto }));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toBe(`worktree ${dir} is on main, task is on feat-x`);
+    expect(getTask(e, id).evidence).toEqual([]);
+  });
+
+  test("a task started from a linked worktree records it and runs its check there", () => {
+    const dir = makeRepo();
+    writeCommands(dir, { test: "test -f only-in-worktree" });
+    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    execFileSync("git", ["worktree", "add", wt, "-b", "side"], { cwd: dir, stdio: "ignore" });
+    writeFileSync(join(wt, "only-in-worktree"), "");
+    const e = openEngine(wt);
+    const t = startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: cto });
+    expect(t.task.cwd).toBe(wt);
+    expect(t.task.branch).toBe("side");
+    toTest(e, t.task.id);
+    const r = runCheck(e, { task_id: t.task.id, step: "test", actor: cto });
+    expect(r.ok, r.output_tail).toBe(true);
   });
 });

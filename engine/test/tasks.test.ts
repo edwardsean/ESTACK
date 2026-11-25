@@ -244,4 +244,37 @@ describe("tasks", () => {
     expect(err.code).toBe("BAD_EVIDENCE");
     expect(err.message).toBe("gh/git timed out");
   });
+  test("a commit made before the task started is BAD_EVIDENCE", () => {
+    const { dir, e } = setup();
+    const base = git(dir, "rev-parse", "HEAD");
+    const id = toImplement(e, dir);
+    const err = code(() => done(e, id, "implement", { kind: "commit", sha: base }, worker));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toContain("commit predates the task");
+  });
+
+  test("a new commit is accepted and stored as the full sha", () => {
+    const { dir, e } = setup();
+    const id = toImplement(e, dir);
+    const sha = commit(dir);
+    const v = done(e, id, "implement", { kind: "commit", sha: sha.slice(0, 8) }, worker);
+    const stored = v.evidence.find((x) => x.kind === "commit")!.payload.sha;
+    expect(stored).toBe(sha);
+    expect(String(stored)).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  test("startTask records the branch head as base_sha and the worktree top level as cwd", () => {
+    const { dir, e } = setup();
+    const t = start(e, dir);
+    expect(t.task.base_sha).toBe(git(dir, "rev-parse", "HEAD"));
+    expect(t.task.cwd).toBe(dir);
+  });
+
+  test("an empty or unknown branch is refused at startTask", () => {
+    const { dir, e } = setup();
+    for (const branch of ["", "no-such-branch"]) {
+      const err = code(() => startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, branch }));
+      expect(err.code).toBe("POLICY_INVALID");
+    }
+  });
 });
