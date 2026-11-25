@@ -1,9 +1,12 @@
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
 import { initRepo } from "../src/policy";
 import { completeStep, getTask, startTask, type EvidenceInput } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
+import type { Exec } from "../src/exec";
 import { fakeExec, makeRepo } from "./helpers";
 
 const cto: Actor = { session_id: "s1" };
@@ -186,5 +189,59 @@ describe("tasks", () => {
     expect(events(e)).toBe(e0 + 2);
     code(() => done(e, t.task.id, "plan"));
     expect(events(e)).toBe(e0 + 2);
+  });
+  test("evidence checks run outside the write lock: another connection can write while gh runs", () => {
+    const dir = makeRepo();
+    initRepo(dir);
+    const inner = fakeExec({});
+    const seen: string[] = [];
+    const exec: Exec = {
+      ...inner,
+      run(file, args, opts) {
+        if (file !== "gh") return inner.run(file, args, opts);
+        const other = new DatabaseSync(join(dir, ".estack", "state.db"));
+        try {
+          other.exec("PRAGMA busy_timeout=100");
+          other.prepare("INSERT INTO events (at, actor, kind, task_id, payload_json) VALUES ('t','other','x',NULL,'{}')").run();
+          seen.push("wrote");
+        } catch (x) {
+          seen.push(`blocked: ${(x as Error).message}`);
+        } finally {
+          other.close();
+        }
+        return { code: 0, stdout: JSON.stringify({ url: PR, headRefName: "main" }), stderr: "", timedOut: false, durationMs: 0 };
+      },
+    };
+    const e = openEngine(dir, { exec });
+    const id = start(e, dir).task.id;
+    force(e, id, ["plan", "reuse_check", "implement", "test", "verify", "review"]);
+    const v = done(e, id, "pr", { kind: "pr", url: PR });
+    expect(seen).toEqual(["wrote"]);
+    expect(v.task.status).toBe("done");
+  });
+
+  test("evidence git/gh calls have a 30s timeout and a timeout is BAD_EVIDENCE", () => {
+    const dir = makeRepo();
+    initRepo(dir);
+    const timeouts: (number | undefined)[] = [];
+    const inner = fakeExec({});
+    const exec: Exec = {
+      ...inner,
+      run(file, args, opts) {
+        timeouts.push(opts.timeoutMs);
+        if (file === "gh") return { code: null, stdout: "", stderr: "", timedOut: true, durationMs: 30_000 };
+        return inner.run(file, args, opts);
+      },
+    };
+    const e = openEngine(dir, { exec });
+    const id = toImplement(e, dir);
+    timeouts.length = 0;
+    done(e, id, "implement", { kind: "commit", sha: commit(dir) }, worker);
+    expect(timeouts.length).toBeGreaterThan(0);
+    expect(timeouts.every((t) => t === 30_000)).toBe(true);
+    force(e, id, ["test", "verify", "review"]);
+    const err = code(() => done(e, id, "pr", { kind: "pr", url: PR }));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toBe("gh/git timed out");
   });
 });

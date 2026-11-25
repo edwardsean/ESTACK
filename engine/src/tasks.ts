@@ -95,23 +95,38 @@ function bad(message: string): never {
   throw new EngineError("BAD_EVIDENCE", message);
 }
 
+/** Every git/gh call made to check evidence is bounded. */
+export const EVIDENCE_TIMEOUT_MS = 30_000;
+
+function assertNext(v: TaskView, step: string): void {
+  if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
+  if (!v.next || v.next.name !== step) {
+    throw new EngineError("OUT_OF_ORDER", `step "${step}" is not next; the next step is "${v.next?.name}"`);
+  }
+}
+
+/** Check the evidence (may spawn git/gh, so it runs outside any transaction) and return the payload to store. */
 function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, actor: Actor): Record<string, unknown> {
-  const opts = { cwd: v.task.cwd };
+  const run = (file: string, args: string[]) => {
+    const r = e.exec.run(file, args, { cwd: v.task.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+    if (r.timedOut) bad("gh/git timed out");
+    return r;
+  };
   switch (ev.kind) {
     case "note":
       if (!ev.text || !ev.text.trim()) bad("a note must not be blank");
       return { text: ev.text };
     case "commit": {
       if (!/^[0-9a-fA-F]{4,64}$/.test(ev.sha ?? "")) bad(`not a valid commit sha: ${ev.sha}`);
-      if (e.exec.run("git", ["cat-file", "-e", `${ev.sha}^{commit}`], opts).code !== 0) bad(`commit ${ev.sha} does not exist`);
-      if (e.exec.run("git", ["merge-base", "--is-ancestor", ev.sha, v.task.branch], opts).code !== 0) {
+      if (run("git", ["cat-file", "-e", `${ev.sha}^{commit}`]).code !== 0) bad(`commit ${ev.sha} does not exist`);
+      if (run("git", ["merge-base", "--is-ancestor", ev.sha, v.task.branch]).code !== 0) {
         bad(`commit ${ev.sha} is not on the task branch ${v.task.branch}`);
       }
       return { sha: ev.sha };
     }
     case "pr":
       if (!/^https:\/\/\S+\/pull\/\d+$/.test(ev.url ?? "")) bad(`not a pull request url: ${ev.url}`);
-      if (e.exec.run("gh", ["pr", "view", ev.url, "--json", "url"], opts).code !== 0) bad(`gh could not find the pull request ${ev.url}`);
+      if (run("gh", ["pr", "view", ev.url, "--json", "url"]).code !== 0) bad(`gh could not find the pull request ${ev.url}`);
       return { url: ev.url };
     case "review": {
       if (ev.verdict !== "approve") bad("changes requested");
@@ -125,18 +140,18 @@ function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, 
 }
 
 export function completeStep(e: Engine, input: { task_id: number; step: string; evidence: EvidenceInput; actor: Actor }): TaskView {
+  const v = view(e, input.task_id);
+  assertNext(v, input.step);
+  const required = STEP_EVIDENCE[input.step];
+  if (required === "command") {
+    bad(`step "${input.step}" needs a command result; use run_check, not hand-written evidence`);
+  }
+  if (input.evidence.kind !== required) bad(`step "${input.step}" needs ${required} evidence, got ${input.evidence.kind}`);
+  // Spawning git/gh happens before BEGIN IMMEDIATE so a slow check never holds the write lock.
+  const payload = checkEvidence(e, v, input.step, input.evidence, input.actor);
   return tx(e, () => {
-    const v = view(e, input.task_id);
-    if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
-    if (!v.next || v.next.name !== input.step) {
-      throw new EngineError("OUT_OF_ORDER", `step "${input.step}" is not next; the next step is "${v.next?.name}"`);
-    }
-    const required = STEP_EVIDENCE[input.step];
-    if (required === "command") {
-      bad(`step "${input.step}" needs a command result; use run_check, not hand-written evidence`);
-    }
-    if (input.evidence.kind !== required) bad(`step "${input.step}" needs ${required} evidence, got ${input.evidence.kind}`);
-    const payload = checkEvidence(e, v, input.step, input.evidence, input.actor);
+    // Re-check under the write lock: the task may have moved while the evidence was checked.
+    assertNext(view(e, input.task_id), input.step);
     insertEvidence(e, v.task.id, input.step, required, true, payload, input.actor);
     const closed = finishStep(e, v.task.id, input.step);
     logEvent(e, input.actor, "step_done", v.task.id, { step: input.step, kind: required, closed });

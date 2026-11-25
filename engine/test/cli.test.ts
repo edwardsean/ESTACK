@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { main } from "../src/cli";
 import { openEngine } from "../src/engine";
@@ -71,5 +73,14 @@ describe("cli", () => {
     const r = run(dir, ["bogus"]);
     expect(r.status).toBe(2);
     expect(r.err).toContain("usage");
+  });
+  test("an internal error prints one line with no stack and exits 1", () => {
+    const dir = makeRepo();
+    expect(run(dir, ["init"]).status).toBe(0);
+    for (const f of ["state.db", "state.db-wal", "state.db-shm"]) rmSync(join(dir, ".estack", f), { force: true });
+    mkdirSync(join(dir, ".estack", "state.db"));
+    const r = run(dir, ["status"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/^estack: internal error: [^\n]+\n$/);
   });
 });

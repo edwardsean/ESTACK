@@ -14676,11 +14676,11 @@ var MAX_BUFFER = 64 * 1024 * 1024;
 var realExec = {
   run(file2, args, { cwd, timeoutMs }) {
     const t = Date.now();
-    return toResult(spawnSync(file2, args, { cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER }), t);
+    return toResult(spawnSync(file2, args, { cwd, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_BUFFER }), t);
   },
   shell(command, { cwd, timeoutMs }) {
     const t = Date.now();
-    return toResult(spawnSync("/bin/sh", ["-c", command], { cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER }), t);
+    return toResult(spawnSync("/bin/sh", ["-c", command], { cwd, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_BUFFER }), t);
   }
 };
 
@@ -34617,23 +34617,34 @@ function finishStep(e, task_id, step) {
 function bad(message) {
   throw new EngineError("BAD_EVIDENCE", message);
 }
+var EVIDENCE_TIMEOUT_MS = 3e4;
+function assertNext(v, step) {
+  if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
+  if (!v.next || v.next.name !== step) {
+    throw new EngineError("OUT_OF_ORDER", `step "${step}" is not next; the next step is "${v.next?.name}"`);
+  }
+}
 function checkEvidence(e, v, step, ev, actor) {
-  const opts = { cwd: v.task.cwd };
+  const run = (file2, args) => {
+    const r = e.exec.run(file2, args, { cwd: v.task.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+    if (r.timedOut) bad("gh/git timed out");
+    return r;
+  };
   switch (ev.kind) {
     case "note":
       if (!ev.text || !ev.text.trim()) bad("a note must not be blank");
       return { text: ev.text };
     case "commit": {
       if (!/^[0-9a-fA-F]{4,64}$/.test(ev.sha ?? "")) bad(`not a valid commit sha: ${ev.sha}`);
-      if (e.exec.run("git", ["cat-file", "-e", `${ev.sha}^{commit}`], opts).code !== 0) bad(`commit ${ev.sha} does not exist`);
-      if (e.exec.run("git", ["merge-base", "--is-ancestor", ev.sha, v.task.branch], opts).code !== 0) {
+      if (run("git", ["cat-file", "-e", `${ev.sha}^{commit}`]).code !== 0) bad(`commit ${ev.sha} does not exist`);
+      if (run("git", ["merge-base", "--is-ancestor", ev.sha, v.task.branch]).code !== 0) {
         bad(`commit ${ev.sha} is not on the task branch ${v.task.branch}`);
       }
       return { sha: ev.sha };
     }
     case "pr":
       if (!/^https:\/\/\S+\/pull\/\d+$/.test(ev.url ?? "")) bad(`not a pull request url: ${ev.url}`);
-      if (e.exec.run("gh", ["pr", "view", ev.url, "--json", "url"], opts).code !== 0) bad(`gh could not find the pull request ${ev.url}`);
+      if (run("gh", ["pr", "view", ev.url, "--json", "url"]).code !== 0) bad(`gh could not find the pull request ${ev.url}`);
       return { url: ev.url };
     case "review": {
       if (ev.verdict !== "approve") bad("changes requested");
@@ -34646,18 +34657,16 @@ function checkEvidence(e, v, step, ev, actor) {
   }
 }
 function completeStep(e, input2) {
+  const v = view(e, input2.task_id);
+  assertNext(v, input2.step);
+  const required2 = STEP_EVIDENCE[input2.step];
+  if (required2 === "command") {
+    bad(`step "${input2.step}" needs a command result; use run_check, not hand-written evidence`);
+  }
+  if (input2.evidence.kind !== required2) bad(`step "${input2.step}" needs ${required2} evidence, got ${input2.evidence.kind}`);
+  const payload = checkEvidence(e, v, input2.step, input2.evidence, input2.actor);
   return tx(e, () => {
-    const v = view(e, input2.task_id);
-    if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
-    if (!v.next || v.next.name !== input2.step) {
-      throw new EngineError("OUT_OF_ORDER", `step "${input2.step}" is not next; the next step is "${v.next?.name}"`);
-    }
-    const required2 = STEP_EVIDENCE[input2.step];
-    if (required2 === "command") {
-      bad(`step "${input2.step}" needs a command result; use run_check, not hand-written evidence`);
-    }
-    if (input2.evidence.kind !== required2) bad(`step "${input2.step}" needs ${required2} evidence, got ${input2.evidence.kind}`);
-    const payload = checkEvidence(e, v, input2.step, input2.evidence, input2.actor);
+    assertNext(view(e, input2.task_id), input2.step);
     insertEvidence(e, v.task.id, input2.step, required2, true, payload, input2.actor);
     const closed = finishStep(e, v.task.id, input2.step);
     logEvent(e, input2.actor, "step_done", v.task.id, { step: input2.step, kind: required2, closed });
@@ -44620,7 +44629,9 @@ ${USAGE}`);
 `);
       return 1;
     }
-    throw x;
+    io.err(`estack: internal error: ${x instanceof Error ? x.message : String(x)}
+`);
+    return 1;
   }
 }
 var entry = process.argv[1];

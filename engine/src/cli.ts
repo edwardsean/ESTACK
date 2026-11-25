@@ -128,7 +128,8 @@ export function main(argv: string[], io: Io): number {
       io.err(`estack: ${x.message}\n`);
       return 1;
     }
-    throw x;
+    io.err(`estack: internal error: ${x instanceof Error ? x.message : String(x)}\n`);
+    return 1;
   }
 }
 

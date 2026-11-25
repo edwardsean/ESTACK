@@ -22,10 +22,10 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 export const realExec: Exec = {
   run(file, args, { cwd, timeoutMs }) {
     const t = Date.now();
-    return toResult(spawnSync(file, args, { cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER }), t);
+    return toResult(spawnSync(file, args, { cwd, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_BUFFER }), t);
   },
   shell(command, { cwd, timeoutMs }) {
     const t = Date.now();
-    return toResult(spawnSync("/bin/sh", ["-c", command], { cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER }), t);
+    return toResult(spawnSync("/bin/sh", ["-c", command], { cwd, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_BUFFER }), t);
   },
 };

@@ -55,7 +55,20 @@ describe("runCheck", () => {
     const r = runCheck(e, { task_id: id, step: "test", actor: cto, timeout_ms: 300 });
     expect(r.timed_out).toBe(true);
     expect(r.ok).toBe(false);
-    expect(getTask(e, id).evidence.at(-1)!.payload.timed_out).toBe(true);
+    expect(r.exit_code).toBeNull();
+    const v = getTask(e, id);
+    expect(v.evidence.at(-1)!.payload.timed_out).toBe(true);
+    expect(v.steps.find((s) => s.name === "test")!.status).not.toBe("done");
+  });
+
+  test("a command that ignores SIGTERM is still bounded by the timeout", () => {
+    const { e, id } = setup({ test: "trap '' TERM; sleep 4" });
+    toTest(e, id);
+    const t0 = Date.now();
+    const r = runCheck(e, { task_id: id, step: "test", actor: cto, timeout_ms: 300 });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(r.timed_out).toBe(true);
+    expect(r.ok).toBe(false);
   });
 
   test("the command comes from policy, not the caller", () => {
