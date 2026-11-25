@@ -6,7 +6,13 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["adapters/*.ts", "vitest.config.ts"]
+  "include": [
+    "adapters/*.ts",
+    "vitest.config.ts",
+    "engine/**/*.ts"
+  ]
 }
