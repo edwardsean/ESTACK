@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { main } from "../src/cli";
@@ -82,5 +82,15 @@ describe("cli", () => {
     const r = run(dir, ["status"]);
     expect(r.status).toBe(1);
     expect(r.err).toMatch(/^estack: internal error: [^\n]+\n$/);
+  });
+  test("run exits 0 when the check passes and 3 when it ran but failed", () => {
+    for (const [cmd, status] of [["true", 0], ["exit 4", 3]] as const) {
+      const { dir, e, id } = setup();
+      const p = join(dir, ".estack", "policy.yaml");
+      writeFileSync(p, readFileSync(p, "utf8").replace(/^ {2}test:.*$/m, `  test: "${cmd}"`));
+      for (const s of ["plan", "reuse_check", "implement"]) e.db.prepare("UPDATE steps SET status='done' WHERE task_id=? AND name=?").run(id, s);
+      const r = run(dir, ["run", "--task", String(id), "--step", "test"]);
+      expect(r.status, r.err).toBe(status);
+    }
   });
 });

@@ -12,7 +12,7 @@ const PR = "https://github.com/o/r/pull/1";
 const A = { session_id: "s1", agent_id: "A" };
 const B = { session_id: "s1", agent_id: "B" };
 
-async function connect(cwd: string, gh: Record<string, { code: number }> = {}) {
+async function connect(cwd: string, gh: Record<string, { code: number; stdout?: string }> = {}) {
   const server = createServer(cwd, { exec: fakeExec(gh) });
   const client = new Client({ name: "test", version: "0" });
   const [ct, st] = InMemoryTransport.createLinkedPair();
@@ -49,7 +49,7 @@ describe("mcp server", () => {
 
   test("drives a feature task end to end", async () => {
     const dir = initedRepo();
-    const { call } = await connect(dir, { [`pr view ${PR} --json url`]: { code: 0 } });
+    const { call } = await connect(dir, { [`pr view ${PR} --json headRefName`]: { code: 0, stdout: '{"headRefName":"main"}' } });
     const started = await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", actor: A });
     expect(started.isError).toBe(false);
     const id = JSON.parse(started.text).task.id;

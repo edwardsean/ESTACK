@@ -10,8 +10,8 @@ CREATE TABLE tasks (
   base_sha TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE TABLE task_bindings (
-  task_id INTEGER NOT NULL REFERENCES tasks(id), actor TEXT NOT NULL, role TEXT NOT NULL,
-  bound_at TEXT NOT NULL
+  task_id INTEGER NOT NULL REFERENCES tasks(id), session_id TEXT NOT NULL, agent_id TEXT,
+  role TEXT NOT NULL, bound_at TEXT NOT NULL
 );
 CREATE TABLE steps (
   task_id INTEGER NOT NULL REFERENCES tasks(id), name TEXT NOT NULL, ordinal INTEGER NOT NULL,

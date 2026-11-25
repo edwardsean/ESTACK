@@ -6,15 +6,17 @@ import { openEngine, type Engine } from "../src/engine";
 import { initRepo } from "../src/policy";
 import { completeStep, getTask, startTask, type EvidenceInput } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
-import type { Exec } from "../src/exec";
+import type { Exec, ExecResult } from "../src/exec";
 import { fakeExec, makeRepo } from "./helpers";
 
 const cto: Actor = { session_id: "s1" };
 const worker: Actor = { session_id: "s1", agent_id: "w1" };
 const reviewer: Actor = { session_id: "s1", agent_id: "r1" };
 const PR = "https://github.com/o/r/pull/1";
+const PR_KEY = `pr view ${PR} --json headRefName`;
+const prOn = (branch: string) => ({ code: 0, stdout: JSON.stringify({ headRefName: branch }) });
 
-function setup(gh: Record<string, { code: number }> = {}) {
+function setup(gh: Record<string, Partial<ExecResult>> = {}) {
   const dir = makeRepo();
   initRepo(dir);
   const e = openEngine(dir, { exec: fakeExec(gh) });
@@ -50,8 +52,11 @@ describe("tasks", () => {
     expect(t.steps.map((s) => s.name)).toEqual(e.policy.task_types.feature);
     expect(t.next?.name).toBe("plan");
     expect(t.task.branch).toBe("main");
-    const rows = e.db.prepare("SELECT role FROM task_bindings").all() as { role: string }[];
-    expect(rows).toEqual([{ role: "cto" }]);
+    const rows = e.db.prepare("SELECT session_id, agent_id, role FROM task_bindings").all();
+    expect(rows).toEqual([{ session_id: "s1", agent_id: null, role: "cto" }]);
+    startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: worker, cwd: dir });
+    const w = e.db.prepare("SELECT session_id, agent_id, role FROM task_bindings WHERE agent_id = ?").all("w1");
+    expect(w).toEqual([{ session_id: "s1", agent_id: "w1", role: "worker" }]);
   });
 
   test("an unknown task type is POLICY_INVALID", () => {
@@ -114,12 +119,12 @@ describe("tasks", () => {
   });
 
   test("a pr is accepted only when gh pr view succeeds", () => {
-    const key = `pr view ${PR} --json url`;
+    const key = PR_KEY;
     const bad = setup({ [key]: { code: 1 } });
     let id = start(bad.e, bad.dir).task.id;
     force(bad.e, id, ["plan", "reuse_check", "implement", "test", "verify", "review"]);
     expect(code(() => done(bad.e, id, "pr", { kind: "pr", url: PR })).code).toBe("BAD_EVIDENCE");
-    const good = setup({ [key]: { code: 0 } });
+    const good = setup({ [key]: prOn("main") });
     id = start(good.e, good.dir).task.id;
     force(good.e, id, ["plan", "reuse_check", "implement", "test", "verify", "review"]);
     const v = done(good.e, id, "pr", { kind: "pr", url: PR });
@@ -276,5 +281,31 @@ describe("tasks", () => {
       const err = code(() => startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, branch }));
       expect(err.code).toBe("POLICY_INVALID");
     }
+  });
+  test("a pr for a different branch than the task's is BAD_EVIDENCE", () => {
+    const { dir, e } = setup({ [PR_KEY]: prOn("other") });
+    const id = start(e, dir).task.id;
+    force(e, id, ["plan", "reuse_check", "implement", "test", "verify", "review"]);
+    const err = code(() => done(e, id, "pr", { kind: "pr", url: PR }));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toBe("PR is for branch other, task is on main");
+  });
+
+  test("a review from the default unknown actor is BAD_EVIDENCE", () => {
+    const { e, id } = toReview();
+    const err = code(() => done(e, id, "review", { kind: "review", verdict: "approve", findings: "" }, { session_id: "unknown" }));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toBe("review needs a reviewer identity");
+  });
+
+  test("a changes verdict is recorded as failed evidence and the step stays open", () => {
+    const { e, id } = toReview();
+    const err = code(() => done(e, id, "review", { kind: "review", verdict: "changes", findings: "fix x" }, reviewer));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toBe("changes requested");
+    const v = getTask(e, id);
+    const row = v.evidence.at(-1)!;
+    expect(row).toMatchObject({ step: "review", kind: "review", ok: false, payload: { verdict: "changes", findings: "fix x" } });
+    expect(v.next?.name).toBe("review");
   });
 });

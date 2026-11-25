@@ -14609,8 +14609,8 @@ CREATE TABLE tasks (
   base_sha TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE TABLE task_bindings (
-  task_id INTEGER NOT NULL REFERENCES tasks(id), actor TEXT NOT NULL, role TEXT NOT NULL,
-  bound_at TEXT NOT NULL
+  task_id INTEGER NOT NULL REFERENCES tasks(id), session_id TEXT NOT NULL, agent_id TEXT,
+  role TEXT NOT NULL, bound_at TEXT NOT NULL
 );
 CREATE TABLE steps (
   task_id INTEGER NOT NULL REFERENCES tasks(id), name TEXT NOT NULL, ordinal INTEGER NOT NULL,
@@ -34459,7 +34459,7 @@ var PolicySchema = external_exports.object({
   patterns: external_exports.record(external_exports.string(), strings).default({}),
   task_types: external_exports.record(external_exports.string(), strings.superRefine((steps, ctx) => {
     for (const s of steps) {
-      if (!(s in STEP_EVIDENCE)) ctx.addIssue({ code: "custom", message: `unknown step "${s}"` });
+      if (!Object.hasOwn(STEP_EVIDENCE, s)) ctx.addIssue({ code: "custom", message: `unknown step "${s}"` });
     }
   })),
   protected_paths: strings.default([]),
@@ -34611,7 +34611,7 @@ function startTask(e, input2) {
     ).run(input2.title, input2.type, input2.goal, input2.done_check, branch, cwd, base_sha, by, now);
     const id = Number(r.lastInsertRowid);
     steps.forEach((name, i) => e.db.prepare("INSERT INTO steps (task_id, name, ordinal, status) VALUES (?, ?, ?, 'pending')").run(id, name, i));
-    e.db.prepare("INSERT INTO task_bindings (task_id, actor, role, bound_at) VALUES (?, ?, ?, ?)").run(id, by, input2.actor.agent_id ? "worker" : "cto", now);
+    e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(id, input2.actor.session_id, input2.actor.agent_id ?? null, input2.actor.agent_id ? "worker" : "cto", now);
     logEvent(e, input2.actor, "task_started", id, { type: input2.type, title: input2.title, branch });
     return view(e, id);
   });
@@ -34642,7 +34642,7 @@ function checkEvidence(e, v, step, ev, actor) {
   switch (ev.kind) {
     case "note":
       if (!ev.text || !ev.text.trim()) bad("a note must not be blank");
-      return { text: ev.text };
+      return { payload: { text: ev.text } };
     case "commit": {
       if (!/^[0-9a-fA-F]{4,64}$/.test(ev.sha ?? "")) bad(`not a valid commit sha: ${ev.sha}`);
       const found = run("git", ["rev-parse", "--verify", "--quiet", `${ev.sha}^{commit}`]);
@@ -34654,17 +34654,29 @@ function checkEvidence(e, v, step, ev, actor) {
       const old = run("git", ["merge-base", "--is-ancestor", sha, v.task.base_sha]).code;
       if (old === 0) bad(`commit predates the task: ${ev.sha} is already in its base ${v.task.base_sha}`);
       if (old !== 1) bad(`git could not compare commit ${ev.sha} with the task's base ${v.task.base_sha}`);
-      return { sha };
+      return { payload: { sha } };
     }
-    case "pr":
+    case "pr": {
       if (!/^https:\/\/\S+\/pull\/\d+$/.test(ev.url ?? "")) bad(`not a pull request url: ${ev.url}`);
-      if (run("gh", ["pr", "view", ev.url, "--json", "url"]).code !== 0) bad(`gh could not find the pull request ${ev.url}`);
-      return { url: ev.url };
+      const r = run("gh", ["pr", "view", ev.url, "--json", "headRefName"]);
+      if (r.code !== 0) bad(`gh could not find the pull request ${ev.url}`);
+      let head;
+      try {
+        head = JSON.parse(r.stdout).headRefName;
+      } catch {
+        head = void 0;
+      }
+      if (typeof head !== "string") bad(`gh returned no head branch for ${ev.url}`);
+      if (head !== v.task.branch) bad(`PR is for branch ${head}, task is on ${v.task.branch}`);
+      return { payload: { url: ev.url, head_ref: head } };
+    }
     case "review": {
-      if (ev.verdict !== "approve") bad("changes requested");
+      if (actor.session_id === "unknown" && actor.agent_id === void 0) bad("review needs a reviewer identity");
       const author = v.evidence.filter((x) => x.kind === "commit" && x.ok).at(-1)?.recorded_by;
       if (author === actorId(actor)) bad("a review must come from a different agent than the author");
-      return { verdict: ev.verdict, findings: ev.findings };
+      const payload = { verdict: ev.verdict, findings: ev.findings };
+      if (ev.verdict !== "approve") return { payload, rejected: "changes requested" };
+      return { payload };
     }
     default:
       return bad(`unsupported evidence kind for step ${step}`);
@@ -34678,14 +34690,20 @@ function completeStep(e, input2) {
     bad(`step "${input2.step}" needs a command result; use run_check, not hand-written evidence`);
   }
   if (input2.evidence.kind !== required2) bad(`step "${input2.step}" needs ${required2} evidence, got ${input2.evidence.kind}`);
-  const payload = checkEvidence(e, v, input2.step, input2.evidence, input2.actor);
-  return tx(e, () => {
+  const { payload, rejected } = checkEvidence(e, v, input2.step, input2.evidence, input2.actor);
+  const result = tx(e, () => {
     assertNext(view(e, input2.task_id), input2.step);
-    insertEvidence(e, v.task.id, input2.step, required2, true, payload, input2.actor);
+    insertEvidence(e, v.task.id, input2.step, required2, !rejected, payload, input2.actor);
+    if (rejected) {
+      logEvent(e, input2.actor, "evidence", v.task.id, { step: input2.step, kind: required2, ok: false });
+      return null;
+    }
     const closed = finishStep(e, v.task.id, input2.step);
     logEvent(e, input2.actor, "step_done", v.task.id, { step: input2.step, kind: required2, closed });
     return view(e, v.task.id);
   });
+  if (!result) return bad(rejected ?? "evidence rejected");
+  return result;
 }
 
 // engine/src/checks.ts
@@ -44594,7 +44612,7 @@ function dispatch(cmd, rest, io) {
       io.out(`${r.ok ? "ok" : "failed"} (exit ${r.exit_code ?? "none"}${r.timed_out ? ", timed out" : ""}, ${r.duration_ms}ms)
 `);
       if (r.output_tail) io.out(r.output_tail.endsWith("\n") ? r.output_tail : r.output_tail + "\n");
-      return r.ok ? 0 : 1;
+      return r.ok ? 0 : 3;
     }
     case "skip": {
       const { opt } = parse4(rest, ["task", "step", "reason"]);

@@ -78,7 +78,7 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       const r = runCheck(openEngine(io.cwd), { task_id, step, actor: CLI_ACTOR, timeout_ms });
       io.out(`${r.ok ? "ok" : "failed"} (exit ${r.exit_code ?? "none"}${r.timed_out ? ", timed out" : ""}, ${r.duration_ms}ms)\n`);
       if (r.output_tail) io.out(r.output_tail.endsWith("\n") ? r.output_tail : r.output_tail + "\n");
-      return r.ok ? 0 : 1;
+      return r.ok ? 0 : 3;
     }
     case "skip": {
       const { opt } = parse(rest, ["task", "step", "reason"]);

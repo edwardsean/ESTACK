@@ -21,7 +21,7 @@ const PolicySchema = z.object({
   patterns: z.record(z.string(), strings).default({}),
   task_types: z.record(z.string(), strings.superRefine((steps, ctx) => {
     for (const s of steps) {
-      if (!(s in STEP_EVIDENCE)) ctx.addIssue({ code: "custom", message: `unknown step "${s}"` });
+      if (!Object.hasOwn(STEP_EVIDENCE, s)) ctx.addIssue({ code: "custom", message: `unknown step "${s}"` });
     }
   })),
   protected_paths: strings.default([]),

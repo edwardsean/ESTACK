@@ -58,6 +58,13 @@ test("a task type naming an unknown step is POLICY_INVALID", () => {
   expect(e.message).toContain("dance");
 });
 
+test("a task type naming an inherited property such as toString is POLICY_INVALID", () => {
+  const yaml = DEFAULT_POLICY_YAML.replace(/^task_types:\n(?:  .*\n)+/m, 'task_types:\n  x: [plan, toString]\n');
+  const e = codeOf(() => parsePolicy(yaml));
+  expect(e.code).toBe("POLICY_INVALID");
+  expect(e.message).toContain("toString");
+});
+
 test("openDb twice is idempotent and sets WAL", () => {
   const path = join(mkdtempSync(join(tmpdir(), "estack-db-")), "state.db");
   openDb(path).close();

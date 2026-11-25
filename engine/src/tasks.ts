@@ -86,8 +86,8 @@ export function startTask(e: Engine, input: {
     const id = Number(r.lastInsertRowid);
     steps.forEach((name, i) =>
       e.db.prepare("INSERT INTO steps (task_id, name, ordinal, status) VALUES (?, ?, ?, 'pending')").run(id, name, i));
-    e.db.prepare("INSERT INTO task_bindings (task_id, actor, role, bound_at) VALUES (?, ?, ?, ?)")
-      .run(id, by, input.actor.agent_id ? "worker" : "cto", now);
+    e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)")
+      .run(id, input.actor.session_id, input.actor.agent_id ?? null, input.actor.agent_id ? "worker" : "cto", now);
     logEvent(e, input.actor, "task_started", id, { type: input.type, title: input.title, branch });
     return view(e, id);
   });
@@ -121,13 +121,19 @@ function assertNext(v: TaskView, step: string): void {
   }
 }
 
-/** Check the evidence (may spawn git/gh, so it runs outside any transaction) and return the payload to store. */
-function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, actor: Actor): Record<string, unknown> {
+interface Checked { payload: Record<string, unknown>; rejected?: string }
+
+/**
+ * Check the evidence (may spawn git/gh, so it runs outside any transaction) and return the payload to store.
+ * Invalid evidence throws; evidence that is valid but does not pass the step (a "changes" review) is returned
+ * with `rejected` so it is recorded as failed.
+ */
+function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, actor: Actor): Checked {
   const run = (file: string, args: string[]) => runBounded(e, v.task.cwd, file, args);
   switch (ev.kind) {
     case "note":
       if (!ev.text || !ev.text.trim()) bad("a note must not be blank");
-      return { text: ev.text };
+      return { payload: { text: ev.text } };
     case "commit": {
       if (!/^[0-9a-fA-F]{4,64}$/.test(ev.sha ?? "")) bad(`not a valid commit sha: ${ev.sha}`);
       const found = run("git", ["rev-parse", "--verify", "--quiet", `${ev.sha}^{commit}`]);
@@ -140,17 +146,25 @@ function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, 
       const old = run("git", ["merge-base", "--is-ancestor", sha, v.task.base_sha]).code;
       if (old === 0) bad(`commit predates the task: ${ev.sha} is already in its base ${v.task.base_sha}`);
       if (old !== 1) bad(`git could not compare commit ${ev.sha} with the task's base ${v.task.base_sha}`);
-      return { sha };
+      return { payload: { sha } };
     }
-    case "pr":
+    case "pr": {
       if (!/^https:\/\/\S+\/pull\/\d+$/.test(ev.url ?? "")) bad(`not a pull request url: ${ev.url}`);
-      if (run("gh", ["pr", "view", ev.url, "--json", "url"]).code !== 0) bad(`gh could not find the pull request ${ev.url}`);
-      return { url: ev.url };
+      const r = run("gh", ["pr", "view", ev.url, "--json", "headRefName"]);
+      if (r.code !== 0) bad(`gh could not find the pull request ${ev.url}`);
+      let head: unknown;
+      try { head = (JSON.parse(r.stdout) as { headRefName?: unknown }).headRefName; } catch { head = undefined; }
+      if (typeof head !== "string") bad(`gh returned no head branch for ${ev.url}`);
+      if (head !== v.task.branch) bad(`PR is for branch ${head}, task is on ${v.task.branch}`);
+      return { payload: { url: ev.url, head_ref: head } };
+    }
     case "review": {
-      if (ev.verdict !== "approve") bad("changes requested");
+      if (actor.session_id === "unknown" && actor.agent_id === undefined) bad("review needs a reviewer identity");
       const author = v.evidence.filter((x) => x.kind === "commit" && x.ok).at(-1)?.recorded_by;
       if (author === actorId(actor)) bad("a review must come from a different agent than the author");
-      return { verdict: ev.verdict, findings: ev.findings };
+      const payload = { verdict: ev.verdict, findings: ev.findings };
+      if (ev.verdict !== "approve") return { payload, rejected: "changes requested" };
+      return { payload };
     }
     default:
       return bad(`unsupported evidence kind for step ${step}`);
@@ -166,32 +180,19 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
   }
   if (input.evidence.kind !== required) bad(`step "${input.step}" needs ${required} evidence, got ${input.evidence.kind}`);
   // Spawning git/gh happens before BEGIN IMMEDIATE so a slow check never holds the write lock.
-  const payload = checkEvidence(e, v, input.step, input.evidence, input.actor);
-  return tx(e, () => {
+  const { payload, rejected } = checkEvidence(e, v, input.step, input.evidence, input.actor);
+  const result = tx(e, () => {
     // Re-check under the write lock: the task may have moved while the evidence was checked.
     assertNext(view(e, input.task_id), input.step);
-    insertEvidence(e, v.task.id, input.step, required, true, payload, input.actor);
+    insertEvidence(e, v.task.id, input.step, required, !rejected, payload, input.actor);
+    if (rejected) {
+      logEvent(e, input.actor, "evidence", v.task.id, { step: input.step, kind: required, ok: false });
+      return null;
+    }
     const closed = finishStep(e, v.task.id, input.step);
     logEvent(e, input.actor, "step_done", v.task.id, { step: input.step, kind: required, closed });
     return view(e, v.task.id);
   });
-}
-
-/** Store evidence from an engine-run check (not the agent's words) and log it. */
-export function recordEvidence(e: Engine, input: {
-  task_id: number; step: string; kind: EvidenceKind; ok: boolean; payload: Record<string, unknown>; actor: Actor;
-}): void {
-  tx(e, () => {
-    insertEvidence(e, input.task_id, input.step, input.kind, input.ok, input.payload, input.actor);
-    logEvent(e, input.actor, "evidence", input.task_id, { step: input.step, kind: input.kind, ok: input.ok });
-  });
-}
-
-/** Mark a step done (after its check passed); closes the task after its last step. */
-export function markStepDone(e: Engine, task_id: number, step: string, actor: Actor): TaskView {
-  return tx(e, () => {
-    const closed = finishStep(e, task_id, step);
-    logEvent(e, actor, "step_done", task_id, { step, closed });
-    return view(e, task_id);
-  });
+  if (!result) return bad(rejected ?? "evidence rejected");
+  return result;
 }
