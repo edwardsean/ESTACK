@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "estack": {
+      "command": "node",
+      "args": ["--no-warnings", "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs", "mcp"]
+    }
+  }
+}

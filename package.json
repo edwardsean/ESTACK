@@ -2,6 +2,9 @@
   "name": "estack",
   "private": true,
   "type": "module",
+  "bin": {
+    "estack": "adapters/claude-code/engine/estack.mjs"
+  },
   "engines": {
     "node": ">=22.5"
   },

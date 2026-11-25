@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { Engine } from "./engine";
 import { openEngine } from "./engine";
 import { runCheck } from "./checks";
@@ -128,4 +130,14 @@ export function main(argv: string[], io: Io): number {
     }
     throw x;
   }
+}
+
+const entry = process.argv[1];
+if (entry && realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))) {
+  process.exitCode = main(process.argv.slice(2), {
+    cwd: process.cwd(),
+    env: process.env,
+    out: (s) => process.stdout.write(s),
+    err: (s) => process.stderr.write(s),
+  });
 }
