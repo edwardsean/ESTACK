@@ -123,6 +123,26 @@ describe("tasks", () => {
     expect(v.task.status).toBe("done");
   });
 
+  test("a pr url that could be a gh option or is not a pull request url is BAD_EVIDENCE and gh is not called", () => {
+    const dir = makeRepo();
+    initRepo(dir);
+    const calls: string[][] = [];
+    const inner = fakeExec({});
+    const e = openEngine(dir, { exec: { ...inner, run: (f, a, o) => { if (f === "gh") calls.push(a); return inner.run(f, a, o); } } });
+    const id = start(e, dir).task.id;
+    force(e, id, ["plan", "reuse_check", "implement", "test", "verify", "review"]);
+    for (const url of ["--help", "--web", "https://github.com/o/r/issues/1", "http://github.com/o/r/pull/1", "https://github.com/o/r/pull/x"]) {
+      expect(code(() => done(e, id, "pr", { kind: "pr", url })).code).toBe("BAD_EVIDENCE");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test("a branch name starting with a dash is refused at startTask", () => {
+    const { dir, e } = setup();
+    const err = code(() => startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, branch: "--orphan" }));
+    expect(err.code).toBe("POLICY_INVALID");
+  });
+
   function toReview() {
     const { dir, e } = setup();
     const id = toImplement(e, dir);

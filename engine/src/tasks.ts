@@ -54,6 +54,7 @@ export function startTask(e: Engine, input: {
 }): TaskView {
   const steps = e.policy.task_types[input.type];
   if (!steps) throw new EngineError("POLICY_INVALID", `unknown task type "${input.type}"`);
+  if (input.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input.branch}`);
   const cwd = input.cwd ?? e.repo.root;
   const branch = input.branch
     ?? (e.exec.run("git", ["branch", "--show-current"], { cwd }).stdout.trim() || "HEAD");
@@ -109,6 +110,7 @@ function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, 
       return { sha: ev.sha };
     }
     case "pr":
+      if (!/^https:\/\/\S+\/pull\/\d+$/.test(ev.url ?? "")) bad(`not a pull request url: ${ev.url}`);
       if (e.exec.run("gh", ["pr", "view", ev.url, "--json", "url"], opts).code !== 0) bad(`gh could not find the pull request ${ev.url}`);
       return { url: ev.url };
     case "review": {
