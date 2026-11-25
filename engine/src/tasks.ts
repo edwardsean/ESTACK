@@ -12,7 +12,7 @@ export interface TaskView { task: Task; steps: Step[]; next: Step | null; eviden
 const iso = (e: Engine) => e.now().toISOString();
 
 /** Run fn in one transaction. */
-function tx<T>(e: Engine, fn: () => T): T {
+export function tx<T>(e: Engine, fn: () => T): T {
   e.db.exec("BEGIN IMMEDIATE");
   try {
     const r = fn();
@@ -24,7 +24,7 @@ function tx<T>(e: Engine, fn: () => T): T {
   }
 }
 
-function logEvent(e: Engine, actor: Actor, kind: string, task_id: number | null, payload: unknown): void {
+export function logEvent(e: Engine, actor: Actor, kind: string, task_id: number | null, payload: unknown): void {
   e.db.prepare("INSERT INTO events (at, actor, kind, task_id, payload_json) VALUES (?, ?, ?, ?, ?)")
     .run(iso(e), actorId(actor), kind, task_id, JSON.stringify(payload));
 }
@@ -74,7 +74,7 @@ export function startTask(e: Engine, input: {
   });
 }
 
-function insertEvidence(e: Engine, task_id: number, step: string, kind: EvidenceKind, ok: boolean,
+export function insertEvidence(e: Engine, task_id: number, step: string, kind: EvidenceKind, ok: boolean,
   payload: Record<string, unknown>, actor: Actor): void {
   e.db.prepare(
     "INSERT INTO evidence (task_id, step, kind, ok, payload_json, recorded_by, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -82,7 +82,7 @@ function insertEvidence(e: Engine, task_id: number, step: string, kind: Evidence
 }
 
 /** Mark the step done; close the task if it was the last one. Returns whether the task closed. */
-function finishStep(e: Engine, task_id: number, step: string): boolean {
+export function finishStep(e: Engine, task_id: number, step: string): boolean {
   e.db.prepare("UPDATE steps SET status = 'done', done_at = ? WHERE task_id = ? AND name = ?").run(iso(e), task_id, step);
   const left = e.db.prepare("SELECT COUNT(*) c FROM steps WHERE task_id = ? AND status NOT IN ('done','skipped')")
     .get(task_id) as { c: number };
