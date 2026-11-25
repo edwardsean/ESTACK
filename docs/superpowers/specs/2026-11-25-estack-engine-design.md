@@ -419,7 +419,7 @@ Each phase is usable on its own and ends in a check.
 
 | # | Phase | Done when |
 |---|---|---|
-| 1 | Restructure into `core/` + generated `adapters/claude-code/`, and **rename the plugin `pstack` → `estack`** (owner's decision): `/estack:<skill>`, seats `estack:<seat>`, `~/.claude/rules/estack-models.md`, marketplace `estack` | Generated plugin passes the selftest (updated for the new name); behaviour otherwise unchanged. `/estack:setup` replaces `/pstack:setup-enterprise`; existing `.claude/enterprise/gates.json` is not read any more, repos re-run setup |
+| 1 | Restructure into `core/` + generated `adapters/claude-code/`, and **rename the plugin `pstack` → `estack`** (owner's decision): `/estack:<skill>`, seats `estack:<seat>`, `~/.claude/rules/estack-models.md`, marketplace `estack` | Generated plugin passes the selftest (updated for the new name); behaviour otherwise unchanged. `/estack:setup` replaces `/pstack:setup-enterprise`; the gates keep reading `.claude/enterprise/gates.json` until phase 3 moves them to `.estack/policy.yaml` |
 | 2 | Engine core: tasks, steps, evidence (incl. `estack run`), approvals, events; MCP server + CLI; `/estack:setup` | Tests cover the step state machine and evidence rules; a task can be driven end to end through MCP tools |
 | 3 | Claude Code hooks + git hooks wired to the engine, replacing the current gate scripts | Recorded-event tests (like today's `test-gates.py`) for every row of the hook table; a live session check that an edit with no task is denied |
 | 4 | Handover | A task interrupted mid-run is resumed in a fresh session from the handover alone |
