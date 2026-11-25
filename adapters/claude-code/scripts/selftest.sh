@@ -7,10 +7,9 @@
 # quietly passes.
 #
 # Usage:
-#   scripts/selftest.sh             static checks, gate tests, hook smoke test,
-#                                   plus `claude plugin validate` when present
-#   scripts/selftest.sh --rebuild   also re-run the lever twice and prove the
-#                                   second run changes nothing
+#   scripts/selftest.sh   static checks, gate tests, hook smoke test,
+#                         `claude plugin validate` and the generator check
+#                         when their tools are present
 #
 # Never installs the plugin and never touches ~/.claude. Exit status is 0 when
 # every check passed, 1 when any failed, and 2 on a bad argument.
@@ -20,11 +19,9 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-REBUILD=0
 for arg in "$@"; do
   case "$arg" in
-    --rebuild) REBUILD=1 ;;
-    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -89,24 +86,16 @@ else
   skip "claude CLI not on PATH"
 fi
 
-if [ "$REBUILD" = 1 ]; then
-  section "5. lever re-run is idempotent (scripts/port-from-qoder.py twice)"
-  if python3 scripts/port-from-qoder.py >/dev/null && \
-     second="$(python3 scripts/port-from-qoder.py | grep '^summary:')"; then
-    echo "  $second"
-    case "$second" in
-      *"written=0 "*"gate_failures=0"*) pass "second run wrote nothing and the gate is clean" ;;
-      *) fail "second run was not a no-op: $second" ;;
-    esac
-  else
-    fail "the lever exited non-zero"
-  fi
-  if [ -d .git ] && [ -n "$(git status --porcelain)" ]; then
-    git status --short | head -20
-    fail "working tree differs from the last commit after the rebuild"
-  elif [ -d .git ]; then
-    pass "git status is clean after the rebuild"
-  fi
+section "5. generated plugin matches core/ (npm run check:claude)"
+REPO="$(cd "$ROOT/../.." && pwd)"
+if [ ! -f "$REPO/package.json" ]; then
+  skip "no estack repository root above this folder"
+elif ! command -v npm >/dev/null 2>&1; then
+  skip "npm not on PATH"
+elif (cd "$REPO" && npm run --silent check:claude); then
+  pass "adapters/claude-code is exactly what core/ generates"
+else
+  fail "adapters/claude-code differs from core/; run npm run build:claude"
 fi
 
 printf '\npassed %d, failed %d, skipped %d\n' "$PASSED" "$FAILED" "$SKIPPED"

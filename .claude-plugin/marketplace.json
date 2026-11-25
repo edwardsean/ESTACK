@@ -1,15 +1,15 @@
 {
   "name": "estack",
-  "description": "estack: pstack by Lauren Tan for Claude Code, with an enterprise SDLC layer.",
+  "description": "estack: an agentic engineering harness for Claude Code, built on pstack by Lauren Tan.",
   "owner": {
     "name": "Edward Alexander"
   },
   "plugins": [
     {
-      "name": "pstack",
-      "source": "./pstack-claude",
-      "description": "Rigorous agent workflows from pstack by Lauren Tan, with an opt-in enterprise layer of specialist seats, playbooks, and approval-gate hooks.",
-      "version": "0.15.43",
+      "name": "estack",
+      "source": "./adapters/claude-code",
+      "description": "Rigorous agent workflows built on pstack by Lauren Tan, with an opt-in enterprise layer of specialist seats, playbooks, and approval-gate hooks.",
+      "version": "0.1.0",
       "author": {
         "name": "Lauren Tan"
       }

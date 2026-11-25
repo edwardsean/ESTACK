@@ -15,7 +15,6 @@ Usage:
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 import sys
@@ -157,7 +156,11 @@ def check_manifest() -> None:
         if (PLUGIN_ROOT / qoder_only).exists():
             fail("manifest", f"{qoder_only}/ is a Qoder component directory and must not ship")
 
-    market_path = PLUGIN_ROOT / ".claude-plugin" / "marketplace.json"
+    # The marketplace lives at the estack repository root, two levels up.
+    market_path = PLUGIN_ROOT.parent.parent / ".claude-plugin" / "marketplace.json"
+    if not market_path.is_file():
+        print("marketplace  skipped: no estack repository root above this folder")
+        return
     try:
         market = json.loads(market_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -166,11 +169,13 @@ def check_manifest() -> None:
     for key in ("name", "owner", "plugins"):
         if key not in market:
             fail("marketplace", f"marketplace.json lacks required {key!r}")
+    if market.get("name") != "estack":
+        fail("marketplace", "the root marketplace must be named estack")
     entries = [p for p in market.get("plugins", []) if p.get("name") == manifest.get("name")]
     if len(entries) != 1:
         fail("marketplace", "marketplace.json must list exactly one entry named like plugin.json")
-    elif entries[0].get("source") != "./":
-        fail("marketplace", "the estack entry's source must be ./ (the plugin is the marketplace root)")
+    elif entries[0].get("source") != "./adapters/claude-code":
+        fail("marketplace", "the estack entry's source must be ./adapters/claude-code")
     elif entries[0].get("version") not in (None, manifest.get("version")):
         fail("marketplace", "marketplace entry version disagrees with plugin.json")
     print(f"manifest     estack {manifest.get('version')}, marketplace {market.get('name')}")
@@ -400,15 +405,30 @@ def check_hooks() -> None:
 
 
 def check_gate() -> None:
-    """Reuse the lever's own gate, so the two checks cannot drift apart."""
-    spec = importlib.util.spec_from_file_location("port_lever", SCRIPTS / "port-from-qoder.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.path.insert(0, str(SCRIPTS))
+    import content_gate
+
     failures: list[str] = []
-    module.gate_tree(failures)
+    content_gate.gate_tree(PLUGIN_ROOT, failures)
     for failure in failures:
         fail("gate", failure)
     print(f"gate         {'clean' if not failures else str(len(failures)) + ' failures'}")
+
+
+# Built from pieces so this file does not trip its own check.
+OLD_NAMES_RE = re.compile("|".join(["p" + "stack:", "p" + "stack-models", "setup-p" + "stack", "setup-" + "enterprise"]))
+
+
+def check_no_old_names() -> None:
+    count = 0
+    for path in sorted(PLUGIN_ROOT.rglob("*")):
+        if ".git" in path.parts or not path.is_file() or path.suffix not in {".md", ".json", ".sh", ".py", ".ts"}:
+            continue
+        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if OLD_NAMES_RE.search(line):
+                count += 1
+                fail("names", f"{path.relative_to(PLUGIN_ROOT)}:{line_no}: old plugin name -> {line.strip()[:80]!r}")
+    print(f"names        {'no old plugin names' if not count else str(count) + ' old names'}")
 
 
 def check_junk() -> None:
@@ -431,6 +451,7 @@ def main() -> int:
     check_workflow(agents)
     check_hooks()
     check_gate()
+    check_no_old_names()
     check_junk()
     print()
     for item in WARNINGS:
