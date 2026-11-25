@@ -1,0 +1,13 @@
+### Autonomous run
+
+**You own the exit condition. Define done, then drive to it without stopping.**
+
+1. State the exit condition as a checkable predicate before the first iteration (tests green, repro fixed, all N PRs merged, pixel-diff zero).
+2. Pick the wake mechanism using Claude Code's `/loop` command (a built-in, not a estack skill). An event to watch (CI, a merge, a ref advancing) gets a watcher subagent on the `{{estack:ns}}:estack-verifier` seat that polls until the event fires and returns, and its completion notification wakes you, with a long time-based `/loop` heartbeat as fallback. No event gets a fixed-interval `/loop` heartbeat sized to when the result is worth re-checking. Name the seat, and pass its `model` and `effort` from `{{estack:models_file}}`. A loop lives in this session, so when the session will close before the predicate is met, stop and write a resume note per `pause-safely.md` so the next invocation continues rather than restarts.
+3. Each iteration makes the smallest change the evidence justifies, verifies it against the predicate, commits if it advanced, discards changes that didn't help. Belt-and-suspenders that "might help" gets reverted, not left to ride.
+   Sequence the work via the **sequence-verifiable-units** principle skill, verifying each unit before the next instead of batching checks at the end.
+4. Mid-run discoveries that support the goal are yours. Address broken skills, related bugs, flaky verifiers, review noise, tooling failures, orphaned follow-ups, and fixable drift yourself via poteto-mode. Put out-of-band fixes in their own PR. Do not park reversible work for the human or use `AskUserQuestion`. Surface only irreversible actions, genuine product or preference calls no experiment can settle, or a real dead end. Keep the predicate as the main drive, and return to it after each side fix.
+5. Checkpoint every iteration via the **show-me-your-work** skill, a row for what changed and whether the predicate moved.
+6. Stop when the predicate is met. A plateau is not a stop, so keep going and pivot your approach to push past it. Surface a genuine dead end rather than spinning, and never relax the predicate to declare victory.
+
+**Reply:** the exit condition, iterations run, what landed, what was discarded, final predicate state, and whether the run ended on the predicate or on a ceiling that needs a resume note.
