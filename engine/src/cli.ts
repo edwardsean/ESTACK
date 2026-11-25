@@ -1,6 +1,7 @@
 import type { Engine } from "./engine";
 import { openEngine } from "./engine";
 import { runCheck } from "./checks";
+import { serveStdio } from "./mcp";
 import { assertOwner, cancelTask, recordOverride, skipStep } from "./owner";
 import { initRepo } from "./policy";
 import { listOpen } from "./tasks";
@@ -103,8 +104,11 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       return 0;
     }
     case "mcp":
-      io.err("estack: mcp server arrives in a later step\n");
-      return 2;
+      serveStdio(io.cwd).catch((x: unknown) => {
+        io.err(`estack: ${x instanceof Error ? x.message : String(x)}\n`);
+        process.exitCode = 1;
+      });
+      return 0;
     default:
       throw new Usage(cmd ? `unknown command ${cmd}` : "no command given");
   }
