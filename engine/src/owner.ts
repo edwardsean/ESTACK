@@ -52,7 +52,7 @@ export function recordOverride(e: Engine, input: { action: string; reason: strin
   tx(e, () => {
     if (input.task_id !== undefined) getTask(e, input.task_id);
     e.db.prepare("INSERT INTO approvals (task_id, action, command, decision, by, at) VALUES (?, ?, ?, 'override', ?, ?)")
-      .run(input.task_id ?? null, input.action, input.reason, "owner", e.now().toISOString());
+      .run(input.task_id ?? null, input.action, "", "owner", e.now().toISOString());
     logEvent(e, OWNER, "override", input.task_id ?? null, { action: input.action, reason: input.reason });
   });
 }

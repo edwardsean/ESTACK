@@ -59,8 +59,11 @@ describe("cli", () => {
   test("override writes an approvals row with decision override", () => {
     const { dir } = setup();
     expect(run(dir, ["override", "git_push", "--reason", "ok"]).status).toBe(0);
-    const row = openEngine(dir).db.prepare("SELECT action, decision FROM approvals").get() as { action: string; decision: string };
-    expect(row).toEqual({ action: "git_push", decision: "override" });
+    const db = openEngine(dir).db;
+    const row = db.prepare("SELECT action, command, decision FROM approvals").get() as { action: string; command: string; decision: string };
+    expect(row).toEqual({ action: "git_push", command: "", decision: "override" });
+    const ev = db.prepare("SELECT payload_json FROM events WHERE kind='override'").get() as { payload_json: string };
+    expect(JSON.parse(ev.payload_json)).toMatchObject({ action: "git_push", reason: "ok" });
   });
 
   test("unknown command exits 2 with usage", () => {
