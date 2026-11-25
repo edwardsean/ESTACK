@@ -20,7 +20,7 @@
 
   <!-- You -->
   <rect x="300" y="20" width="400" height="52" rx="26" fill="#1a202c"/>
-  <text x="500" y="44" text-anchor="middle" class="t b" fill="#ffffff" style="fill:#fff">You: /pstack:poteto-mode</text>
+  <text x="500" y="44" text-anchor="middle" class="t b" fill="#ffffff" style="fill:#fff">You: /estack:poteto-mode</text>
   <text x="500" y="62" text-anchor="middle" class="s" style="fill:#cbd5e0">a goal + a check that proves it's done</text>
   <path d="M500,72 V96" class="ln" marker-end="url(#a)"/>
 
