@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine } from "../src/engine";
 import { runHook, type HookEvent } from "../src/hooks";
-import { recordOverride } from "../src/owner";
+import { recordOverride, skipStep } from "../src/owner";
 import { initRepo } from "../src/policy";
 import { startTask } from "../src/tasks";
 import { fakeExec, makeRepo } from "./helpers";
@@ -307,6 +307,32 @@ describe("hooks", () => {
       setDone(dir, id, "implement");
       commit(dir);
       expect(hook("subagent-stop", dir, { hook_event_name: "SubagentStop", agent_id: "B" })).toBeNull();
+    });
+    // Skip steps in order up to and including `through` (owner action, so no CLAUDECODE in env).
+    function skipThrough(dir: string, id: number, through: string, doneBefore: string[] = []) {
+      const e = openEngine(dir, deps);
+      try {
+        for (const s of e.db.prepare("SELECT name FROM steps WHERE task_id=? ORDER BY ordinal").all(id) as { name: string }[]) {
+          if (doneBefore.includes(s.name)) e.db.prepare("UPDATE steps SET status='done' WHERE task_id=? AND name=?").run(id, s.name);
+          else skipStep(e, { task_id: id, step: s.name, reason: "test" }, {});
+          if (s.name === through) break;
+        }
+      } finally { e.db.close(); }
+    }
+
+    test("a skipped implement step does not block stop", () => {
+      const dir = repo();
+      const id = task(dir);
+      skipThrough(dir, id, "implement");
+      commit(dir);
+      expect(hook("stop", dir, { hook_event_name: "Stop" })).toBeNull();
+    });
+
+    test("a skipped test step does not block subagent stop", () => {
+      const dir = repo();
+      const id = agentTask(dir, "A");
+      skipThrough(dir, id, "test", ["implement"]);
+      expect(hook("subagent-stop", dir, { hook_event_name: "SubagentStop", agent_id: "A" })).toBeNull();
     });
   });
 });

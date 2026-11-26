@@ -211,8 +211,8 @@ export function stop(e: Engine, ev: HookEvent): HookOutput {
     const t = v.task;
     const work = v.steps.find((s) => s.name === "implement" || s.name === "fix");
     if (!work) continue;
-    const done = (n: string) => v.steps.find((s) => s.name === n)?.status === "done";
-    if (work.status !== "done") {
+    const settled = (n: string) => ["done", "skipped"].includes(v.steps.find((s) => s.name === n)?.status ?? "");
+    if (!settled(work.name)) {
       let n = 0;
       try {
         const r = runBounded(e, t.cwd, "git", ["rev-list", "--count", `${t.base_sha}..refs/heads/${t.branch}`]);
@@ -221,7 +221,7 @@ export function stop(e: Engine, ev: HookEvent): HookOutput {
       if (n > 0) {
         reasons.push(`task #${t.id} has ${n} new commit(s) on ${t.branch} but its ${work.name} step has no evidence; record it with complete_step (kind commit) or say why not.`);
       }
-    } else if (sub && v.steps.some((s) => s.name === "test") && !done("test")) {
+    } else if (sub && v.steps.some((s) => s.name === "test") && !settled("test")) {
       reasons.push(`task #${t.id}: run run_check with step test before finishing.`);
     }
   }
