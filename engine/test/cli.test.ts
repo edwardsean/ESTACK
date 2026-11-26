@@ -94,3 +94,28 @@ describe("cli", () => {
     }
   });
 });
+
+describe("cli hook", () => {
+  test("pre-tool-use reads stdin and prints a deny for a code edit with no task", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    let out = "", err = "";
+    const stdin = JSON.stringify({ hook_event_name: "PreToolUse", session_id: "s", cwd: dir, tool_name: "Edit", tool_input: { file_path: "src/a.ts" } });
+    const status = main(["hook", "pre-tool-use"], { cwd: dir, env: {}, out: (s) => (out += s), err: (s) => (err += s), stdin });
+    expect(status).toBe(0);
+    expect(JSON.parse(out).hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  test("invalid stdin: deny for pre-tool-use, nothing for others", () => {
+    const dir = makeRepo();
+    const go = (name: string) => {
+      let out = "";
+      const status = main(["hook", name], { cwd: dir, env: {}, out: (s) => (out += s), err: () => {}, stdin: "not json" });
+      return { status, out };
+    };
+    const a = go("pre-tool-use");
+    expect(a.status).toBe(0);
+    expect(JSON.parse(a.out).hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(go("stop")).toEqual({ status: 0, out: "" });
+  });
+});
