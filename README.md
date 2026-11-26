@@ -93,6 +93,35 @@ finish cleanly. In a repo that didn't opt in, the hooks do nothing.
 root causes, prove it works, subtract before you add, make illegal states
 unrepresentable, build the tool instead of doing it by hand, and so on.
 
+## Engine
+
+A small state engine tracks tasks and steps so the orchestrator cannot claim
+progress it has not earned. It ships bundled inside the plugin as
+`engine/estack.mjs` and needs Node 22.5 or newer (it uses `node:sqlite`).
+
+**What it stores, and where.** State lives in `.estack/state.db` in the main
+checkout (worktrees share it). A repository is opted in only when
+`.estack/policy.yaml` exists; `/estack:setup` runs `estack init` to create it,
+along with `.estack/brief.md`, which the owner fills in. Every change appends a
+row to an events log.
+
+**MCP tools.** The plugin registers an `estack` MCP server (`core/.mcp.json`)
+that exposes four tools: `start_task`, `status`, `complete_step` and
+`run_check`. For `test` and `verify` the engine runs the command fixed in
+`policy.yaml` itself, in the task's worktree, and never trusts evidence
+described in words.
+
+**CLI.** Run `npm link` once in the estack clone to get `estack` on your PATH,
+or call `node --no-warnings adapters/claude-code/engine/estack.mjs`. Commands:
+`init`, `status [--json]`, `run --task <id> --step <test|verify>`, `skip`,
+`cancel`, `override`, and `mcp`. Exit codes: 0 on success, 1 for an engine or
+internal error, 2 for a usage error, and 3 when `run` ran the check but it
+failed.
+
+**Owner-only commands.** `skip`, `cancel` and `override` refuse to run inside
+an agent session (when `CLAUDECODE=1`), as a guard against accidental use; it
+is not a security boundary. Run them from a normal terminal.
+
 ## Repository layout
 
 ```text

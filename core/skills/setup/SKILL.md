@@ -81,6 +81,16 @@ Set `enabled` to `false` for a class the user declined. Leaving it out is not th
 
 Patterns are shell globs matched case-sensitively against the command string. A pattern also matches when it appears after a shell prefix, so `git push *` catches `cd api && git push origin main`.
 
+### Initialise the engine
+
+After writing `gates.json`, run the engine's init in the project root:
+
+```bash
+node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" init
+```
+
+Report the files it created. The engine keeps its policy and state under `.estack/`, and `.estack/brief.md` is for the owner to fill in: it is where the project's goals and constraints go, and the engine does not write them for you. Init is safe to re-run. Say that the repository is opted in to the engine once `.estack/policy.yaml` exists, and that approval gates still read `.claude/enterprise/gates.json`.
+
 ## 5. Handle the audit log
 
 Approved actions are appended to the path in `audit`, one JSON line each, recording the timestamp, the gate class, the command, the session, the seat, and a truncated result.

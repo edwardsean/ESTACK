@@ -1,0 +1,78 @@
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { runCheck } from "./checks";
+import { openEngine, type Engine } from "./engine";
+import type { Exec } from "./exec";
+import { completeStep, getTask, listOpen, startTask } from "./tasks";
+import { EngineError, type Actor } from "./types";
+
+type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
+
+const actorSchema = z.object({ session_id: z.string(), agent_id: z.string().optional() }).optional()
+  .describe("who is calling; defaults to {session_id: \"unknown\"}");
+const evidenceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("note"), text: z.string() }),
+  z.object({ kind: z.literal("commit"), sha: z.string() }),
+  z.object({ kind: z.literal("pr"), url: z.string() }),
+  z.object({ kind: z.literal("review"), verdict: z.enum(["approve", "changes"]), findings: z.string() }),
+]);
+
+const text = (t: string, isError = false): Result => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
+
+export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date } = {}): McpServer {
+  const server = new McpServer({ name: "estack", version: "0.1.0" });
+
+  /** Open the engine for one call, run fn, always close the database, and turn every failure into an isError result. */
+  function tool<A extends { actor?: Actor }>(fn: (e: Engine, args: A, actor: Actor) => unknown) {
+    return (args: A): Result => {
+      let e: Engine | undefined;
+      try {
+        e = openEngine(cwd, deps);
+        return text(JSON.stringify(fn(e, args, args.actor ?? { session_id: "unknown" }), null, 2));
+      } catch (x) {
+        if (x instanceof EngineError) return text(`${x.code}: ${x.message}`, true);
+        return text(`internal error: ${x instanceof Error ? x.message : String(x)}`, true);
+      } finally {
+        try { e?.db.close(); } catch { /* nothing useful to do */ }
+      }
+    };
+  }
+
+  server.registerTool("start_task", {
+    description: "Start a task of a policy-defined type; its steps are created in order.",
+    inputSchema: {
+      title: z.string(), type: z.string(), goal: z.string(), done_check: z.string(),
+      branch: z.string().optional(), actor: actorSchema,
+    },
+  }, tool((e, a: { title: string; type: string; goal: string; done_check: string; branch?: string; actor?: Actor }, actor) =>
+    startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, actor })));
+
+  server.registerTool("status", {
+    description: "Show one task (with task_id) or all open tasks.",
+    inputSchema: { task_id: z.number().int().optional(), actor: actorSchema },
+  }, tool((e, a: { task_id?: number; actor?: Actor }) => (a.task_id !== undefined ? getTask(e, a.task_id) : listOpen(e))));
+
+  server.registerTool("complete_step", {
+    description: "Complete the task's next step with evidence of the kind that step requires.",
+    inputSchema: { task_id: z.number().int(), step: z.string(), evidence: evidenceSchema, actor: actorSchema },
+  }, tool((e, a: { task_id: number; step: string; evidence: z.infer<typeof evidenceSchema>; actor?: Actor }, actor) =>
+    completeStep(e, { task_id: a.task_id, step: a.step, evidence: a.evidence, actor })));
+
+  server.registerTool("run_check", {
+    description: "Run the policy's fixed test or verify command for the task's next step and record the result.",
+    inputSchema: { task_id: z.number().int(), step: z.string(), timeout_sec: z.number().positive().optional(), actor: actorSchema },
+  }, tool((e, a: { task_id: number; step: string; timeout_sec?: number; actor?: Actor }, actor) => {
+    const check = runCheck(e, {
+      task_id: a.task_id, step: a.step, actor,
+      timeout_ms: a.timeout_sec !== undefined ? a.timeout_sec * 1000 : undefined,
+    });
+    return { check, task: getTask(e, a.task_id) };
+  }));
+
+  return server;
+}
+
+export async function serveStdio(cwd: string): Promise<void> {
+  await createServer(cwd).connect(new StdioServerTransport());
+}
