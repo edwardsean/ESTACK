@@ -80,7 +80,8 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       if (enginePath === null) io.out("git hooks not installed: engine path unknown\n");
       else {
         const h = installGitHooks(findRepo(io.cwd).root, enginePath);
-        io.out(`installed git hooks: ${h.installed.join(", ")}\n`);
+        if (h.skipped) io.out(`git hooks not installed: ${h.skipped}\n`);
+        else io.out(`installed git hooks: ${h.installed.join(", ")}\n`);
         if (h.chained.length) io.out(`chained existing hooks: ${h.chained.join(", ")}\n`);
       }
       return 0;

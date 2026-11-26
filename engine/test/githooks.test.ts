@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -113,5 +113,46 @@ describe("git hooks", { timeout: 60_000 }, () => {
   test("owner push without a task passes", () => {
     const { dir } = setup();
     expect(gitTry(dir, false, "push", "origin", "main").status).toBe(0);
+  });
+
+  test("a foreign hook that replaces ours is chained too; the original is kept", () => {
+    const dir = makeRepo();
+    const a = join(dir, "a.marker"), b = join(dir, "b.marker");
+    writeFileSync(hook(dir, "pre-commit"), `#!/bin/sh\necho a > '${a}'\n`, { mode: 0o755 });
+    installGitHooks(dir, shim);
+    writeFileSync(hook(dir, "pre-commit"), `#!/bin/sh\necho b > '${b}'\n`, { mode: 0o755 });
+    const r = installGitHooks(dir, shim);
+    expect(r.chained).toEqual(["pre-commit"]);
+    expect(existsSync(hook(dir, "pre-commit") + ".estack-prev")).toBe(true);
+    expect(existsSync(hook(dir, "pre-commit") + ".estack-prev.2")).toBe(true);
+    writeFileSync(join(dir, "x.txt"), "x");
+    git(dir, "add", "x.txt");
+    expect(gitTry(dir, false, "commit", "-m", "x").status).toBe(0);
+    expect(existsSync(a)).toBe(true);
+    expect(existsSync(b)).toBe(true);
+  });
+
+  test("core.hooksPath set: nothing is installed and the message says why", () => {
+    const dir = makeRepo();
+    git(dir, "config", "core.hooksPath", ".githooks");
+    mkdirSync(join(dir, ".githooks"));
+    let out = "";
+    const io = { cwd: dir, env: {}, out: (s: string) => (out += s), err: () => {} };
+    expect(main(["init", "--engine", shim], io)).toBe(0);
+    expect(out).toContain("git hooks not installed: core.hooksPath is set (.githooks)");
+    expect(readdirSync(join(dir, ".githooks"))).toEqual([]);
+  });
+
+  test("a chained pre-push hook receives the ref list on stdin", () => {
+    const { dir } = setup();
+    const marker = join(dir, "stdin.marker");
+    const e = openEngine(dir);
+    const t = startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: { session_id: "s" }, cwd: dir });
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name = 'verify'").run(t.task.id);
+    e.db.close();
+    writeFileSync(hook(dir, "pre-push") + ".estack-prev", `#!/bin/sh\ncat > '${marker}'\n`, { mode: 0o755 });
+    const r = gitTry(dir, true, "push", "origin", "main");
+    expect(r.status).toBe(0);
+    expect(readFileSync(marker, "utf8")).toContain("refs/heads/main");
   });
 });

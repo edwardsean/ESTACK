@@ -17,11 +17,11 @@ function script(name: string, enginePath: string): string {
   const lines = [
     "#!/bin/sh",
     MANAGED_MARK,
-    `prev="$(dirname "$0")/${name}.estack-prev"`,
+    `dir="$(dirname "$0")"`,
     ...(push ? ["input=$(cat)"] : []),
     push
-      ? `if [ -x "$prev" ]; then printf '%s\\n' "$input" | "$prev" "$@" || exit $?; fi`
-      : `if [ -x "$prev" ]; then "$prev" "$@" || exit $?; fi`,
+      ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || exit $?; done`
+      : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || exit $?; done`,
     `[ "$CLAUDECODE" = "1" ] || exit 0`,
     `engine=${shq(enginePath)}`,
     `if [ ! -f "$engine" ]; then echo "estack: engine not found at $engine; re-run /estack:setup" >&2; exit 1; fi`,
@@ -33,7 +33,10 @@ function script(name: string, enginePath: string): string {
 }
 
 /** Install the managed hooks into the repo's shared hooks directory, chaining any existing hook. */
-export function installGitHooks(repoRoot: string, enginePath: string): { installed: string[]; chained: string[] } {
+export function installGitHooks(repoRoot: string, enginePath: string): { installed: string[]; chained: string[]; skipped?: string } {
+  const cfg = spawnSync("git", ["config", "core.hooksPath"], { cwd: repoRoot, encoding: "utf8" });
+  const hp = cfg.status === 0 ? cfg.stdout.trim() : "";
+  if (hp) return { installed: [], chained: [], skipped: `core.hooksPath is set (${hp})` };
   const r = runGit(repoRoot, ["rev-parse", "--git-path", "hooks"]);
   const dir = resolve(repoRoot, r);
   mkdirSync(dir, { recursive: true });
@@ -41,7 +44,9 @@ export function installGitHooks(repoRoot: string, enginePath: string): { install
   for (const name of HOOKS) {
     const p = join(dir, name);
     if (existsSync(p) && !readFileSync(p, "utf8").includes(MANAGED_MARK)) {
-      renameSync(p, `${p}.estack-prev`);
+      let dest = `${p}.estack-prev`;
+      for (let n = 2; existsSync(dest); n++) dest = `${p}.estack-prev.${n}`;
+      renameSync(p, dest);
       chained.push(name);
     }
     writeFileSync(p, script(name, enginePath));
