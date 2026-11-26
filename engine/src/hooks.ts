@@ -4,7 +4,7 @@ import type { Engine } from "./engine";
 import { openEngine } from "./engine";
 import type { Exec } from "./exec";
 import { classifyCommand, isExempt, isProtected } from "./match";
-import { logEvent, runBounded, tx } from "./tasks";
+import { listOpen, runBounded, logEvent, tx, type TaskView } from "./tasks";
 import { EngineError, type Actor, type Task } from "./types";
 
 export interface HookEvent {
@@ -175,6 +175,59 @@ export function postToolUse(e: Engine, ev: HookEvent): HookOutput {
   return null;
 }
 
+const MAX_CONTEXT_TASKS = 20;
+
+function ctxOut(eventName: string, additionalContext: string): HookOutput {
+  return { hookSpecificOutput: { hookEventName: eventName, additionalContext } };
+}
+
+export function sessionStart(e: Engine, _ev: HookEvent): HookOutput {
+  const head = "estack: this repository is opted in; code edits need an open task (start_task), pushes need verify evidence.";
+  const open = listOpen(e).slice(0, MAX_CONTEXT_TASKS);
+  const lines = open.length
+    ? open.map((v) => `#${v.task.id} [${v.task.type}] ${v.task.title} (${v.task.branch}) next: ${v.next?.name ?? "none"}`)
+    : ["no open tasks"];
+  return ctxOut("SessionStart", [head, ...lines].join("\n"));
+}
+
+/** Open tasks bound to this session (and, when `agentOnly`, to this agent). */
+function boundTasks(e: Engine, ev: HookEvent, agentOnly: boolean): TaskView[] {
+  const ids = new Set((e.db.prepare("SELECT task_id, agent_id FROM task_bindings WHERE session_id = ?").all(ev.session_id) as
+    { task_id: number; agent_id: string | null }[])
+    .filter((b) => !agentOnly || b.agent_id === (ev.agent_id ?? null)).map((b) => b.task_id));
+  return listOpen(e).filter((v) => ids.has(v.task.id));
+}
+
+export function userPromptSubmit(e: Engine, ev: HookEvent): HookOutput {
+  const v = boundTasks(e, ev, false).find((t) => t.next);
+  return v ? ctxOut("UserPromptSubmit", `estack: task #${v.task.id} next step: ${v.next!.name}`) : null;
+}
+
+export function stop(e: Engine, ev: HookEvent): HookOutput {
+  if (ev.stop_hook_active) return null;
+  const sub = ev.hook_event_name === "SubagentStop";
+  const reasons: string[] = [];
+  for (const v of boundTasks(e, ev, sub)) {
+    const t = v.task;
+    const work = v.steps.find((s) => s.name === "implement" || s.name === "fix");
+    if (!work) continue;
+    const done = (n: string) => v.steps.find((s) => s.name === n)?.status === "done";
+    if (work.status !== "done") {
+      let n = 0;
+      try {
+        const r = runBounded(e, t.cwd, "git", ["rev-list", "--count", `${t.base_sha}..refs/heads/${t.branch}`]);
+        if (r.code === 0) n = Number(r.stdout.trim()) || 0;
+      } catch { continue; } // timeout: fail open for this task
+      if (n > 0) {
+        reasons.push(`task #${t.id} has ${n} new commit(s) on ${t.branch} but its ${work.name} step has no evidence; record it with complete_step (kind commit) or say why not.`);
+      }
+    } else if (sub && v.steps.some((s) => s.name === "test") && !done("test")) {
+      reasons.push(`task #${t.id}: run run_check with step test before finishing.`);
+    }
+  }
+  return reasons.length ? { decision: "block", reason: reasons.join("\n") } : null;
+}
+
 export function runHook(name: string, ev: HookEvent, deps: { exec?: Exec; now?: () => Date } = {}): HookOutput {
   const gate = name === "pre-tool-use";
   let e: Engine | undefined;
@@ -188,6 +241,10 @@ export function runHook(name: string, ev: HookEvent, deps: { exec?: Exec; now?: 
     switch (name) {
       case "pre-tool-use": return preToolUse(e, ev);
       case "post-tool-use": return postToolUse(e, ev);
+      case "session-start": return sessionStart(e, ev);
+      case "user-prompt-submit": return userPromptSubmit(e, ev);
+      case "stop": return stop(e, { ...ev, hook_event_name: "Stop" });
+      case "subagent-stop": return stop(e, { ...ev, hook_event_name: "SubagentStop" });
       default: return null;
     }
   } catch (x) {

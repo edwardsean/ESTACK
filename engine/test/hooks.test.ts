@@ -221,4 +221,92 @@ describe("hooks", () => {
     expect(reason(r)).not.toContain("\n");
     expect(runHook("post-tool-use", ev(dir, { tool_name: "Bash" }), deps)).toBeNull();
   });
+  describe("context and stop hooks", () => {
+    const hook = (name: string, dir: string, o: Partial<HookEvent> = {}) => runHook(name, ev(dir, o), deps) as any;
+    const ctx = (r: any) => r?.hookSpecificOutput?.additionalContext as string;
+    const commit = (dir: string) => execFileSync("git", ["commit", "--allow-empty", "-m", "work"], { cwd: dir, stdio: "ignore" });
+    const setDone = (dir: string, id: number, ...names: string[]) => {
+      const e = openEngine(dir, deps);
+      for (const n of names) e.db.prepare("UPDATE steps SET status='done' WHERE task_id=? AND name=?").run(id, n);
+      e.db.close();
+    };
+    function agentTask(dir: string, agent: string) {
+      const e = openEngine(dir, deps);
+      const t = startTask(e, { title: "w", type: "feature", goal: "g", done_check: "d", actor: { session_id: S, agent_id: agent }, cwd: dir });
+      e.db.close();
+      return t.task.id;
+    }
+
+    test("session start lists open tasks and their next step", () => {
+      const dir = repo();
+      const id = task(dir);
+      const r = hook("session-start", dir, { hook_event_name: "SessionStart" });
+      expect(r.hookSpecificOutput.hookEventName).toBe("SessionStart");
+      const lines = ctx(r).split("\n");
+      expect(lines[0]).toBe("estack: this repository is opted in; code edits need an open task (start_task), pushes need verify evidence.");
+      expect(lines[1]).toMatch(new RegExp(`^#${id} \\[feature\\] t \\(.+\\) next: plan$`));
+    });
+
+    test("session start with no tasks still states the rules", () => {
+      const dir = repo();
+      const lines = ctx(hook("session-start", dir, { hook_event_name: "SessionStart" })).split("\n");
+      expect(lines[0]).toContain("opted in");
+      expect(lines[1]).toBe("no open tasks");
+    });
+
+    test("prompt submit shows the bound task's next step, else nothing", () => {
+      const dir = repo();
+      const id = task(dir);
+      const r = hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit" });
+      expect(r.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+      expect(ctx(r)).toBe(`estack: task #${id} next step: plan`);
+      expect(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", session_id: "other" })).toBeNull();
+    });
+
+    test("stop blocks when commits exist but implement has no evidence", () => {
+      const dir = repo();
+      const id = task(dir);
+      expect(hook("stop", dir, { hook_event_name: "Stop" })).toBeNull();
+      commit(dir);
+      const r = hook("stop", dir, { hook_event_name: "Stop" });
+      expect(r.decision).toBe("block");
+      expect(r.reason).toContain(`task #${id} has 1 new commit(s) on`);
+      expect(r.reason).toContain("its implement step has no evidence");
+    });
+
+    test("stop allows once implement is recorded", () => {
+      const dir = repo();
+      const id = task(dir);
+      commit(dir);
+      setDone(dir, id, "implement");
+      expect(hook("stop", dir, { hook_event_name: "Stop" })).toBeNull();
+    });
+
+    test("stop never blocks when stop_hook_active", () => {
+      const dir = repo();
+      task(dir);
+      commit(dir);
+      expect(hook("stop", dir, { hook_event_name: "Stop", stop_hook_active: true })).toBeNull();
+    });
+
+    test("subagent stop blocks a worker that implemented but never ran test", () => {
+      const dir = repo();
+      const id = agentTask(dir, "A");
+      setDone(dir, id, "implement");
+      const r = hook("subagent-stop", dir, { hook_event_name: "SubagentStop", agent_id: "A" });
+      expect(r.decision).toBe("block");
+      expect(r.reason).toContain(`task #${id}`);
+      expect(r.reason).toContain("run run_check with step test before finishing");
+      setDone(dir, id, "test");
+      expect(hook("subagent-stop", dir, { hook_event_name: "SubagentStop", agent_id: "A" })).toBeNull();
+    });
+
+    test("subagent stop ignores tasks bound to other agents", () => {
+      const dir = repo();
+      const id = agentTask(dir, "A");
+      setDone(dir, id, "implement");
+      commit(dir);
+      expect(hook("subagent-stop", dir, { hook_event_name: "SubagentStop", agent_id: "B" })).toBeNull();
+    });
+  });
 });
