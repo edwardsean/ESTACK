@@ -98,6 +98,39 @@ describe("hooks", () => {
     expect(decision(edit(dir, "src/a.ts"))).toBe("deny");
   });
 
+  test("edits inside .git are denied as protected", () => {
+    const dir = repo();
+    for (const [tool, f] of [["Write", ".git/hooks/pre-push"], ["Edit", ".git/config"]]) {
+      const r = edit(dir, join(dir, f), { tool_name: tool });
+      expect(decision(r), f).toBe("deny");
+      expect(reason(r)).toContain("protected");
+    }
+  });
+
+  test("a write into a linked worktree's gitdir is denied", () => {
+    const dir = repo();
+    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    execFileSync("git", ["worktree", "add", "-b", "feat", wt], { cwd: dir, stdio: "ignore" });
+    const r = edit(dir, join(dir, ".git", "worktrees", "wt", "hooks", "pre-push"), { tool_name: "Write" });
+    expect(decision(r)).toBe("deny");
+    expect(reason(r)).toContain("protected");
+    expect(decision(edit(dir, join(wt, ".git"), { tool_name: "Write" }))).toBe("deny");
+  });
+
+  test("a git failure in the edit gate fails closed", () => {
+    const dir = repo();
+    for (const bad of [{ code: 1, stderr: "boom" }, { code: null, timedOut: true }]) {
+      const exec = {
+        run: (f: string, a: string[], o: any) => f === "git" && a[0] === "rev-parse"
+          ? { stdout: "", stderr: "", timedOut: false, durationMs: 0, ...bad } : fakeExec({}).run(f, a, o),
+        shell: fakeExec({}).shell,
+      };
+      const r = runHook("pre-tool-use", ev(dir, { tool_name: "Edit", tool_input: { file_path: "src/a.ts" } }), { exec }) as any;
+      expect(decision(r)).toBe("deny");
+      expect(reason(r).startsWith("estack: ")).toBe(true);
+    }
+  });
+
   test("plain bash is allowed with no output", () => {
     expect(bash(repo(), "ls -la")).toBeNull();
   });

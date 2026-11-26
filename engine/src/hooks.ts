@@ -79,16 +79,28 @@ function preEdit(e: Engine, ev: HookEvent): HookOutput {
   if (!raw) return null;
   const abs = resolveReal(ev.cwd, raw);
   const dir = nearestDir(abs);
-  const top = runBounded(e, dir, "git", ["rev-parse", "--show-toplevel"]);
-  if (top.code !== 0) return null;
-  const worktree = top.stdout.trim();
   const common = runBounded(e, dir, "git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  if (common.code !== 0) return null;
+  if (common.code !== 0) {
+    if (common.code === 128 && /not a git repository/i.test(common.stderr)) return null;
+    throw new EngineError("NOT_A_REPO", `git failed while checking ${raw}: ${common.stderr.trim() || `exit ${common.code}`}`);
+  }
+  const commonDir = common.stdout.trim();
   let commonReal: string;
-  try { commonReal = realpathSync(dirname(common.stdout.trim())); } catch { return null; }
-  if (commonReal !== e.repo.root) return null;
+  try { commonReal = realpathSync(commonDir); } catch { return null; }
+  if (realpathSync(dirname(commonReal)) !== e.repo.root) return null;
+  const top = runBounded(e, dir, "git", ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0) {
+    // Inside a git directory (.git, .git/hooks, .git/worktrees/<n>/...): hooks and config live here.
+    if (top.code === 128 && /work ?tree/i.test(top.stderr)) {
+      const inGit = abs === commonReal || abs.startsWith(commonReal + sep);
+      return inGit ? deny(`${relative(e.repo.root, abs).split(sep).join("/")} is protected (git directory)`) : null;
+    }
+    throw new EngineError("NOT_A_REPO", `git failed while checking ${raw}: ${top.stderr.trim() || `exit ${top.code}`}`);
+  }
+  const worktree = top.stdout.trim();
   const rel = relative(worktree, abs).split(sep).join("/");
   if (rel.startsWith("..") || isAbsolute(rel)) return null;
+  if (rel === ".git" || rel.startsWith(".git/")) return deny(`${rel} is protected (git directory)`);
   if (isProtected(rel, e.policy)) return deny(`${rel} is protected by .estack/policy.yaml`);
   if (isExempt(rel, e.policy)) return null;
   const bound = e.db.prepare(
