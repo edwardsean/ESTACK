@@ -70,6 +70,18 @@ else
   else
     fail "dormant repo was not left alone"
   fi
+  # A broken engine must fail closed on PreToolUse: copy the hook script into a
+  # scratch plugin whose engine/estack.mjs throws.
+  mkdir -p "$tmp/broken/hooks/scripts" "$tmp/broken/engine"
+  cp hooks/scripts/estack-hook.sh "$tmp/broken/hooks/scripts/"
+  printf 'throw new Error("boom");\n' > "$tmp/broken/engine/estack.mjs"
+  br_out="$(event "$tmp/on" | CLAUDE_PROJECT_DIR="$tmp/on" "$tmp/broken/hooks/scripts/estack-hook.sh" pre-tool-use 2>/dev/null)"; br_code=$?
+  echo "  broken engine: exit=$br_code stdout=$br_out"
+  if [ "$br_code" = 0 ] && printf '%s' "$br_out" | grep -q '"permissionDecision":"deny"'; then
+    pass "broken engine: PreToolUse fails closed with a deny"
+  else
+    fail "broken engine did not produce a deny"
+  fi
   rm -rf "$tmp"
 fi
 

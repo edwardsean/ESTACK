@@ -132,8 +132,8 @@ Every hook goes through `hooks/scripts/estack-hook.sh`, which runs the bundled e
 | `PostToolUse` (`Bash`) | Records an approved command in the events log. Never blocks |
 | `SessionStart` | Tells the session the repository is opted in and lists open tasks |
 | `UserPromptSubmit` | Reminds the session of its task's next step |
-| `Stop` | Blocks once when a task has commits but no evidence on its work step, or an unrun test step |
-| `SubagentStop` | The same check for a worker's own tasks |
+| `Stop` | Blocks once when a session task has commits made after the task started but no evidence on its implement or fix step |
+| `SubagentStop` | The same check for the worker's own tasks, and also blocks when implement or fix is settled but the test step is not |
 
 `estack init` also installs git `pre-commit` and `pre-push` hooks that run the same engine against agents that run git (the owner's own terminal is never checked), unless `core.hooksPath` is set.
 

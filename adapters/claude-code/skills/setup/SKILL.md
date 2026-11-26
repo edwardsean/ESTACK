@@ -19,7 +19,7 @@ Sections 1 to 6 set up the gates. Sections 7 and 8 seed the knowledge index and 
 
 ## 1. Check the runtime first
 
-Do this before writing anything. The hooks fail closed when the engine cannot run, which is the safe direction for a gate and the wrong surprise for a user.
+Do this before writing anything. The edit and shell-command hooks fail closed when the engine cannot run, which is the safe direction for a gate and the wrong surprise for a user.
 
 - Confirm `node` is on PATH and is version 22.5 or newer, since the engine uses `node:sqlite`. If it is not, stop and say so. In an opted-in repository every edit and shell command would be refused, and the fix is to install Node or not to opt in.
 - Confirm the repository is a git repository. The engine keeps its state in the main checkout and binds tasks to branches.

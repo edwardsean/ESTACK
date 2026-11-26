@@ -9,4 +9,22 @@ if ! command -v node >/dev/null 2>&1; then
   case "$1" in pre-tool-use) printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"estack: node is not on PATH, so this repository'"'"'s gates cannot run"}}';; esac
   exit 0
 fi
-printf '%s' "$input" | exec node --no-warnings "$(dirname "$0")/../../engine/estack.mjs" hook "$1"
+engine="$(dirname "$0")/../../engine/estack.mjs"
+if [ "$1" != "pre-tool-use" ]; then
+  printf '%s' "$input" | exec node --no-warnings "$engine" hook "$1"
+fi
+# PreToolUse gates fail closed: if the engine cannot run, a non-zero exit would
+# be a non-blocking error to Claude Code, so turn it into a deny.
+errf="$(mktemp 2>/dev/null || echo /dev/null)"
+out="$(printf '%s' "$input" | node --no-warnings "$engine" hook "$1" 2>"$errf")"
+code=$?
+if [ "$code" -ne 0 ]; then
+  msg="$(head -n1 "$errf" 2>/dev/null | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  [ -n "$msg" ] || msg="exit $code"
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"estack: the engine could not run ('"$msg"'); fix the estack install or Node version (needs 22.5+)"}}'
+  [ "$errf" = /dev/null ] || rm -f "$errf"
+  exit 0
+fi
+[ "$errf" = /dev/null ] || rm -f "$errf"
+[ -z "$out" ] || printf '%s\n' "$out"
+exit 0
