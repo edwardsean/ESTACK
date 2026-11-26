@@ -135,7 +135,7 @@ Every hook goes through `hooks/scripts/estack-hook.sh`, which runs the bundled e
 | `Stop` | Blocks once when a task has commits but no evidence on its work step, or an unrun test step |
 | `SubagentStop` | The same check for a worker's own tasks |
 
-`estack init` also installs git `pre-commit` and `pre-push` hooks that run the same engine, unless `core.hooksPath` is set.
+`estack init` also installs git `pre-commit` and `pre-push` hooks that run the same engine against agents that run git (the owner's own terminal is never checked), unless `core.hooksPath` is set.
 
 ## Repository layout
 

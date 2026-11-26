@@ -41,7 +41,7 @@ If a gated command ran and nothing asked or denied, the hooks are not firing. Th
 
 ## What the hooks do not cover
 
-They match edit tools, `Bash` and the estack MCP tools. A push made through some other MCP server, and anything a human types in their own terminal, are outside the Claude Code hooks. The git hooks catch a commit or push from a terminal only when `estack init` installed them, and not when `core.hooksPath` pointed elsewhere. Every action in a repository that never opted in goes ungated too.
+They match edit tools, `Bash` and the estack MCP tools. A push made through some other MCP server, and anything a human types in their own terminal, are outside the Claude Code hooks. The git hooks catch an agent that runs git itself (`CLAUDECODE=1`), including from a shell the Claude Code hooks do not see, but only when `estack init` installed them, and not when `core.hooksPath` pointed elsewhere. They never check the owner's own terminal. Every action in a repository that never opted in goes ungated too.
 
 A gate is a checkpoint on the paths someone thought to cover. It is not a sandbox, and describing it as one overstates what a reviewer can rely on.
 

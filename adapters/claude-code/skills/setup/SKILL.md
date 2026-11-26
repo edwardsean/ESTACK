@@ -57,9 +57,17 @@ Run the engine's init in the project root:
 node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" init --engine "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs"
 ```
 
-Report each line it prints. It creates `.estack/policy.yaml` and `.estack/brief.md`, and it installs the git hooks `pre-commit` and `pre-push`, which run the same engine so a commit or push made from a plain terminal is checked too. If it prints `git hooks not installed: core.hooksPath is set`, the repository routes hooks through its own directory. Say so, and tell the user that git-level enforcement is off until they call `estack git-hook pre-commit` and `estack git-hook pre-push` from their own hooks. The Claude Code hooks still apply either way. If it chained an existing hook, say so.
+Report each line it prints. It creates `.estack/policy.yaml` and `.estack/brief.md`, and it installs the git hooks `pre-commit` and `pre-push`, which run the same engine so a commit or push made by an agent through git itself is checked too. They act only when an agent runs git (`CLAUDECODE=1`), and the owner's own terminal is never checked. If it prints `git hooks not installed: core.hooksPath is set`, the repository routes hooks through its own directory. Say so, and tell the user that git-level enforcement is off until they call `estack git-hook pre-commit` and `estack git-hook pre-push` from their own hooks. The Claude Code hooks still apply either way. If it chained an existing hook, say so.
 
 `.estack/brief.md` is for the owner to fill in: it is where the project's goals and constraints go, and the engine does not write them for you. Init is safe to re-run and never overwrites an existing file. The repository is opted in once `.estack/policy.yaml` exists.
+
+Then tell the owner to commit `.estack/` themselves. Report that they should run, in their own terminal:
+
+```bash
+git add .estack && git commit -m "Add estack policy"
+```
+
+The agent must not try to commit it: the git pre-commit hook refuses any agent commit that touches the protected `.estack/policy.yaml` ("commit touches protected .estack/policy.yaml"). Future edits to `policy.yaml` are likewise the owner's to make and commit.
 
 When the owner edits the policy later, the change takes effect on the next hook with no restart.
 
@@ -199,7 +207,7 @@ Tell the user what was written and what each file does, keeping enforcement and 
 - That the hooks apply to every session in this repository, not only to runs of `/poteto-mode`. A plain chat that tries to edit source with no task, or to `git push`, gets the same answer. That is intended, and it surprises people.
 - Which knowledge kinds got a real location and which read `not indexed`, since the second list is the work left to do.
 - Which change types carry a `required` review backed only by `plan`, named explicitly, because those are the ones a team believes are gated and are not.
-- What the gates cannot stop. Anything a human types in their own terminal is checked only by the git hooks, and only if they were installed. A push made through an MCP server that is not estack's own, and any tool the hook matcher does not list, go ungated. Say so rather than letting "gated" imply "contained".
+- What the gates cannot stop. Anything a human types in their own terminal is never checked, since the git hooks act only when an agent runs git. A push made through an MCP server that is not estack's own, and any tool the hook matcher does not list, go ungated. Say so rather than letting "gated" imply "contained".
 
 ## Turning it off
 
