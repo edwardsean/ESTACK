@@ -89,15 +89,15 @@ Read the leaf skill in full for any principle you apply. Each entry names when i
 
 ## Gates
 
-The pause above is prose, and prose is a request a model can decline under pressure. In a repository that opted in through `/estack:setup`, the same pauses are also enforced by Claude Code hooks that sit outside the model, so a gated command stops and asks a human whether or not the run remembers to.
+The pause above is prose, and prose is a request a model can decline under pressure. In a repository that opted in through `/estack:setup`, the engine enforces the same pauses in Claude Code hooks that sit outside the model, so a gated action stops whether or not the run remembers to.
 
-Three classes are gated by default, meaning push and PR, deploy and infrastructure, and database migration and data. The project's `.claude/enterprise/gates.json` is the authority on which, and it can narrow, widen, or disable each one. What to do when a gate fires, refuses, or fails to fire is in the **enterprise-gates** skill.
+The rules: an edit to source needs an open task, which you start with `start_task`. A push needs verify evidence on the task, then the owner's approval. Merge, deploy and migration need the owner's approval. Workers never push, and a worker's attempt is denied rather than asked. `.estack/policy.yaml` is the authority on the details, and what to do when a hook denies, asks, or fails to fire is in the **enterprise-gates** skill.
 
-Two things follow for how you work. Name the gate in one line before running a gated command, so the prompt is expected rather than a surprise. And treat a refusal as an answer, meaning report it and stop that line of work instead of rephrasing the command to slip the pattern. A gate that gets routed around is worse than no gate, because it still reports itself as passed.
+Two things follow for how you work. Name a gated action in one line before running it, so the prompt is expected rather than a surprise. And treat a denial as an answer, meaning report it and stop that line of work instead of rephrasing the command to slip the pattern. The owner override exists, and only the owner runs it. A gate that gets routed around is worse than no gate, because it still reports itself as passed.
 
-Where a gated command ran and nothing asked, the hooks are not firing. Report that as a broken control rather than reading the silence as permission.
+Where a gated action ran and nothing asked or denied, the hooks are not firing. Report that as a broken control rather than reading the silence as permission.
 
-In a repository with no policy file none of this applies and no prompt appears. Do not tell a user their work is gated without checking that the file exists.
+In a repository with no `.estack/policy.yaml` none of this applies and no prompt appears. Do not tell a user their work is gated without checking that the file exists.
 
 ## Subagents
 

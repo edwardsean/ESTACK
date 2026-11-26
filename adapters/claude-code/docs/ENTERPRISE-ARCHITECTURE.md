@@ -190,8 +190,8 @@ otherwise.
 `scripts/selftest.py` asserts statically that all 34 playbooks resolve, that all
 18 `ent-` seats are reachable from a playbook or the seat rule, that every
 playbook a composition chain names exists, and that every agent's frontmatter is
-conformant. `scripts/test-gates.py` drives the real gate entry points against
-recorded hook events.
+conformant. `scripts/selftest.sh` drives the real hook entry point against a
+scratch repository.
 
 Nothing here proves that Claude Code dispatches an `ent-` seat at runtime. The static
 checks and `claude plugin validate` pass, but no live session has dispatched one,

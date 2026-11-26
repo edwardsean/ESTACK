@@ -85,9 +85,9 @@ DBA review), and `/estack:prd-rules` turns a PRD into business-rule cards. Each
 subagent only gets the slice relevant to its job.
 
 **Approval gates.** Claude Code hooks sit outside the model. In an opted-in repo,
-a `git push`, deploy, or migration command makes Claude Code ask you first,
-approvals are logged, and a seat that ran a gated command without asking can't
-finish cleanly. In a repo that didn't opt in, the hooks do nothing.
+editing source needs an open task, a push needs verify evidence and your
+approval, and workers never push. In a repo that didn't opt in, the hooks do
+nothing. See [Hooks](#hooks).
 
 **24 principles.** Short rules the agent cites when they change a decision: fix
 root causes, prove it works, subtract before you add, make illegal states
@@ -122,6 +122,21 @@ failed.
 an agent session (when `CLAUDECODE=1`), as a guard against accidental use; it
 is not a security boundary. Run them from a normal terminal.
 
+## Hooks
+
+Every hook goes through `hooks/scripts/estack-hook.sh`, which runs the bundled engine. Without `.estack/policy.yaml` the script exits at once without starting Node. In an opted-in repository:
+
+| Hook | What it does |
+|---|---|
+| `PreToolUse` (edit tools, `Bash`, estack MCP tools) | Denies an edit with no open task, an edit to a protected path, a push without verify evidence, any `ask` action from a worker, and the hard-coded set (touching `.estack/state.db`, `estack skip`/`cancel`/`override`, `--no-verify`, `core.hooksPath`). Asks the owner for push, merge, deploy and migration. Fails closed if the engine errors |
+| `PostToolUse` (`Bash`) | Records an approved command in the events log. Never blocks |
+| `SessionStart` | Tells the session the repository is opted in and lists open tasks |
+| `UserPromptSubmit` | Reminds the session of its task's next step |
+| `Stop` | Blocks once when a task has commits but no evidence on its work step, or an unrun test step |
+| `SubagentStop` | The same check for a worker's own tasks |
+
+`estack init` also installs git `pre-commit` and `pre-push` hooks that run the same engine, unless `core.hooksPath` is set.
+
 ## Repository layout
 
 ```text
@@ -151,7 +166,7 @@ npm test                      # the generator's tests
 (cd adapters/claude-code && bash scripts/selftest.sh)
 ```
 
-The self-test runs static conformance, 46 hook-gate assertions, a hook smoke test,
+The self-test runs static conformance, an engine hook smoke test,
 `claude plugin validate`, and fails if `adapters/claude-code/` differs from what
 `core/` generates.
 

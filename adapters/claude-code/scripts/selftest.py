@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -393,14 +394,21 @@ def check_hooks() -> None:
         fail("hooks", f"hooks/hooks.json: {exc}")
         return
     events = manifest.get("hooks", {})
-    for event in ("PreToolUse", "PostToolUse", "SubagentStop"):
+    for event in ("PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "Stop", "SubagentStop"):
         if event not in events:
             fail("hooks", f"hooks.json lost its {event} hook")
-    count = sum(len(g.get("hooks", [])) for groups in events.values() for g in groups)
-    text = (HOOKS / "scripts" / "enterprise_hooks.py").read_text(encoding="utf-8")
-    for needle in ('".claude/enterprise/gates.json"', '"CLAUDE_PROJECT_DIR"', '"permissionDecision": "ask"'):
-        if needle not in text:
-            fail("hooks", f"enterprise_hooks.py lost {needle}")
+    count = 0
+    for groups in events.values():
+        for g in groups:
+            for h in g.get("hooks", []):
+                count += 1
+                if "estack-hook.sh" not in h.get("command", ""):
+                    fail("hooks", f"hook command does not go through estack-hook.sh: {h.get('command')}")
+    script = HOOKS / "scripts" / "estack-hook.sh"
+    if not script.is_file():
+        fail("hooks", "hooks/scripts/estack-hook.sh is missing")
+    elif not os.access(script, os.X_OK):
+        fail("hooks", "hooks/scripts/estack-hook.sh is not executable")
     print(f"hooks        {count} handlers on {', '.join(sorted(events))}")
 
 

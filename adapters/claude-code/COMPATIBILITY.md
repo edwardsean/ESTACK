@@ -134,14 +134,14 @@ of what was lost. Claude Code has the capability, so the real step returns.
 
 | Part | Status |
 |---|---|
-| Approval gates (`hooks/hooks.json` plus three scripts) | **Wired and proven offline, firing never observed.** `scripts/test-gates.py` passes 46 assertions driving the real entry points with Claude Code-shaped events. `claude plugin validate .` lists all three hooks. Step 6 of `/estack:setup` is the live check |
+| Approval gates (`hooks/hooks.json` plus `hooks/scripts/estack-hook.sh`) | **Replaced in phase 3.** The Python gate scripts, `test-gates.py`, `gates.json` and `approvals.jsonl` are gone. The bundled engine decides, driven by `.estack/policy.yaml`. `scripts/selftest.sh` runs an engine hook smoke test, and step 6 of `/estack:setup` is the live check |
 | Hooks inside subagents | **Documented, not observed.** The Qoder edition's biggest open question was whether `PreToolUse` reaches a seat. Claude Code documents that `PreToolUse` and `PostToolUse` fire for a subagent's tool calls with `agent_id` and `agent_type` set. The `SubagentStop` backstop stays as defense in depth |
 | Exit codes | Same semantics as the Qoder edition: `PreToolUse` exit 2 blocks with stderr to Claude, `PostToolUse` exit 2 only shows stderr (the audit script never uses it), `SubagentStop` exit 2 keeps the seat running with stderr as its next instruction, and `stop_hook_active` prevents a loop |
 | `ask` under `bypassPermissions` | **Unverified.** Whether a hook's `ask` still prompts in that mode was not tested |
 | `/estack:prd-rules`, `/estack:setup` | **Unverified at runtime.** Same as the Qoder edition |
 | 12 enterprise playbooks, 18 `ent-*` seats | **Statically proven, never dispatched.** Every seat is reachable from a playbook or the enterprise-seats skill, every seat denies `Agent`, the two reviewers hold no write tools |
 | 13-step loop, delegation modes, composition chains, delivery pipeline | **Prose only**, as before. The gates are the only enforced part |
-| Dormancy | Kept. No `.claude/enterprise/gates.json`, no prompt, no log, no python start on the fast path |
+| Dormancy | Kept. No `.estack/policy.yaml`, no output and no Node start on the fast path |
 | Platform boundary | Unchanged. Branch protection, required reviewers, CODEOWNERS, and CI gates are platform-side and nothing here installs or checks them |
 
 The four views of the source architecture artifact that were never supplied (a
@@ -167,8 +167,7 @@ enterprise roster color reads as family. Cosmetic.
 ```bash
 npm run build:claude                    # from the repo root: regenerate the plugin from core/
 python3 scripts/selftest.py             # static conformance
-python3 scripts/test-gates.py           # drives the hook scripts with Claude Code hook events
-scripts/selftest.sh                     # all of the above, a hook smoke test, claude plugin validate, generator check
+scripts/selftest.sh                     # all of the above, an engine hook smoke test, claude plugin validate, generator check
 ```
 
 ## What no static test can prove

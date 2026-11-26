@@ -1,15 +1,14 @@
 {
-  "description": "Enterprise approval gates for the estack orchestrator. Dormant until a project opts in by writing .claude/enterprise/gates.json, which /estack:setup does. Gate policy lives in that project file, never here, so one plugin install serves repos with different rules.",
+  "description": "Enterprise gates for the estack orchestrator, run by the bundled engine. Dormant until a project opts in by creating .estack/policy.yaml, which /estack:setup does through estack init. Policy lives in that project file, never here, so one plugin install serves repos with different rules.",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__plugin_estack_estack__.*",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/gate-check.sh\"",
-            "timeout": 10,
-            "statusMessage": "checking enterprise approval gates"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/estack-hook.sh\" pre-tool-use",
+            "timeout": 10
           }
         ]
       }
@@ -20,8 +19,41 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/audit-write.sh\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/estack-hook.sh\" post-tool-use",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/estack-hook.sh\" session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/estack-hook.sh\" user-prompt-submit",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/estack-hook.sh\" stop",
+            "timeout": 30
           }
         ]
       }
@@ -31,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/seat-backstop.sh\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/estack-hook.sh\" subagent-stop",
             "timeout": 10
           }
         ]

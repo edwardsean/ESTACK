@@ -4003,10 +4003,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4020,7 +4020,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep) {
+          if (!keyProps.anchor && !keyProps.tag && !sep2) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map2.comment)
@@ -4044,7 +4044,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map2.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep ?? [], {
+        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4060,7 +4060,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4151,7 +4151,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep = "";
+        let sep2 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4165,13 +4165,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep + cb;
-              sep = "";
+                comment += sep2 + cb;
+              sep2 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep += source;
+                sep2 += source;
               hasSpace = true;
               break;
             default:
@@ -4214,18 +4214,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep && !value) {
+          if (!props.anchor && !props.tag && !sep2 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4279,8 +4279,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
+        if (!isMap && !sep2 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4292,7 +4292,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep ?? [], {
+          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4303,8 +4303,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep)
-                for (const st of sep) {
+              if (sep2)
+                for (const st of sep2) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4321,7 +4321,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4501,7 +4501,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep = "";
+      let sep2 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -4518,24 +4518,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep === " ")
-            sep = "\n";
-          else if (!prevMoreIndented && sep === "\n")
-            sep = "\n\n";
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          if (sep2 === " ")
+            sep2 = "\n";
+          else if (!prevMoreIndented && sep2 === "\n")
+            sep2 = "\n\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep === "\n")
+          if (sep2 === "\n")
             value += "\n";
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          value += sep + content;
-          sep = " ";
+          value += sep2 + content;
+          sep2 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4718,25 +4718,25 @@ var require_resolve_flow_scalar = __commonJS({
         trimBoth = /^[ \t]+|[ \t]+$/g;
       }
       let res = match[1].replace(trimEnd, "");
-      let sep = " ";
+      let sep2 = " ";
       let pos = line.lastIndex;
       while (match = line.exec(source)) {
         const lm = match[1].replace(trimBoth, "");
         if (lm === "") {
-          if (sep === "\n")
-            res += sep;
+          if (sep2 === "\n")
+            res += sep2;
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          res += sep + lm;
-          sep = " ";
+          res += sep2 + lm;
+          sep2 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep + (match?.[1] ?? "");
+      return res + sep2 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5546,14 +5546,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep, value }) {
+    function stringifyItem({ start, key, sep: sep2, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep)
-        for (const st of sep)
+      if (sep2)
+        for (const st of sep2)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6720,18 +6720,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep;
+          let sep2;
           if (scalar.end) {
-            sep = scalar.end;
-            sep.push(this.sourceToken);
+            sep2 = scalar.end;
+            sep2.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep = [this.sourceToken];
+            sep2 = [this.sourceToken];
           const map2 = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep }]
+            items: [{ start, key: scalar, sep: sep2 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map2;
@@ -6884,15 +6884,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep = it.sep;
-                  sep.push(this.sourceToken);
+                  const sep2 = it.sep;
+                  sep2.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep }]
+                    items: [{ start: start2, key, sep: sep2 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7086,13 +7086,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep = fc.end.splice(1, fc.end.length);
-            sep.push(this.sourceToken);
+            const sep2 = fc.end.splice(1, fc.end.length);
+            sep2.push(this.sourceToken);
             const map2 = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep }]
+              items: [{ start, key: fc, sep: sep2 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map2;
@@ -9422,11 +9422,11 @@ var require_json_schema_traverse = __commonJS({
         opts = {};
       }
       cb = opts.cb || cb;
-      var pre = typeof cb == "function" ? cb : cb.pre || function() {
+      var pre2 = typeof cb == "function" ? cb : cb.pre || function() {
       };
       var post = cb.post || function() {
       };
-      _traverse(opts, pre, post, schema, "", schema);
+      _traverse(opts, pre2, post, schema, "", schema);
     };
     traverse.keywords = {
       additionalItems: true,
@@ -9472,23 +9472,23 @@ var require_json_schema_traverse = __commonJS({
       maxProperties: true,
       minProperties: true
     };
-    function _traverse(opts, pre, post, schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex) {
+    function _traverse(opts, pre2, post, schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex) {
       if (schema && typeof schema == "object" && !Array.isArray(schema)) {
-        pre(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
+        pre2(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
         for (var key in schema) {
           var sch = schema[key];
           if (Array.isArray(sch)) {
             if (key in traverse.arrayKeywords) {
               for (var i = 0; i < sch.length; i++)
-                _traverse(opts, pre, post, sch[i], jsonPtr + "/" + key + "/" + i, rootSchema, jsonPtr, key, schema, i);
+                _traverse(opts, pre2, post, sch[i], jsonPtr + "/" + key + "/" + i, rootSchema, jsonPtr, key, schema, i);
             }
           } else if (key in traverse.propsKeywords) {
             if (sch && typeof sch == "object") {
               for (var prop in sch)
-                _traverse(opts, pre, post, sch[prop], jsonPtr + "/" + key + "/" + escapeJsonPtr(prop), rootSchema, jsonPtr, key, schema, prop);
+                _traverse(opts, pre2, post, sch[prop], jsonPtr + "/" + key + "/" + escapeJsonPtr(prop), rootSchema, jsonPtr, key, schema, prop);
             }
           } else if (key in traverse.keywords || opts.allKeys && !(key in traverse.skipKeywords)) {
-            _traverse(opts, pre, post, sch, jsonPtr + "/" + key, rootSchema, jsonPtr, key, schema);
+            _traverse(opts, pre2, post, sch, jsonPtr + "/" + key, rootSchema, jsonPtr, key, schema);
           }
         }
         post(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
@@ -10321,7 +10321,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve.call(this, root, ref);
+      let _sch = resolve4.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -10348,7 +10348,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve(root, ref) {
+    function resolve4(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -11212,7 +11212,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve(baseURI, relativeURI, options) {
+    function resolve4(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -11248,50 +11248,50 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
-    function resolveComponent(base, relative, options, skipNormalization) {
+    function resolveComponent(base, relative2, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
         base = parse5(serialize(base, options), options);
-        relative = parse5(serialize(relative, options), options);
+        relative2 = parse5(serialize(relative2, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative.scheme) {
-        target.scheme = relative.scheme;
-        target.userinfo = relative.userinfo;
-        target.host = relative.host;
-        target.port = relative.port;
-        target.path = removeDotSegments(relative.path || "");
-        target.query = relative.query;
+      if (!options.tolerant && relative2.scheme) {
+        target.scheme = relative2.scheme;
+        target.userinfo = relative2.userinfo;
+        target.host = relative2.host;
+        target.port = relative2.port;
+        target.path = removeDotSegments(relative2.path || "");
+        target.query = relative2.query;
       } else {
-        if (relative.userinfo !== void 0 || relative.host !== void 0 || relative.port !== void 0) {
-          target.userinfo = relative.userinfo;
-          target.host = relative.host;
-          target.port = relative.port;
-          target.path = removeDotSegments(relative.path || "");
-          target.query = relative.query;
+        if (relative2.userinfo !== void 0 || relative2.host !== void 0 || relative2.port !== void 0) {
+          target.userinfo = relative2.userinfo;
+          target.host = relative2.host;
+          target.port = relative2.port;
+          target.path = removeDotSegments(relative2.path || "");
+          target.query = relative2.query;
         } else {
-          if (!relative.path) {
+          if (!relative2.path) {
             target.path = base.path;
-            if (relative.query !== void 0) {
-              target.query = relative.query;
+            if (relative2.query !== void 0) {
+              target.query = relative2.query;
             } else {
               target.query = base.query;
             }
           } else {
-            if (relative.path[0] === "/") {
-              target.path = removeDotSegments(relative.path);
+            if (relative2.path[0] === "/") {
+              target.path = removeDotSegments(relative2.path);
             } else {
               const baseHasAuthority = base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0;
               if (baseHasAuthority && !base.path) {
-                target.path = "/" + relative.path;
+                target.path = "/" + relative2.path;
               } else if (!base.path) {
-                target.path = relative.path;
+                target.path = relative2.path;
               } else {
-                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative.path;
+                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative2.path;
               }
               target.path = base.scheme === void 0 && !baseHasAuthority && target.path[0] !== "/" ? removeDotSegmentsRelative(target.path) : removeDotSegments(target.path);
             }
-            target.query = relative.query;
+            target.query = relative2.query;
           }
           target.userinfo = base.userinfo;
           target.host = base.host;
@@ -11299,7 +11299,7 @@ var require_fast_uri = __commonJS({
         }
         target.scheme = base.scheme;
       }
-      target.fragment = relative.fragment;
+      target.fragment = relative2.fragment;
       return target;
     }
     function equal(uriA, uriB, options) {
@@ -11603,7 +11603,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve,
+      resolve: resolve4,
       resolveComponent,
       equal,
       serialize,
@@ -14593,7 +14593,8 @@ var require_dist2 = __commonJS({
 });
 
 // engine/src/cli.ts
-import { realpathSync as realpathSync2 } from "node:fs";
+import { readFileSync as readFileSync3, realpathSync as realpathSync3 } from "node:fs";
+import { resolve as resolve3 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // engine/src/engine.ts
@@ -19756,7 +19757,7 @@ var recursive = /* @__PURE__ */ new WeakMap();
 var NONE = 0;
 var ASSUMED = 1;
 var PROVEN = 2;
-function isRecursive(inst, stack, resolve) {
+function isRecursive(inst, stack, resolve4) {
   const cached2 = recursive.get(inst);
   if (cached2 !== void 0)
     return cached2 ? PROVEN : NONE;
@@ -19766,7 +19767,7 @@ function isRecursive(inst, stack, resolve) {
   let result = NONE;
   const check2 = (child) => {
     if (result !== PROVEN && child?._zod) {
-      const answer = isRecursive(child, stack, resolve);
+      const answer = isRecursive(child, stack, resolve4);
       if (answer > result)
         result = answer;
     }
@@ -19777,7 +19778,7 @@ function isRecursive(inst, stack, resolve) {
       const desc = Object.getOwnPropertyDescriptor(sh, key);
       if (spread && !desc.enumerable)
         continue;
-      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve) : NONE;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve4) : NONE;
       if (child > answer)
         answer = child;
     }
@@ -19841,7 +19842,7 @@ function isRecursive(inst, stack, resolve) {
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
-      const inner = def._cachedInner ?? (resolve ? inst._zod.innerType : void 0);
+      const inner = def._cachedInner ?? (resolve4 ? inst._zod.innerType : void 0);
       merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
     }
@@ -34490,11 +34491,12 @@ actions:
   auto:  [read, edit_in_task_worktree, run_tests, lint, commit, open_draft_pr]
   ask:   [git_push, merge, deploy, db_migration, delete_outside_repo, send_message]
   deny:  [force_push_protected, edit_secrets, disable_hooks]
-patterns:                 # how shell commands map to actions; replaces gates.json
-  git_push:      ["git push*"]
-  deploy:        ["*deploy*", "kubectl apply*", "terraform apply*"]
-  db_migration:  ["*migrate*", "prisma migrate*"]
-  force_push_protected: ["git push --force* origin main", "git push -f* origin main"]
+patterns:                 # how shell commands map to actions
+  git_push:      ["git push*", "gh pr create*"]
+  merge:         ["gh pr merge*"]
+  deploy:        ["*deploy*", "kubectl apply*", "kubectl delete*", "kubectl rollout*", "terraform apply*", "terraform destroy*", "helm install*", "helm upgrade*", "helm uninstall*"]
+  db_migration:  ["*migrate*", "*migration*", "alembic upgrade*", "prisma migrate*", "flyway migrate*", "psql * -c *", "mysql * -e *"]
+  force_push_protected: ["git push --force* origin main", "git push -f* origin main", "git push --force* origin master", "git push -f* origin master"]
 task_types:
   feature:  [plan, reuse_check, implement, test, verify, review, pr]
   bugfix:   [reproduce, reuse_check, fix, test, verify, pr]
@@ -34549,6 +34551,79 @@ function openEngine(cwd, deps = {}) {
   const policy = loadPolicy(repo);
   const db = openDb(join3(repo.estackDir, "state.db"));
   return { db, policy, repo, exec: deps.exec ?? realExec, now: deps.now ?? (() => /* @__PURE__ */ new Date()), cwd };
+}
+
+// engine/src/hooks.ts
+import { existsSync as existsSync3, realpathSync as realpathSync2 } from "node:fs";
+import { dirname as dirname2, isAbsolute, join as join4, relative, resolve, sep } from "node:path";
+
+// engine/src/match.ts
+var escapeRe = (c) => c.replace(/[.+^${}()|[\]\\\/-]/g, "\\$&");
+function globToRegExp(glob, mode) {
+  let out = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (mode === "path" && glob[i + 1] === "*") {
+        if (glob[i + 2] === "/") {
+          out += "(?:.*/)?";
+          i += 2;
+        } else {
+          out += ".*";
+          i += 1;
+        }
+      } else {
+        out += mode === "path" ? "[^/]*" : ".*";
+      }
+    } else if (c === "?") {
+      out += mode === "path" ? "[^/]" : ".";
+    } else {
+      out += escapeRe(c);
+    }
+  }
+  return new RegExp(`^${out}$`, "s");
+}
+function commandMatches(command, pattern) {
+  return globToRegExp(pattern, "command").test(command) || globToRegExp(`*${pattern}`, "command").test(command);
+}
+var HARDCODED_DENY = [
+  { action: "engine_state", pattern: "*.estack/state.db*" },
+  { action: "owner_only", pattern: "estack skip*" },
+  { action: "owner_only", pattern: "estack cancel*" },
+  { action: "owner_only", pattern: "estack override*" },
+  { action: "owner_only", pattern: "*estack.mjs skip*" },
+  { action: "owner_only", pattern: "*estack.mjs cancel*" },
+  { action: "owner_only", pattern: "*estack.mjs override*" },
+  { action: "disable_hooks", pattern: "*--no-verify*" },
+  { action: "disable_hooks", pattern: "*core.hooksPath*" },
+  { action: "disable_hooks", pattern: "git config*hooks*" }
+];
+function classifyCommand(command, policy) {
+  for (const h of HARDCODED_DENY) {
+    if (commandMatches(command, h.pattern)) return { kind: "deny", action: h.action, pattern: h.pattern, hardcoded: true };
+  }
+  for (const action of policy.actions.deny) {
+    for (const pattern of policy.patterns[action] ?? []) {
+      if (commandMatches(command, pattern)) return { kind: "deny", action, pattern, hardcoded: false };
+    }
+  }
+  for (const action of policy.actions.ask) {
+    for (const pattern of policy.patterns[action] ?? []) {
+      if (commandMatches(command, pattern)) return { kind: "ask", action, pattern };
+    }
+  }
+  return { kind: "none" };
+}
+function pathMatches(relPath, pattern) {
+  const re = globToRegExp(pattern, "path");
+  if (pattern.includes("/")) return re.test(relPath);
+  return re.test(relPath.slice(relPath.lastIndexOf("/") + 1));
+}
+function isProtected(relPath, policy) {
+  return policy.protected_paths.some((p) => pathMatches(relPath, p));
+}
+function isExempt(relPath, policy) {
+  return policy.exempt_paths.some((p) => pathMatches(relPath, p));
 }
 
 // engine/src/tasks.ts
@@ -34704,6 +34779,231 @@ function completeStep(e, input2) {
   });
   if (!result) return bad(rejected ?? "evidence rejected");
   return result;
+}
+
+// engine/src/hooks.ts
+var EDIT_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+var MCP_PREFIX = "mcp__plugin_estack_estack__";
+var OVERRIDE_WINDOW_MS = 30 * 60 * 1e3;
+function pre(decision, reason, updatedInput) {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: decision,
+      permissionDecisionReason: reason,
+      ...updatedInput ? { updatedInput } : {}
+    }
+  };
+}
+var deny = (reason) => pre("deny", reason);
+var actorOf = (ev) => ({ session_id: ev.session_id, ...ev.agent_id ? { agent_id: ev.agent_id } : {} });
+function consumeOverride(e, action, ref) {
+  const cutoff = new Date(e.now().getTime() - OVERRIDE_WINDOW_MS).toISOString();
+  return tx(e, () => {
+    const row = e.db.prepare(
+      `SELECT id FROM approvals WHERE decision = 'override' AND action = ? AND at >= ?
+       AND id NOT IN (SELECT json_extract(payload_json, '$.approval_id') FROM events
+                      WHERE kind = 'override_used' AND json_extract(payload_json, '$.approval_id') IS NOT NULL)
+       ORDER BY id DESC LIMIT 1`
+    ).get(action, cutoff);
+    if (!row) return null;
+    logEvent(e, { session_id: "hook" }, "override_used", null, { approval_id: row.id, ref });
+    return row.id;
+  });
+}
+function resolveReal(cwd, p) {
+  const abs = resolve(cwd, p);
+  let d = abs;
+  const rest = [];
+  while (!existsSync3(d)) {
+    const up = dirname2(d);
+    if (up === d) return abs;
+    rest.unshift(d.slice(up.length + 1));
+    d = up;
+  }
+  return join4(realpathSync2(d), ...rest);
+}
+function nearestDir(p) {
+  let d = dirname2(p);
+  while (!existsSync3(d)) {
+    const up = dirname2(d);
+    if (up === d) break;
+    d = up;
+  }
+  return d;
+}
+function preEdit(e, ev) {
+  const input2 = ev.tool_input ?? {};
+  const raw = typeof input2.file_path === "string" ? input2.file_path : typeof input2.notebook_path === "string" ? input2.notebook_path : null;
+  if (!raw) return null;
+  const abs = resolveReal(ev.cwd, raw);
+  const dir = nearestDir(abs);
+  const common = runBounded(e, dir, "git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (common.code !== 0) {
+    if (common.code === 128 && /not a git repository/i.test(common.stderr)) return null;
+    throw new EngineError("NOT_A_REPO", `git failed while checking ${raw}: ${common.stderr.trim() || `exit ${common.code}`}`);
+  }
+  const commonDir = common.stdout.trim();
+  let commonReal;
+  try {
+    commonReal = realpathSync2(commonDir);
+  } catch {
+    return null;
+  }
+  if (realpathSync2(dirname2(commonReal)) !== e.repo.root) return null;
+  const top = runBounded(e, dir, "git", ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0) {
+    if (top.code === 128 && /work ?tree/i.test(top.stderr)) {
+      const inGit = abs === commonReal || abs.startsWith(commonReal + sep);
+      return inGit ? deny(`${relative(e.repo.root, abs).split(sep).join("/")} is protected (git directory)`) : null;
+    }
+    throw new EngineError("NOT_A_REPO", `git failed while checking ${raw}: ${top.stderr.trim() || `exit ${top.code}`}`);
+  }
+  const worktree = top.stdout.trim();
+  const rel = relative(worktree, abs).split(sep).join("/");
+  if (rel.startsWith("..") || isAbsolute(rel)) return null;
+  if (rel === ".git" || rel.startsWith(".git/")) return deny(`${rel} is protected (git directory)`);
+  if (isProtected(rel, e.policy)) return deny(`${rel} is protected by .estack/policy.yaml`);
+  if (isExempt(rel, e.policy)) return null;
+  const bound = e.db.prepare(
+    `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+     WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ? LIMIT 1`
+  ).get(worktree, ev.session_id);
+  if (bound) return null;
+  return deny(`No open estack task for this session in ${worktree}. Start one with the start_task tool (title, type, goal, done_check) before editing ${rel}.`);
+}
+function recordAsk(e, ev, taskId, action, command) {
+  logEvent(e, actorOf(ev), "ask", taskId, { tool_use_id: ev.tool_use_id ?? null, action, command });
+}
+function preBash(e, ev) {
+  const command = typeof ev.tool_input?.command === "string" ? ev.tool_input.command : "";
+  const v = classifyCommand(command, e.policy);
+  if (v.kind === "none") return null;
+  if (v.kind === "deny") {
+    return deny(`${v.action}: blocked by ${v.hardcoded ? "estack" : ".estack/policy.yaml"} (pattern ${v.pattern})`);
+  }
+  if (ev.agent_id) return deny(`${v.action} runs only from the main session, with the owner's approval; report back to the orchestrator instead`);
+  if (v.action !== "git_push") {
+    recordAsk(e, ev, null, v.action, command);
+    return pre("ask", `${v.action} needs the owner's approval (pattern ${v.pattern})`);
+  }
+  const branch = runBounded(e, ev.cwd, "git", ["branch", "--show-current"]).stdout.trim();
+  const t = e.db.prepare("SELECT * FROM tasks WHERE branch = ? AND status IN ('open','done') ORDER BY id DESC LIMIT 1").get(branch);
+  const verify = t ? e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'verify'").get(t.id) : void 0;
+  const refusal = !t ? `no estack task for branch ${branch}; start one, or the owner can run \`estack override git_push --reason \u2026\` in a terminal` : verify?.status !== "done" ? `task #${t.id} has no verify evidence; run run_check with step verify first` : null;
+  if (refusal !== null) {
+    const used = consumeOverride(e, "git_push", ev.tool_use_id ?? "");
+    if (used === null) return deny(refusal);
+    recordAsk(e, ev, t?.id ?? null, v.action, command);
+    return pre("ask", `${v.action} (pattern ${v.pattern}) allowed once by an owner override (approval #${used}); the owner must confirm`);
+  }
+  recordAsk(e, ev, t.id, v.action, command);
+  return pre("ask", `${v.action} (pattern ${v.pattern}) for task #${t.id} "${t.title}": verify is done, the owner must confirm`);
+}
+function preToolUse(e, ev) {
+  const tool = ev.tool_name ?? "";
+  if (EDIT_TOOLS.has(tool)) return preEdit(e, ev);
+  if (tool === "Bash") return preBash(e, ev);
+  if (tool.startsWith(MCP_PREFIX)) {
+    return pre("allow", "estack tool call", { ...ev.tool_input ?? {}, actor: actorOf(ev) });
+  }
+  return null;
+}
+function postToolUse(e, ev) {
+  if (ev.tool_name !== "Bash" || !ev.tool_use_id) return null;
+  const row = e.db.prepare(
+    "SELECT task_id, payload_json FROM events WHERE kind = 'ask' AND json_extract(payload_json, '$.tool_use_id') = ? ORDER BY id DESC LIMIT 1"
+  ).get(ev.tool_use_id);
+  if (!row) return null;
+  const p = JSON.parse(row.payload_json);
+  const actor = actorOf(ev);
+  const by = `${actor.session_id}/${actor.agent_id ?? "main"}`;
+  tx(e, () => {
+    e.db.prepare("INSERT INTO approvals (task_id, action, command, decision, by, at) VALUES (?, ?, ?, 'approved', ?, ?)").run(row.task_id, p.action, p.command, by, e.now().toISOString());
+    logEvent(e, actor, "approved", row.task_id, { tool_use_id: ev.tool_use_id, action: p.action });
+  });
+  return null;
+}
+var MAX_CONTEXT_TASKS = 20;
+function ctxOut(eventName, additionalContext) {
+  return { hookSpecificOutput: { hookEventName: eventName, additionalContext } };
+}
+function sessionStart(e, _ev) {
+  const head = "estack: this repository is opted in; code edits need an open task (start_task), pushes need verify evidence.";
+  const open2 = listOpen(e).slice(0, MAX_CONTEXT_TASKS);
+  const lines = open2.length ? open2.map((v) => `#${v.task.id} [${v.task.type}] ${v.task.title} (${v.task.branch}) next: ${v.next?.name ?? "none"}`) : ["no open tasks"];
+  return ctxOut("SessionStart", [head, ...lines].join("\n"));
+}
+function boundTasks(e, ev, agentOnly) {
+  const ids = new Set(e.db.prepare("SELECT task_id, agent_id FROM task_bindings WHERE session_id = ?").all(ev.session_id).filter((b) => !agentOnly || b.agent_id === (ev.agent_id ?? null)).map((b) => b.task_id));
+  return listOpen(e).filter((v) => ids.has(v.task.id));
+}
+function userPromptSubmit(e, ev) {
+  const v = boundTasks(e, ev, false).find((t) => t.next);
+  return v ? ctxOut("UserPromptSubmit", `estack: task #${v.task.id} next step: ${v.next.name}`) : null;
+}
+function stop(e, ev) {
+  if (ev.stop_hook_active) return null;
+  const sub = ev.hook_event_name === "SubagentStop";
+  const reasons = [];
+  for (const v of boundTasks(e, ev, sub)) {
+    const t = v.task;
+    const work = v.steps.find((s) => s.name === "implement" || s.name === "fix");
+    if (!work) continue;
+    const settled = (n) => ["done", "skipped"].includes(v.steps.find((s) => s.name === n)?.status ?? "");
+    if (!settled(work.name)) {
+      let n = 0;
+      try {
+        const r = runBounded(e, t.cwd, "git", ["rev-list", "--count", `${t.base_sha}..refs/heads/${t.branch}`]);
+        if (r.code === 0) n = Number(r.stdout.trim()) || 0;
+      } catch {
+        continue;
+      }
+      if (n > 0) {
+        reasons.push(`task #${t.id} has ${n} new commit(s) on ${t.branch} but its ${work.name} step has no evidence; record it with complete_step (kind commit) or say why not.`);
+      }
+    } else if (sub && v.steps.some((s) => s.name === "test") && !settled("test")) {
+      reasons.push(`task #${t.id}: run run_check with step test before finishing.`);
+    }
+  }
+  return reasons.length ? { decision: "block", reason: reasons.join("\n") } : null;
+}
+function runHook(name, ev, deps = {}) {
+  const gate = name === "pre-tool-use";
+  let e;
+  try {
+    try {
+      e = openEngine(ev.cwd, deps);
+    } catch (x) {
+      if (x instanceof EngineError && (x.code === "NOT_OPTED_IN" || x.code === "NOT_A_REPO")) return null;
+      throw x;
+    }
+    switch (name) {
+      case "pre-tool-use":
+        return preToolUse(e, ev);
+      case "post-tool-use":
+        return postToolUse(e, ev);
+      case "session-start":
+        return sessionStart(e, ev);
+      case "user-prompt-submit":
+        return userPromptSubmit(e, ev);
+      case "stop":
+        return stop(e, { ...ev, hook_event_name: "Stop" });
+      case "subagent-stop":
+        return stop(e, { ...ev, hook_event_name: "SubagentStop" });
+      default:
+        return null;
+    }
+  } catch (x) {
+    if (!gate) return null;
+    const msg = (x instanceof Error ? x.message : String(x)).replace(/\s*\n\s*/g, " ");
+    return deny(`estack: ${msg}`);
+  } finally {
+    try {
+      e?.db.close();
+    } catch {
+    }
+  }
 }
 
 // engine/src/checks.ts
@@ -42254,7 +42554,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error62) {
@@ -42271,7 +42571,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve4, reject) => {
       const earlyReject = (error62) => {
         reject(error62);
       };
@@ -42349,7 +42649,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve(parseResult.data);
+            resolve4(parseResult.data);
           }
         } catch (error62) {
           reject(error62);
@@ -42611,12 +42911,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve4, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve, interval);
+      const timeoutId = setTimeout(resolve4, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -43756,7 +44056,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -44420,12 +44720,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve4) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve();
+        resolve4();
       } else {
-        this._stdout.once("drain", resolve);
+        this._stdout.once("drain", resolve4);
       }
     });
   }
@@ -44544,17 +44844,100 @@ function recordOverride(e, input2, env) {
   });
 }
 
+// engine/src/githooks.ts
+import { spawnSync as spawnSync2 } from "node:child_process";
+import { chmodSync, existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join5, resolve as resolve2 } from "node:path";
+var MANAGED_MARK = "# estack-managed-hook";
+var HOOKS = ["pre-commit", "pre-push"];
+var shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+function script(name, enginePath) {
+  const push = name === "pre-push";
+  const lines = [
+    "#!/bin/sh",
+    MANAGED_MARK,
+    `dir="$(dirname "$0")"`,
+    ...push ? ["input=$(cat)"] : [],
+    push ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || exit $?; done` : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || exit $?; done`,
+    `[ "$CLAUDECODE" = "1" ] || exit 0`,
+    `engine=${shq(enginePath)}`,
+    `if [ ! -f "$engine" ]; then echo "estack: engine not found at $engine; re-run /estack:setup" >&2; exit 1; fi`,
+    push ? `printf '%s\\n' "$input" | node --no-warnings "$engine" git-hook ${name} "$@"
+exit $?` : `exec node --no-warnings "$engine" git-hook ${name} "$@"`
+  ];
+  return lines.join("\n") + "\n";
+}
+function installGitHooks(repoRoot, enginePath) {
+  const cfg = spawnSync2("git", ["config", "core.hooksPath"], { cwd: repoRoot, encoding: "utf8" });
+  const hp = cfg.status === 0 ? cfg.stdout.trim() : "";
+  if (hp) return { installed: [], chained: [], skipped: `core.hooksPath is set (${hp})` };
+  const r = runGit(repoRoot, ["rev-parse", "--git-path", "hooks"]);
+  const dir = resolve2(repoRoot, r);
+  mkdirSync2(dir, { recursive: true });
+  const installed = [], chained = [];
+  for (const name of HOOKS) {
+    const p = join5(dir, name);
+    if (existsSync4(p) && !readFileSync2(p, "utf8").includes(MANAGED_MARK)) {
+      let dest = `${p}.estack-prev`;
+      for (let n = 2; existsSync4(dest); n++) dest = `${p}.estack-prev.${n}`;
+      renameSync(p, dest);
+      chained.push(name);
+    }
+    writeFileSync2(p, script(name, enginePath));
+    chmodSync(p, 493);
+    installed.push(name);
+  }
+  return { installed, chained };
+}
+function runGit(cwd, args) {
+  const r = spawnSync2("git", args, { cwd, encoding: "utf8" });
+  if (r.status !== 0) throw new EngineError("NOT_A_REPO", `git ${args.join(" ")} failed: ${String(r.stderr).trim()}`);
+  return String(r.stdout).trim();
+}
+function preCommit(e, cwd) {
+  const top = runBounded(e, cwd, "git", ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0) throw new EngineError("NOT_A_REPO", `not a git repository: ${cwd}`);
+  const toplevel = top.stdout.trim();
+  const staged = runBounded(e, toplevel, "git", ["diff", "--cached", "--name-only", "-z"]);
+  if (staged.code !== 0) throw new EngineError("NOT_A_REPO", `git diff failed: ${staged.stderr.trim()}`);
+  const paths = staged.stdout.split("\0").filter(Boolean);
+  for (const p of paths) if (isProtected(p, e.policy)) return `commit touches protected ${p}`;
+  if (paths.every((p) => isExempt(p, e.policy))) return null;
+  const open2 = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' AND cwd = ? LIMIT 1").get(toplevel);
+  return open2 ? null : `no open estack task for ${toplevel}`;
+}
+var ZEROS = /^0+$/;
+function prePush(e, cwd, stdin) {
+  void cwd;
+  for (const line of stdin.split("\n")) {
+    const [localRef, localSha] = line.trim().split(/\s+/);
+    if (!localRef || !localSha || ZEROS.test(localSha) || !localRef.startsWith("refs/heads/")) continue;
+    const b = localRef.slice("refs/heads/".length);
+    const t = e.db.prepare("SELECT * FROM tasks WHERE branch = ? ORDER BY id DESC LIMIT 1").get(b);
+    const verify = t ? e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'verify'").get(t.id) : void 0;
+    if (t && verify && (verify.status === "done" || verify.status === "skipped")) continue;
+    if (consumeOverride(e, "git_push", `pre-push:${b}`) !== null) continue;
+    return t ? `branch ${b} has no verify evidence (task #${t.id})` : `no estack task for branch ${b}`;
+  }
+  return null;
+}
+
 // engine/src/cli.ts
 var USAGE = `usage: estack <command>
-  init
+  init [--engine <path>]
+  git-hook <pre-commit|pre-push>                     (called by the installed git hooks)
   status [--json]
   run --task <id> --step <test|verify> [--timeout <sec>]
   skip --task <id> --step <name> --reason <text>     (owner only)
   cancel --task <id> --reason <text>                 (owner only)
   override <action> --reason <text> [--task <id>]    (owner only)
+  hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
 var Usage = class extends Error {
 };
+var runHookDeny = (reason) => ({
+  hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `estack: ${reason}` }
+});
 function parse4(args, flags, bools = []) {
   const pos = [], opt = {}, bool = /* @__PURE__ */ new Set();
   for (let i = 0; i < args.length; i++) {
@@ -44594,9 +44977,42 @@ function status(e, json2, out) {
 function dispatch(cmd, rest, io) {
   switch (cmd) {
     case "init": {
+      const { opt } = parse4(rest, ["engine"]);
       const { created } = initRepo(io.cwd);
       io.out(created.length ? created.map((f) => `created ${f}`).join("\n") + "\n" : "already initialised\n");
+      const entry2 = process.argv[1];
+      const enginePath = opt.engine !== void 0 ? resolve3(io.cwd, opt.engine) : entry2 && /estack\.mjs$/.test(entry2) ? realpathSync3(entry2) : null;
+      if (enginePath === null) io.out("git hooks not installed: engine path unknown\n");
+      else {
+        const h = installGitHooks(findRepo(io.cwd).root, enginePath);
+        if (h.skipped) io.out(`git hooks not installed: ${h.skipped}
+`);
+        else io.out(`installed git hooks: ${h.installed.join(", ")}
+`);
+        if (h.chained.length) io.out(`chained existing hooks: ${h.chained.join(", ")}
+`);
+      }
       return 0;
+    }
+    case "git-hook": {
+      const name = rest[0] ?? "";
+      if (name !== "pre-commit" && name !== "pre-push") throw new Usage("git-hook needs pre-commit or pre-push");
+      let e;
+      try {
+        e = openEngine(io.cwd);
+      } catch (x) {
+        if (x instanceof EngineError && (x.code === "NOT_OPTED_IN" || x.code === "NOT_A_REPO")) return 0;
+        throw x;
+      }
+      try {
+        const msg = name === "pre-commit" ? preCommit(e, io.cwd) : prePush(e, io.cwd, io.stdin ?? readFileSync3(0, "utf8"));
+        if (msg === null) return 0;
+        io.err(`estack: ${msg}
+`);
+        return 1;
+      } finally {
+        e.db.close();
+      }
     }
     case "status": {
       const { bool } = parse4(rest, [], ["json"]);
@@ -44642,6 +45058,21 @@ function dispatch(cmd, rest, io) {
 `);
       return 0;
     }
+    case "hook": {
+      const name = rest[0] ?? "";
+      const gate = name === "pre-tool-use";
+      let ev;
+      try {
+        ev = JSON.parse(io.stdin ?? readFileSync3(0, "utf8"));
+        if (ev === null || typeof ev !== "object") throw new Error("not an object");
+      } catch {
+        if (gate) io.out(JSON.stringify(runHookDeny("invalid hook event on stdin")));
+        return 0;
+      }
+      const output2 = runHook(name, ev);
+      if (output2 !== null) io.out(JSON.stringify(output2));
+      return 0;
+    }
     case "mcp":
       serveStdio(io.cwd).catch((x) => {
         io.err(`estack: ${x instanceof Error ? x.message : String(x)}
@@ -44673,7 +45104,7 @@ ${USAGE}`);
   }
 }
 var entry = process.argv[1];
-if (entry && realpathSync2(entry) === realpathSync2(fileURLToPath(import.meta.url))) {
+if (entry && realpathSync3(entry) === realpathSync3(fileURLToPath(import.meta.url))) {
   process.exitCode = main(process.argv.slice(2), {
     cwd: process.cwd(),
     env: process.env,
