@@ -39,7 +39,7 @@ Do this before writing anything. The edit and shell-command hooks fail closed wh
 | `exempt_paths` | Paths editable with no task, such as markdown and `docs/` |
 | `commands.test`, `commands.verify` | What the engine itself runs for the test and verify steps. Set these to the real commands for this repository |
 
-Show the pattern list for each action class and invite edits. The deploy and migration patterns are the least portable part of this design because every team names those commands differently, and `*deploy*` matches any command containing that substring, including a harmless one. Offer to narrow any pattern the user thinks will misfire.
+Show the pattern list for each action class and invite edits. The deploy and migration patterns are the least portable part of this design because every team names those commands differently. The defaults match command forms (`npm run deploy`, `terraform apply`, `prisma migrate deploy`, and so on), so a team that deploys or migrates through its own script name needs to add that pattern, and local dev migrations such as `prisma migrate dev` stay ungated. Offer to add or narrow any pattern the user thinks will miss or misfire.
 
 Read-only commands are deliberately absent. `kubectl get`, `git status`, and `terraform plan` are not gated, because a gate that fires on reading is a gate people turn off within a week.
 
@@ -57,7 +57,7 @@ Run the engine's init in the project root:
 node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" init --engine "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs"
 ```
 
-Report each line it prints. It creates `.estack/policy.yaml` and `.estack/brief.md`, and it installs the git hooks `pre-commit` and `pre-push`, which run the same engine so a commit or push made by an agent through git itself is checked too. They act only when an agent runs git (`CLAUDECODE=1`), and the owner's own terminal is never checked. If it prints `git hooks not installed: core.hooksPath is set`, the repository routes hooks through its own directory. Say so, and tell the user that git-level enforcement is off until they call `estack git-hook pre-commit` and `estack git-hook pre-push` from their own hooks. The Claude Code hooks still apply either way. If it chained an existing hook, say so.
+Report each line it prints. It creates `.estack/policy.yaml` and `.estack/brief.md`, and it installs the git hooks `pre-commit` and `pre-push`, which run the same engine so a commit or push made by an agent through git itself is checked too. They act only when an agent runs git (`CLAUDECODE=1`), and the owner's own terminal is never checked. If it prints `git hooks not installed: core.hooksPath is set`, the repository routes hooks through its own directory. Say so, and tell the user that git-level enforcement is off until they call `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" git-hook pre-commit` and `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" git-hook pre-push` from their own hooks (with `CLAUDE_PLUGIN_ROOT` replaced by the plugin's real path, and the pre-push hook's stdin passed through). The Claude Code hooks still apply either way. If it chained an existing hook, say so.
 
 `.estack/brief.md` is for the owner to fill in: it is where the project's goals and constraints go, and the engine does not write them for you. Init is safe to re-run and never overwrites an existing file. The repository is opted in once `.estack/policy.yaml` exists.
 

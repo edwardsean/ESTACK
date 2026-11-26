@@ -17,7 +17,7 @@ A repository is opted in when `.estack/policy.yaml` exists. `/estack:setup` crea
 | `git push`, `gh pr create` | Needs verify evidence on the task for the branch, then the owner's approval | A push is outward-facing and hard to take back |
 | Merge, deploy, database migration | The owner's approval, every time | Same reason, with a bigger blast radius |
 | Force push to a protected branch | Denied | Not recoverable |
-| Anything that touches `.estack/state.db`, runs `estack skip`, `cancel` or `override`, uses `--no-verify`, or changes `core.hooksPath` or git hooks config | Always denied, and not configurable | These would switch the gates off |
+| Anything that touches `.estack/state.db`, runs `estack skip`, `cancel` or `override`, uses `--no-verify` or `git commit -n`, changes `core.hooksPath` or git hooks config, or mentions `CLAUDECODE` | Always denied, and not configurable | These would switch the gates off |
 
 Markdown, `docs/` and the project brief are exempt from the task rule. Read-only commands are not gated.
 
@@ -31,7 +31,7 @@ A denial is an answer, not an obstacle. Report it to whoever asked for the work,
 
 The usual fixes are ordinary. A denied edit means starting a task. A denied push for missing verify evidence means running `run_check` with step `verify`. Do those, and only those.
 
-There is an owner override for a push when no task fits: `estack override git_push --reason ...`. **Only the owner runs it, from their own terminal.** An agent never runs it, never suggests running it as a way past a denial, and never edits the policy to loosen a rule. If the owner decides to use it, they will say so.
+There is an owner override for a push when no task fits: `estack override git_push --reason ...`. With one in place the push gate asks instead of denying, and the git pre-push hook uses the override up when the push runs. **Only the owner runs it, from their own terminal.** An agent never runs it, never suggests running it as a way past a denial, and never edits the policy to loosen a rule. If the owner decides to use it, they will say so.
 
 ## When a prompt appears
 
@@ -41,7 +41,7 @@ If a gated command ran and nothing asked or denied, the hooks are not firing. Th
 
 ## What the hooks do not cover
 
-They match edit tools, `Bash` and the estack MCP tools. A push made through some other MCP server, and anything a human types in their own terminal, are outside the Claude Code hooks. The git hooks catch an agent that runs git itself (`CLAUDECODE=1`), including from a shell the Claude Code hooks do not see, but only when `estack init` installed them, and not when `core.hooksPath` pointed elsewhere. They never check the owner's own terminal. Every action in a repository that never opted in goes ungated too.
+They match edit tools, `Bash` and the estack MCP tools. Shell writes such as `echo > file`, `sed -i` or `tee` are not seen by the edit gate, though the git pre-commit hook still checks what an agent commits; that is not permission to edit through the shell to dodge the task rule. `gh pr create` counts as a push. The hard-coded denials match text, so they also catch harmless mentions such as grepping for `--no-verify`; report that and let the owner run it. A push made through some other MCP server, and anything a human types in their own terminal, are outside the Claude Code hooks. The git hooks catch an agent that runs git itself (`CLAUDECODE=1`), including from a shell the Claude Code hooks do not see, but only when `estack init` installed them, and not when `core.hooksPath` pointed elsewhere. They never check the owner's own terminal. Every action in a repository that never opted in goes ungated too.
 
 A gate is a checkpoint on the paths someone thought to cover. It is not a sandbox, and describing it as one overstates what a reviewer can rely on.
 
