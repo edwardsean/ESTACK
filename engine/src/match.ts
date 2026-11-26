@@ -7,7 +7,7 @@ const escapeRe = (c: string) => c.replace(/[.+^${}()|[\]\\\/-]/g, "\\$&");
  * command mode: `*` is any characters (including `/` and spaces), `?` is one character.
  * path mode: `**` spans segments, `*` stays in one segment, `?` is one non-slash character.
  */
-export function globToRegExp(glob: string, mode: "command" | "path"): RegExp {
+export function globToRegExp(glob: string, mode: "command" | "path", ignoreCase = false): RegExp {
   let out = "";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
@@ -29,13 +29,25 @@ export function globToRegExp(glob: string, mode: "command" | "path"): RegExp {
       out += escapeRe(c);
     }
   }
-  return new RegExp(`^${out}$`, "s");
+  return new RegExp(`^${out}$`, ignoreCase ? "si" : "s");
 }
 
 /** Whole-command match, or the whole command with `*` prepended (catches `cd x && ...`). */
-export function commandMatches(command: string, pattern: string): boolean {
-  return globToRegExp(pattern, "command").test(command) || globToRegExp(`*${pattern}`, "command").test(command);
+export function commandMatches(command: string, pattern: string, ignoreCase = false): boolean {
+  return globToRegExp(pattern, "command", ignoreCase).test(command) || globToRegExp(`*${pattern}`, "command", ignoreCase).test(command);
 }
+
+/** git options that may sit between `git` and its subcommand. */
+const GIT_GLOBAL_OPTS = String.raw`(?: (?:-C \S+|-c \S+|--git-dir=\S+|--work-tree=\S+|--git-dir \S+|--work-tree \S+|--no-pager|-P))+`;
+const GIT_GLOBAL_RE = new RegExp(String.raw`\bgit${GIT_GLOBAL_OPTS}(?= |$)`, "g");
+
+/** Collapse whitespace runs to one space and drop git global options, so `git -C x  push` reads `git push`. */
+export function normaliseCommand(command: string): string {
+  return command.replace(/\s+/g, " ").replace(GIT_GLOBAL_RE, "git");
+}
+
+/** `git commit -n` (and clusters like `-anm`) is the short form of --no-verify. */
+const COMMIT_NO_VERIFY = /\bgit commit\b[^|;&]*\s-[a-zA-Z]*n[a-zA-Z]*\b/;
 
 export type CommandVerdict =
   | { kind: "none" }
@@ -44,6 +56,7 @@ export type CommandVerdict =
 
 export const HARDCODED_DENY: ReadonlyArray<{ action: string; pattern: string }> = [
   { action: "engine_state", pattern: "*.estack/state.db*" },
+  { action: "engine_state", pattern: "*sqlite3*state.db*" },
   { action: "owner_only", pattern: "estack skip*" },
   { action: "owner_only", pattern: "estack cancel*" },
   { action: "owner_only", pattern: "estack override*" },
@@ -53,20 +66,30 @@ export const HARDCODED_DENY: ReadonlyArray<{ action: string; pattern: string }> 
   { action: "disable_hooks", pattern: "*--no-verify*" },
   { action: "disable_hooks", pattern: "*core.hooksPath*" },
   { action: "disable_hooks", pattern: "git config*hooks*" },
+  { action: "disable_hooks", pattern: "*CLAUDECODE*" },
 ];
 
+/**
+ * Hard-coded denials (case-insensitive), then policy deny, then policy ask (case-sensitive).
+ * Each is checked against the raw command and its normalised form; either matching counts.
+ */
 export function classifyCommand(command: string, policy: Policy): CommandVerdict {
+  const forms = [command, normaliseCommand(command)];
+  const any = (pattern: string, ignoreCase = false) => forms.some((c) => commandMatches(c, pattern, ignoreCase));
   for (const h of HARDCODED_DENY) {
-    if (commandMatches(command, h.pattern)) return { kind: "deny", action: h.action, pattern: h.pattern, hardcoded: true };
+    if (any(h.pattern, true)) return { kind: "deny", action: h.action, pattern: h.pattern, hardcoded: true };
+  }
+  if (forms.some((c) => COMMIT_NO_VERIFY.test(c))) {
+    return { kind: "deny", action: "disable_hooks", pattern: "git commit -n", hardcoded: true };
   }
   for (const action of policy.actions.deny) {
     for (const pattern of policy.patterns[action] ?? []) {
-      if (commandMatches(command, pattern)) return { kind: "deny", action, pattern, hardcoded: false };
+      if (any(pattern)) return { kind: "deny", action, pattern, hardcoded: false };
     }
   }
   for (const action of policy.actions.ask) {
     for (const pattern of policy.patterns[action] ?? []) {
-      if (commandMatches(command, pattern)) return { kind: "ask", action, pattern };
+      if (any(pattern)) return { kind: "ask", action, pattern };
     }
   }
   return { kind: "none" };

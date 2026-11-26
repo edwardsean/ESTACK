@@ -49,6 +49,57 @@ describe("command matching", () => {
   });
 });
 
+describe("phase 3 review fixes", () => {
+  const v = (c: string) => classifyCommand(c, policy);
+
+  test("F2 git commit -n skips pre-commit, so short -n clusters are denied", () => {
+    for (const c of ["git commit -n -m x", "git commit -nm x", "git commit -an", "git commit -anm x"]) {
+      expect(v(c), c).toMatchObject({ kind: "deny", action: "disable_hooks", hardcoded: true });
+    }
+    for (const c of ['git commit -m "fix n"', "git commit --amend", "git commit -m x"]) {
+      expect(v(c), c).toEqual({ kind: "none" });
+    }
+  });
+
+  test("F3 core.hookspath is caught in any case", () => {
+    for (const c of ["git -c core.hookspath=/dev/null commit -m x", "git -c CORE.HOOKSPATH=/dev/null commit -m x"]) {
+      expect(v(c), c).toMatchObject({ kind: "deny", action: "disable_hooks", hardcoded: true });
+    }
+  });
+
+  test("F4 touching CLAUDECODE is denied", () => {
+    for (const c of ["CLAUDECODE= git commit -m x", "env -u CLAUDECODE git push", "unset CLAUDECODE; git push origin feat"]) {
+      expect(v(c), c).toMatchObject({ kind: "deny", action: "disable_hooks", hardcoded: true });
+    }
+  });
+
+  test("F5 git global options and extra spaces do not hide a push", () => {
+    for (const c of ["git -C . push origin feat", "git -c a=b push", "git  push", "git --no-pager push", "git --git-dir=.git push", "git --work-tree . push"]) {
+      expect(v(c), c).toMatchObject({ kind: "ask", action: "git_push" });
+    }
+    expect(v("git -C . status")).toEqual({ kind: "none" });
+  });
+
+  test("F8 deploy and migration patterns are command forms, not substrings", () => {
+    for (const c of ["ls db/migrations", "grep -rn deploy src", "git log --grep=migrate", "prisma migrate dev"]) {
+      expect(v(c), c).toEqual({ kind: "none" });
+    }
+    expect(v("prisma migrate deploy")).toMatchObject({ kind: "ask", action: "db_migration" });
+    expect(v("npx prisma migrate deploy")).toMatchObject({ kind: "ask", action: "db_migration" });
+    expect(v("npm run deploy")).toMatchObject({ kind: "ask", action: "deploy" });
+  });
+
+  test("C1 force push with the flag after the refspec is denied", () => {
+    for (const c of ["git push origin main --force", "git push origin main -f", "git push origin +main", "git push origin master --force", "git push origin +master"]) {
+      expect(v(c), c).toMatchObject({ kind: "deny", action: "force_push_protected", hardcoded: false });
+    }
+  });
+
+  test("C2 sqlite3 on state.db from inside .estack is denied", () => {
+    expect(v("cd .estack && sqlite3 state.db 'select 1'")).toMatchObject({ kind: "deny", action: "engine_state", hardcoded: true });
+  });
+});
+
 describe("path matching", () => {
   test("path globs: ** spans dirs, * stays in a segment, no-slash matches basename", () => {
     expect(pathMatches("docs/a/b.md", "docs/**")).toBe(true);
