@@ -82,6 +82,11 @@ else
   else
     fail "broken engine did not produce a deny"
   fi
+  if printf '%s' "$br_out" | grep -q 'could not run (Error: boom)'; then
+    pass "broken engine: the deny names the error line, not the stack header"
+  else
+    fail "broken engine deny does not name the error (Error: boom)"
+  fi
   rm -rf "$tmp"
 fi
 

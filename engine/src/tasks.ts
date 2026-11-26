@@ -54,10 +54,25 @@ export function listOpen(e: Engine): TaskView[] {
 export const EVIDENCE_TIMEOUT_MS = 30_000;
 
 /** Run git/gh with the evidence timeout; a timeout is BAD_EVIDENCE. */
-export function runBounded(e: Engine, cwd: string, file: string, args: string[]): ExecResult {
-  const r = e.exec.run(file, args, { cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+/** Git calls made from Claude Code hooks and git hooks must finish well inside the 10 s hook timeout. */
+export const HOOK_GIT_TIMEOUT_MS = 5_000;
+
+export function runBounded(e: Engine, cwd: string, file: string, args: string[], timeoutMs = EVIDENCE_TIMEOUT_MS): ExecResult {
+  const r = e.exec.run(file, args, { cwd, timeoutMs });
   if (r.timedOut) bad("gh/git timed out");
   return r;
+}
+
+/**
+ * The one push-readiness rule shared by the Bash gate and the pre-push hook: the newest open or done
+ * task on `branch`, and whether its verify step is settled (done or skipped).
+ */
+export function pushReadiness(e: Engine, branch: string): { task: Task | null; verifySettled: boolean } {
+  const task = (e.db.prepare("SELECT * FROM tasks WHERE branch = ? AND status IN ('open','done') ORDER BY id DESC LIMIT 1")
+    .get(branch) as unknown as Task | undefined) ?? null;
+  if (!task) return { task: null, verifySettled: false };
+  const verify = e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'verify'").get(task.id) as { status: string } | undefined;
+  return { task, verifySettled: verify?.status === "done" || verify?.status === "skipped" };
 }
 
 export function startTask(e: Engine, input: {

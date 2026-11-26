@@ -7,6 +7,8 @@ import { openEngine } from "../src/engine";
 import { runHook, type HookEvent } from "../src/hooks";
 import { recordOverride, skipStep } from "../src/owner";
 import { initRepo } from "../src/policy";
+import { realExec, type Exec } from "../src/exec";
+import { preCommit, prePush } from "../src/githooks";
 import { startTask } from "../src/tasks";
 import { fakeExec, makeRepo } from "./helpers";
 
@@ -177,14 +179,16 @@ describe("hooks", () => {
     expect(JSON.parse(ev[0].payload_json)).toMatchObject({ tool_use_id: "tu1", action: "git_push" });
   });
 
-  test("an owner override lets exactly one push through to the ask prompt", () => {
+  test("an owner override turns the push refusal into an ask without spending it (pre-push spends it)", () => {
     const dir = repo();
     const e = openEngine(dir, deps);
     recordOverride(e, { action: "git_push", reason: "r" }, {});
     e.db.close();
-    expect(decision(bash(dir, "git push origin main", { tool_use_id: "a" }))).toBe("ask");
-    expect(decision(bash(dir, "git push origin main", { tool_use_id: "b" }))).toBe("deny");
-    expect(rows(dir, "SELECT * FROM events WHERE kind='override_used'")).toHaveLength(1);
+    const a = bash(dir, "git push origin main", { tool_use_id: "a" });
+    expect(decision(a)).toBe("ask");
+    expect(reason(a)).toMatch(/owner override \(approval #\d+\)/);
+    expect(decision(bash(dir, "git push origin main", { tool_use_id: "b" }))).toBe("ask");
+    expect(rows(dir, "SELECT * FROM events WHERE kind='override_used'")).toHaveLength(0);
   });
 
   test("post-tool-use after an ask records an approval", () => {
@@ -206,10 +210,60 @@ describe("hooks", () => {
     const dir = repo();
     const r = pre(dir, { tool_name: "mcp__plugin_estack_estack__start_task", agent_id: "A", tool_input: { title: "x", actor: { session_id: "fake" } } });
     expect(decision(r)).toBe("allow");
-    expect(r.hookSpecificOutput.updatedInput).toEqual({ title: "x", actor: { session_id: S, agent_id: "A" } });
+    expect(r.hookSpecificOutput.updatedInput).toEqual({ title: "x", cwd: dir, actor: { session_id: S, agent_id: "A" } });
     const m = pre(dir, { tool_name: "mcp__plugin_estack_estack__status", tool_input: {} });
     expect(m.hookSpecificOutput.updatedInput.actor).toEqual({ session_id: S });
+    expect("cwd" in m.hookSpecificOutput.updatedInput).toBe(false);
     expect("agent_id" in m.hookSpecificOutput.updatedInput.actor).toBe(false);
+  });
+
+  test("C6 start_task gets the caller's cwd stamped over a typed one", () => {
+    const dir = repo();
+    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    execFileSync("git", ["worktree", "add", "-b", "feat", wt], { cwd: dir, stdio: "ignore" });
+    const r = pre(wt, { tool_name: "mcp__plugin_estack_estack__start_task", tool_input: { title: "x", cwd: "/elsewhere" } });
+    expect(decision(r)).toBe("allow");
+    expect(r.hookSpecificOutput.updatedInput.cwd).toBe(wt);
+  });
+
+  test("F7 realExec.run pins LC_ALL=C, and an outside-repo write under a foreign locale is allowed", () => {
+    const dir = repo();
+    expect(realExec.run("sh", ["-c", 'printf %s "$LC_ALL"'], { cwd: dir }).stdout).toBe("C");
+    const saved = { LC_ALL: process.env.LC_ALL, LANG: process.env.LANG };
+    process.env.LC_ALL = "de_DE.UTF-8";
+    process.env.LANG = "de_DE.UTF-8";
+    try {
+      const other = realpathSync(mkdtempSync(join(tmpdir(), "estack-other-")));
+      expect(edit(dir, join(other, "a.ts"), { tool_name: "Write" })).toBeNull();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+  });
+
+  test("C3 every git call from the hooks uses a 5 s timeout", () => {
+    const dir = repo();
+    const seen: { args: string; timeoutMs?: number }[] = [];
+    const exec: Exec = {
+      run: (f, a, o) => { if (f === "git") seen.push({ args: a.join(" "), timeoutMs: o.timeoutMs }); return realExec.run(f, a, o); },
+      shell: realExec.shell,
+    };
+    const d = { exec };
+    const e0 = openEngine(dir, d);
+    const id = startTask(e0, { title: "t", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir }).task.id;
+    e0.db.close();
+    seen.length = 0;
+    execFileSync("git", ["commit", "--allow-empty", "-m", "work"], { cwd: dir, stdio: "ignore" });
+    runHook("pre-tool-use", ev(dir, { tool_name: "Edit", tool_input: { file_path: "src/a.ts" } }), d);
+    runHook("pre-tool-use", ev(dir, { tool_name: "Bash", tool_input: { command: "git push origin main" }, tool_use_id: "x" }), d);
+    runHook("stop", ev(dir, { hook_event_name: "Stop" }), d);
+    const e = openEngine(dir, d);
+    try {
+      preCommit(e, dir);
+      prePush(e, dir, "refs/heads/main abc refs/heads/main 0000000000000000000000000000000000000000\n");
+    } finally { e.db.close(); }
+    expect(id).toBeGreaterThan(0);
+    expect(seen.length).toBeGreaterThanOrEqual(5);
+    for (const c of seen) expect(c.timeoutMs, c.args).toBe(5000);
   });
 
   test("a broken policy denies gates with a one-line reason", () => {

@@ -19,7 +19,13 @@ errf="$(mktemp 2>/dev/null || echo /dev/null)"
 out="$(printf '%s' "$input" | node --no-warnings "$engine" hook "$1" 2>"$errf")"
 code=$?
 if [ "$code" -ne 0 ]; then
-  msg="$(head -n1 "$errf" 2>/dev/null | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  # The useful line is Node's message line ("Error: ...", "TypeError: ..."; it prints a file:line
+  # header and the source line first), else any line naming an Error, else the last non-empty
+  # line, else the exit status.
+  line="$(grep -m1 '^[A-Za-z_.]*Error' "$errf" 2>/dev/null)"
+  [ -n "$line" ] || line="$(grep -m1 'Error' "$errf" 2>/dev/null)"
+  [ -n "$line" ] || line="$(grep -v '^[[:space:]]*$' "$errf" 2>/dev/null | tail -n1)"
+  msg="$(printf '%s' "$line" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')"
   [ -n "$msg" ] || msg="exit $code"
   printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"estack: the engine could not run ('"$msg"'); fix the estack install or Node version (needs 22.5+)"}}'
   [ "$errf" = /dev/null ] || rm -f "$errf"

@@ -1,11 +1,13 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { main } from "../src/cli";
 import { openEngine } from "../src/engine";
 import { installGitHooks } from "../src/githooks";
+import { runHook } from "../src/hooks";
+import { recordOverride, skipStep } from "../src/owner";
 import { startTask } from "../src/tasks";
 import { makeRepo } from "./helpers";
 
@@ -154,5 +156,69 @@ describe("git hooks", { timeout: 60_000 }, () => {
     const r = gitTry(dir, true, "push", "origin", "main");
     expect(r.status).toBe(0);
     expect(readFileSync(marker, "utf8")).toContain("refs/heads/main");
+  });
+
+  const ctoPush = (dir: string, id: string) => runHook("pre-tool-use", {
+    hook_event_name: "PreToolUse", session_id: "s", cwd: dir, tool_name: "Bash",
+    tool_input: { command: "git push origin main" }, tool_use_id: id,
+  }) as any;
+
+  test("F1 one override: the Bash gate asks without spending it, pre-push spends it once", () => {
+    const { dir } = setup();
+    const e = openEngine(dir);
+    recordOverride(e, { action: "git_push", reason: "hotfix" }, {});
+    e.db.close();
+    const r = ctoPush(dir, "t1");
+    expect(r.hookSpecificOutput.permissionDecision).toBe("ask");
+    expect(r.hookSpecificOutput.permissionDecisionReason).toContain("override");
+    // owner approved: the agent's push runs through the installed hooks
+    const ok = gitTry(dir, true, "push", "origin", "main");
+    expect(ok.stderr).not.toContain("estack:");
+    expect(ok.status).toBe(0);
+    git(dir, "commit", "--allow-empty", "-m", "more");
+    const again = gitTry(dir, true, "push", "origin", "main");
+    expect(again.status).not.toBe(0);
+    expect(again.stderr).toContain("no estack task for branch main");
+  });
+
+  test("F6 a skipped verify: the Bash gate asks and the agent push passes", () => {
+    const { dir } = setup();
+    const e = openEngine(dir);
+    const t = startTask(e, { title: "t", type: "bugfix", goal: "g", done_check: "d", actor: { session_id: "s" }, cwd: dir });
+    for (const s of ["reproduce", "reuse_check", "fix", "test", "verify"]) {
+      skipStep(e, { task_id: t.task.id, step: s, reason: "owner" }, {});
+    }
+    e.db.close();
+    const r = ctoPush(dir, "t2");
+    expect(r.hookSpecificOutput.permissionDecision).toBe("ask");
+    expect(r.hookSpecificOutput.permissionDecisionReason).toContain(`task #${t.task.id}`);
+    const ok = gitTry(dir, true, "push", "origin", "main");
+    expect(ok.stderr).not.toContain("estack:");
+    expect(ok.status).toBe(0);
+  });
+
+  test("F9 a missing engine falls back to the newest plugin cache copy, else says re-run setup", () => {
+    const dir = makeRepo();
+    const gone = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-gone-"))), "estack.mjs");
+    copyFileSync(shim, gone);
+    expect(main(["init", "--engine", gone], { cwd: dir, env: {}, out: () => {}, err: () => {} })).toBe(0);
+    rmSync(gone);
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "estack-home-")));
+    const commit = () => spawnSync("git", ["commit", "-m", "a"], { cwd: dir, env: { ...process.env, CLAUDECODE: "1", HOME: home }, encoding: "utf8" });
+    stage(dir, "src/a.ts");
+    const none = commit();
+    expect(none.status).not.toBe(0);
+    expect(none.stderr).toContain("engine not found");
+    expect(none.stderr).toContain("re-run /estack:setup");
+    for (const [ver, body] of [["0.9.0", `process.stderr.write("old engine ran\\n"); process.exit(7);\n`], ["0.10.0", null]] as const) {
+      const d = join(home, ".claude/plugins/cache/estack/estack", ver, "engine");
+      mkdirSync(d, { recursive: true });
+      if (body === null) copyFileSync(shim, join(d, "estack.mjs"));
+      else writeFileSync(join(d, "estack.mjs"), body);
+    }
+    const r = commit();
+    expect(r.stderr).not.toContain("old engine ran");
+    expect(r.stderr).toContain("no open estack task");
+    expect(r.status).not.toBe(0);
   });
 });

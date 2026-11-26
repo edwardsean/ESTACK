@@ -43,10 +43,12 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
     description: "Start a task of a policy-defined type; its steps are created in order.",
     inputSchema: {
       title: z.string(), type: z.string(), goal: z.string(), done_check: z.string(),
-      branch: z.string().optional(), actor: actorSchema,
+      branch: z.string().optional(),
+      cwd: z.string().optional().describe("the caller's working directory; its worktree becomes the task's (stamped by the hook)"),
+      actor: actorSchema,
     },
-  }, tool((e, a: { title: string; type: string; goal: string; done_check: string; branch?: string; actor?: Actor }, actor) =>
-    startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, actor })));
+  }, tool((e, a: { title: string; type: string; goal: string; done_check: string; branch?: string; cwd?: string; actor?: Actor }, actor) =>
+    startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor })));
 
   server.registerTool("status", {
     description: "Show one task (with task_id) or all open tasks.",

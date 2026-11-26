@@ -68,6 +68,15 @@ describe("cli", () => {
     expect(JSON.parse(ev.payload_json)).toMatchObject({ action: "git_push", reason: "ok" });
   });
 
+  test("C4 override of an unknown action exits 1 and names the valid ones", () => {
+    const { dir } = setup();
+    const r = run(dir, ["override", "push", "--reason", "x"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain("unknown action push");
+    expect(r.err).toContain("git_push");
+    expect(openEngine(dir).db.prepare("SELECT COUNT(*) c FROM approvals").get()).toEqual({ c: 0 });
+  });
+
   test("unknown command exits 2 with usage", () => {
     const dir = makeRepo();
     const r = run(dir, ["bogus"]);

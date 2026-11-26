@@ -49,6 +49,10 @@ export function cancelTask(e: Engine, input: { task_id: number; reason: string }
 export function recordOverride(e: Engine, input: { action: string; reason: string; task_id?: number }, env: NodeJS.ProcessEnv): void {
   assertOwner(env);
   needReason(input.reason);
+  const known = [...new Set([...e.policy.actions.ask, ...Object.keys(e.policy.patterns)])].sort();
+  if (!known.includes(input.action)) {
+    throw new EngineError("POLICY_INVALID", `unknown action ${input.action}; one of: ${known.join(", ")}`);
+  }
   tx(e, () => {
     if (input.task_id !== undefined) getTask(e, input.task_id);
     e.db.prepare("INSERT INTO approvals (task_id, action, command, decision, by, at) VALUES (?, ?, ?, 'override', ?, ?)")

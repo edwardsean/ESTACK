@@ -4,8 +4,8 @@ import type { Engine } from "./engine";
 import { openEngine } from "./engine";
 import type { Exec } from "./exec";
 import { classifyCommand, isExempt, isProtected } from "./match";
-import { listOpen, runBounded, logEvent, tx, type TaskView } from "./tasks";
-import { EngineError, type Actor, type Task } from "./types";
+import { HOOK_GIT_TIMEOUT_MS, listOpen, pushReadiness, runBounded, logEvent, tx, type TaskView } from "./tasks";
+import { EngineError, type Actor } from "./types";
 
 export interface HookEvent {
   hook_event_name: string; session_id: string; cwd: string; agent_id?: string; agent_type?: string;
@@ -30,22 +30,28 @@ const deny = (reason: string) => pre("deny", reason);
 
 const actorOf = (ev: HookEvent): Actor => ({ session_id: ev.session_id, ...(ev.agent_id ? { agent_id: ev.agent_id } : {}) });
 
+const OVERRIDE_SQL = `SELECT id FROM approvals WHERE decision = 'override' AND action = ? AND at >= ?
+  AND id NOT IN (SELECT json_extract(payload_json, '$.approval_id') FROM events
+                 WHERE kind = 'override_used' AND json_extract(payload_json, '$.approval_id') IS NOT NULL)
+  ORDER BY id DESC LIMIT 1`;
+
+/** The newest unused owner override for `action` from the last 30 minutes, without using it up. */
+export function findOverride(e: Engine, action: string): number | null {
+  const cutoff = new Date(e.now().getTime() - OVERRIDE_WINDOW_MS).toISOString();
+  const row = e.db.prepare(OVERRIDE_SQL).get(action, cutoff) as { id: number } | undefined;
+  return row ? row.id : null;
+}
+
 /**
  * Use up the newest owner override for `action` from the last 30 minutes that no override_used event
  * references. Logs override_used {approval_id, ref} and returns the approval id, or null.
  */
 export function consumeOverride(e: Engine, action: string, ref: string): number | null {
-  const cutoff = new Date(e.now().getTime() - OVERRIDE_WINDOW_MS).toISOString();
   return tx(e, () => {
-    const row = e.db.prepare(
-      `SELECT id FROM approvals WHERE decision = 'override' AND action = ? AND at >= ?
-       AND id NOT IN (SELECT json_extract(payload_json, '$.approval_id') FROM events
-                      WHERE kind = 'override_used' AND json_extract(payload_json, '$.approval_id') IS NOT NULL)
-       ORDER BY id DESC LIMIT 1`,
-    ).get(action, cutoff) as { id: number } | undefined;
-    if (!row) return null;
-    logEvent(e, { session_id: "hook" }, "override_used", null, { approval_id: row.id, ref });
-    return row.id;
+    const id = findOverride(e, action);
+    if (id === null) return null;
+    logEvent(e, { session_id: "hook" }, "override_used", null, { approval_id: id, ref });
+    return id;
   });
 }
 
@@ -79,7 +85,7 @@ function preEdit(e: Engine, ev: HookEvent): HookOutput {
   if (!raw) return null;
   const abs = resolveReal(ev.cwd, raw);
   const dir = nearestDir(abs);
-  const common = runBounded(e, dir, "git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const common = runBounded(e, dir, "git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], HOOK_GIT_TIMEOUT_MS);
   if (common.code !== 0) {
     if (common.code === 128 && /not a git repository/i.test(common.stderr)) return null;
     throw new EngineError("NOT_A_REPO", `git failed while checking ${raw}: ${common.stderr.trim() || `exit ${common.code}`}`);
@@ -88,7 +94,7 @@ function preEdit(e: Engine, ev: HookEvent): HookOutput {
   let commonReal: string;
   try { commonReal = realpathSync(commonDir); } catch { return null; }
   if (realpathSync(dirname(commonReal)) !== e.repo.root) return null;
-  const top = runBounded(e, dir, "git", ["rev-parse", "--show-toplevel"]);
+  const top = runBounded(e, dir, "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
   if (top.code !== 0) {
     // Inside a git directory (.git, .git/hooks, .git/worktrees/<n>/...): hooks and config live here.
     if (top.code === 128 && /work ?tree/i.test(top.stderr)) {
@@ -127,25 +133,22 @@ function preBash(e: Engine, ev: HookEvent): HookOutput {
     recordAsk(e, ev, null, v.action, command);
     return pre("ask", `${v.action} needs the owner's approval (pattern ${v.pattern})`);
   }
-  const branch = runBounded(e, ev.cwd, "git", ["branch", "--show-current"]).stdout.trim();
-  const t = e.db.prepare("SELECT * FROM tasks WHERE branch = ? AND status IN ('open','done') ORDER BY id DESC LIMIT 1")
-    .get(branch) as unknown as Task | undefined;
-  const verify = t
-    ? (e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'verify'").get(t.id) as { status: string } | undefined)
-    : undefined;
+  const branch = runBounded(e, ev.cwd, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  const { task: t, verifySettled } = pushReadiness(e, branch);
   const refusal = !t
     ? `no estack task for branch ${branch}; start one, or the owner can run \`estack override git_push --reason …\` in a terminal`
-    : verify?.status !== "done"
+    : !verifySettled
       ? `task #${t.id} has no verify evidence; run run_check with step verify first`
       : null;
   if (refusal !== null) {
-    const used = consumeOverride(e, "git_push", ev.tool_use_id ?? "");
-    if (used === null) return deny(refusal);
+    // Only peek: the git pre-push hook uses the override up, so a declined ask does not spend it.
+    const found = findOverride(e, "git_push");
+    if (found === null) return deny(refusal);
     recordAsk(e, ev, t?.id ?? null, v.action, command);
-    return pre("ask", `${v.action} (pattern ${v.pattern}) allowed once by an owner override (approval #${used}); the owner must confirm`);
+    return pre("ask", `${v.action} (pattern ${v.pattern}) allowed once by an owner override (approval #${found}); the owner must confirm`);
   }
   recordAsk(e, ev, t!.id, v.action, command);
-  return pre("ask", `${v.action} (pattern ${v.pattern}) for task #${t!.id} "${t!.title}": verify is done, the owner must confirm`);
+  return pre("ask", `${v.action} (pattern ${v.pattern}) for task #${t!.id} "${t!.title}": verify is settled, the owner must confirm`);
 }
 
 export function preToolUse(e: Engine, ev: HookEvent): HookOutput {
@@ -153,7 +156,9 @@ export function preToolUse(e: Engine, ev: HookEvent): HookOutput {
   if (EDIT_TOOLS.has(tool)) return preEdit(e, ev);
   if (tool === "Bash") return preBash(e, ev);
   if (tool.startsWith(MCP_PREFIX)) {
-    return pre("allow", "estack tool call", { ...(ev.tool_input ?? {}), actor: actorOf(ev) });
+    // start_task records the caller's worktree, so stamp the real cwd too (the MCP server's own cwd may differ).
+    const cwd = tool === `${MCP_PREFIX}start_task` ? { cwd: ev.cwd } : {};
+    return pre("allow", "estack tool call", { ...(ev.tool_input ?? {}), ...cwd, actor: actorOf(ev) });
   }
   return null;
 }
@@ -215,7 +220,7 @@ export function stop(e: Engine, ev: HookEvent): HookOutput {
     if (!settled(work.name)) {
       let n = 0;
       try {
-        const r = runBounded(e, t.cwd, "git", ["rev-list", "--count", `${t.base_sha}..refs/heads/${t.branch}`]);
+        const r = runBounded(e, t.cwd, "git", ["rev-list", "--count", `${t.base_sha}..refs/heads/${t.branch}`], HOOK_GIT_TIMEOUT_MS);
         if (r.code === 0) n = Number(r.stdout.trim()) || 0;
       } catch { continue; } // timeout: fail open for this task
       if (n > 0) {

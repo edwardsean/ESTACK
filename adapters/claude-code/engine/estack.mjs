@@ -14675,9 +14675,11 @@ function toResult(r, started) {
 }
 var MAX_BUFFER = 64 * 1024 * 1024;
 var realExec = {
+  // git/gh output is parsed (e.g. "not a git repository"), so pin the C locale. shell() runs the project's own commands and keeps the user's.
   run(file2, args, { cwd, timeoutMs }) {
     const t = Date.now();
-    return toResult(spawnSync(file2, args, { cwd, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_BUFFER }), t);
+    const env = { ...process.env, LC_ALL: "C" };
+    return toResult(spawnSync(file2, args, { cwd, env, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_BUFFER }), t);
   },
   shell(command, { cwd, timeoutMs }) {
     const t = Date.now();
@@ -34494,9 +34496,9 @@ actions:
 patterns:                 # how shell commands map to actions
   git_push:      ["git push*", "gh pr create*"]
   merge:         ["gh pr merge*"]
-  deploy:        ["*deploy*", "kubectl apply*", "kubectl delete*", "kubectl rollout*", "terraform apply*", "terraform destroy*", "helm install*", "helm upgrade*", "helm uninstall*"]
-  db_migration:  ["*migrate*", "*migration*", "alembic upgrade*", "prisma migrate*", "flyway migrate*", "psql * -c *", "mysql * -e *"]
-  force_push_protected: ["git push --force* origin main", "git push -f* origin main", "git push --force* origin master", "git push -f* origin master"]
+  deploy:        ["npm run deploy*", "pnpm run deploy*", "pnpm deploy*", "yarn deploy*", "vercel --prod*", "vercel deploy*", "fly deploy*", "flyctl deploy*", "kubectl apply*", "kubectl delete*", "kubectl rollout*", "terraform apply*", "terraform destroy*", "helm install*", "helm upgrade*", "helm uninstall*"]
+  db_migration:  ["prisma migrate deploy*", "prisma migrate reset*", "prisma db push*", "alembic upgrade*", "alembic downgrade*", "flyway migrate*", "rails db:migrate*", "npm run migrate*", "psql * -c *", "mysql * -e *"]
+  force_push_protected: ["git push --force* origin main", "git push -f* origin main", "git push --force* origin master", "git push -f* origin master", "git push* origin main* --force*", "git push* origin main* -f*", "git push* origin +main*", "git push* origin master* --force*", "git push* origin master* -f*", "git push* origin +master*"]
 task_types:
   feature:  [plan, reuse_check, implement, test, verify, review, pr]
   bugfix:   [reproduce, reuse_check, fix, test, verify, pr]
@@ -34559,7 +34561,7 @@ import { dirname as dirname2, isAbsolute, join as join4, relative, resolve, sep 
 
 // engine/src/match.ts
 var escapeRe = (c) => c.replace(/[.+^${}()|[\]\\\/-]/g, "\\$&");
-function globToRegExp(glob, mode) {
+function globToRegExp(glob, mode, ignoreCase = false) {
   let out = "";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
@@ -34581,13 +34583,20 @@ function globToRegExp(glob, mode) {
       out += escapeRe(c);
     }
   }
-  return new RegExp(`^${out}$`, "s");
+  return new RegExp(`^${out}$`, ignoreCase ? "si" : "s");
 }
-function commandMatches(command, pattern) {
-  return globToRegExp(pattern, "command").test(command) || globToRegExp(`*${pattern}`, "command").test(command);
+function commandMatches(command, pattern, ignoreCase = false) {
+  return globToRegExp(pattern, "command", ignoreCase).test(command) || globToRegExp(`*${pattern}`, "command", ignoreCase).test(command);
 }
+var GIT_GLOBAL_OPTS = String.raw`(?: (?:-C \S+|-c \S+|--git-dir=\S+|--work-tree=\S+|--git-dir \S+|--work-tree \S+|--no-pager|-P))+`;
+var GIT_GLOBAL_RE = new RegExp(String.raw`\bgit${GIT_GLOBAL_OPTS}(?= |$)`, "g");
+function normaliseCommand(command) {
+  return command.replace(/\s+/g, " ").replace(GIT_GLOBAL_RE, "git");
+}
+var COMMIT_NO_VERIFY = /\bgit commit\b[^|;&]*\s-[a-zA-Z]*n[a-zA-Z]*\b/;
 var HARDCODED_DENY = [
   { action: "engine_state", pattern: "*.estack/state.db*" },
+  { action: "engine_state", pattern: "*sqlite3*state.db*" },
   { action: "owner_only", pattern: "estack skip*" },
   { action: "owner_only", pattern: "estack cancel*" },
   { action: "owner_only", pattern: "estack override*" },
@@ -34596,20 +34605,26 @@ var HARDCODED_DENY = [
   { action: "owner_only", pattern: "*estack.mjs override*" },
   { action: "disable_hooks", pattern: "*--no-verify*" },
   { action: "disable_hooks", pattern: "*core.hooksPath*" },
-  { action: "disable_hooks", pattern: "git config*hooks*" }
+  { action: "disable_hooks", pattern: "git config*hooks*" },
+  { action: "disable_hooks", pattern: "*CLAUDECODE*" }
 ];
 function classifyCommand(command, policy) {
+  const forms = [command, normaliseCommand(command)];
+  const any2 = (pattern, ignoreCase = false) => forms.some((c) => commandMatches(c, pattern, ignoreCase));
   for (const h of HARDCODED_DENY) {
-    if (commandMatches(command, h.pattern)) return { kind: "deny", action: h.action, pattern: h.pattern, hardcoded: true };
+    if (any2(h.pattern, true)) return { kind: "deny", action: h.action, pattern: h.pattern, hardcoded: true };
+  }
+  if (forms.some((c) => COMMIT_NO_VERIFY.test(c))) {
+    return { kind: "deny", action: "disable_hooks", pattern: "git commit -n", hardcoded: true };
   }
   for (const action of policy.actions.deny) {
     for (const pattern of policy.patterns[action] ?? []) {
-      if (commandMatches(command, pattern)) return { kind: "deny", action, pattern, hardcoded: false };
+      if (any2(pattern)) return { kind: "deny", action, pattern, hardcoded: false };
     }
   }
   for (const action of policy.actions.ask) {
     for (const pattern of policy.patterns[action] ?? []) {
-      if (commandMatches(command, pattern)) return { kind: "ask", action, pattern };
+      if (any2(pattern)) return { kind: "ask", action, pattern };
     }
   }
   return { kind: "none" };
@@ -34659,10 +34674,17 @@ function listOpen(e) {
   return ids.map((r) => view(e, r.id));
 }
 var EVIDENCE_TIMEOUT_MS = 3e4;
-function runBounded(e, cwd, file2, args) {
-  const r = e.exec.run(file2, args, { cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+var HOOK_GIT_TIMEOUT_MS = 5e3;
+function runBounded(e, cwd, file2, args, timeoutMs = EVIDENCE_TIMEOUT_MS) {
+  const r = e.exec.run(file2, args, { cwd, timeoutMs });
   if (r.timedOut) bad("gh/git timed out");
   return r;
+}
+function pushReadiness(e, branch) {
+  const task = e.db.prepare("SELECT * FROM tasks WHERE branch = ? AND status IN ('open','done') ORDER BY id DESC LIMIT 1").get(branch) ?? null;
+  if (!task) return { task: null, verifySettled: false };
+  const verify = e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'verify'").get(task.id);
+  return { task, verifySettled: verify?.status === "done" || verify?.status === "skipped" };
 }
 function startTask(e, input2) {
   const steps = e.policy.task_types[input2.type];
@@ -34797,18 +34819,21 @@ function pre(decision, reason, updatedInput) {
 }
 var deny = (reason) => pre("deny", reason);
 var actorOf = (ev) => ({ session_id: ev.session_id, ...ev.agent_id ? { agent_id: ev.agent_id } : {} });
-function consumeOverride(e, action, ref) {
+var OVERRIDE_SQL = `SELECT id FROM approvals WHERE decision = 'override' AND action = ? AND at >= ?
+  AND id NOT IN (SELECT json_extract(payload_json, '$.approval_id') FROM events
+                 WHERE kind = 'override_used' AND json_extract(payload_json, '$.approval_id') IS NOT NULL)
+  ORDER BY id DESC LIMIT 1`;
+function findOverride(e, action) {
   const cutoff = new Date(e.now().getTime() - OVERRIDE_WINDOW_MS).toISOString();
+  const row = e.db.prepare(OVERRIDE_SQL).get(action, cutoff);
+  return row ? row.id : null;
+}
+function consumeOverride(e, action, ref) {
   return tx(e, () => {
-    const row = e.db.prepare(
-      `SELECT id FROM approvals WHERE decision = 'override' AND action = ? AND at >= ?
-       AND id NOT IN (SELECT json_extract(payload_json, '$.approval_id') FROM events
-                      WHERE kind = 'override_used' AND json_extract(payload_json, '$.approval_id') IS NOT NULL)
-       ORDER BY id DESC LIMIT 1`
-    ).get(action, cutoff);
-    if (!row) return null;
-    logEvent(e, { session_id: "hook" }, "override_used", null, { approval_id: row.id, ref });
-    return row.id;
+    const id = findOverride(e, action);
+    if (id === null) return null;
+    logEvent(e, { session_id: "hook" }, "override_used", null, { approval_id: id, ref });
+    return id;
   });
 }
 function resolveReal(cwd, p) {
@@ -34838,7 +34863,7 @@ function preEdit(e, ev) {
   if (!raw) return null;
   const abs = resolveReal(ev.cwd, raw);
   const dir = nearestDir(abs);
-  const common = runBounded(e, dir, "git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const common = runBounded(e, dir, "git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], HOOK_GIT_TIMEOUT_MS);
   if (common.code !== 0) {
     if (common.code === 128 && /not a git repository/i.test(common.stderr)) return null;
     throw new EngineError("NOT_A_REPO", `git failed while checking ${raw}: ${common.stderr.trim() || `exit ${common.code}`}`);
@@ -34851,7 +34876,7 @@ function preEdit(e, ev) {
     return null;
   }
   if (realpathSync2(dirname2(commonReal)) !== e.repo.root) return null;
-  const top = runBounded(e, dir, "git", ["rev-parse", "--show-toplevel"]);
+  const top = runBounded(e, dir, "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
   if (top.code !== 0) {
     if (top.code === 128 && /work ?tree/i.test(top.stderr)) {
       const inGit = abs === commonReal || abs.startsWith(commonReal + sep);
@@ -34887,25 +34912,25 @@ function preBash(e, ev) {
     recordAsk(e, ev, null, v.action, command);
     return pre("ask", `${v.action} needs the owner's approval (pattern ${v.pattern})`);
   }
-  const branch = runBounded(e, ev.cwd, "git", ["branch", "--show-current"]).stdout.trim();
-  const t = e.db.prepare("SELECT * FROM tasks WHERE branch = ? AND status IN ('open','done') ORDER BY id DESC LIMIT 1").get(branch);
-  const verify = t ? e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'verify'").get(t.id) : void 0;
-  const refusal = !t ? `no estack task for branch ${branch}; start one, or the owner can run \`estack override git_push --reason \u2026\` in a terminal` : verify?.status !== "done" ? `task #${t.id} has no verify evidence; run run_check with step verify first` : null;
+  const branch = runBounded(e, ev.cwd, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  const { task: t, verifySettled } = pushReadiness(e, branch);
+  const refusal = !t ? `no estack task for branch ${branch}; start one, or the owner can run \`estack override git_push --reason \u2026\` in a terminal` : !verifySettled ? `task #${t.id} has no verify evidence; run run_check with step verify first` : null;
   if (refusal !== null) {
-    const used = consumeOverride(e, "git_push", ev.tool_use_id ?? "");
-    if (used === null) return deny(refusal);
+    const found = findOverride(e, "git_push");
+    if (found === null) return deny(refusal);
     recordAsk(e, ev, t?.id ?? null, v.action, command);
-    return pre("ask", `${v.action} (pattern ${v.pattern}) allowed once by an owner override (approval #${used}); the owner must confirm`);
+    return pre("ask", `${v.action} (pattern ${v.pattern}) allowed once by an owner override (approval #${found}); the owner must confirm`);
   }
   recordAsk(e, ev, t.id, v.action, command);
-  return pre("ask", `${v.action} (pattern ${v.pattern}) for task #${t.id} "${t.title}": verify is done, the owner must confirm`);
+  return pre("ask", `${v.action} (pattern ${v.pattern}) for task #${t.id} "${t.title}": verify is settled, the owner must confirm`);
 }
 function preToolUse(e, ev) {
   const tool = ev.tool_name ?? "";
   if (EDIT_TOOLS.has(tool)) return preEdit(e, ev);
   if (tool === "Bash") return preBash(e, ev);
   if (tool.startsWith(MCP_PREFIX)) {
-    return pre("allow", "estack tool call", { ...ev.tool_input ?? {}, actor: actorOf(ev) });
+    const cwd = tool === `${MCP_PREFIX}start_task` ? { cwd: ev.cwd } : {};
+    return pre("allow", "estack tool call", { ...ev.tool_input ?? {}, ...cwd, actor: actorOf(ev) });
   }
   return null;
 }
@@ -34954,7 +34979,7 @@ function stop(e, ev) {
     if (!settled(work.name)) {
       let n = 0;
       try {
-        const r = runBounded(e, t.cwd, "git", ["rev-list", "--count", `${t.base_sha}..refs/heads/${t.branch}`]);
+        const r = runBounded(e, t.cwd, "git", ["rev-list", "--count", `${t.base_sha}..refs/heads/${t.branch}`], HOOK_GIT_TIMEOUT_MS);
         if (r.code === 0) n = Number(r.stdout.trim()) || 0;
       } catch {
         continue;
@@ -44767,9 +44792,10 @@ function createServer(cwd, deps = {}) {
       goal: external_exports.string(),
       done_check: external_exports.string(),
       branch: external_exports.string().optional(),
+      cwd: external_exports.string().optional().describe("the caller's working directory; its worktree becomes the task's (stamped by the hook)"),
       actor: actorSchema
     }
-  }, tool((e, a, actor) => startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, actor })));
+  }, tool((e, a, actor) => startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor })));
   server.registerTool("status", {
     description: "Show one task (with task_id) or all open tasks.",
     inputSchema: { task_id: external_exports.number().int().optional(), actor: actorSchema }
@@ -44837,6 +44863,10 @@ function cancelTask(e, input2, env) {
 function recordOverride(e, input2, env) {
   assertOwner(env);
   needReason(input2.reason);
+  const known = [.../* @__PURE__ */ new Set([...e.policy.actions.ask, ...Object.keys(e.policy.patterns)])].sort();
+  if (!known.includes(input2.action)) {
+    throw new EngineError("POLICY_INVALID", `unknown action ${input2.action}; one of: ${known.join(", ")}`);
+  }
   tx(e, () => {
     if (input2.task_id !== void 0) getTask(e, input2.task_id);
     e.db.prepare("INSERT INTO approvals (task_id, action, command, decision, by, at) VALUES (?, ?, ?, 'override', ?, ?)").run(input2.task_id ?? null, input2.action, "", "owner", e.now().toISOString());
@@ -44861,6 +44891,15 @@ function script(name, enginePath) {
     push ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || exit $?; done` : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || exit $?; done`,
     `[ "$CLAUDECODE" = "1" ] || exit 0`,
     `engine=${shq(enginePath)}`,
+    // The recorded path sits in a versioned plugin cache folder that a plugin update replaces: fall back to the newest copy.
+    `if [ ! -f "$engine" ]; then`,
+    `  cands="$(ls -d "$HOME"/.claude/plugins/cache/estack/estack/*/engine/estack.mjs 2>/dev/null)"`,
+    `  latest="$(printf '%s
+' "$cands" | sort -V 2>/dev/null | tail -n 1)"`,
+    `  [ -n "$latest" ] || latest="$(printf '%s
+' "$cands" | sort | tail -n 1)"`,
+    `  if [ -n "$latest" ] && [ -f "$latest" ]; then engine="$latest"; fi`,
+    `fi`,
     `if [ ! -f "$engine" ]; then echo "estack: engine not found at $engine; re-run /estack:setup" >&2; exit 1; fi`,
     push ? `printf '%s\\n' "$input" | node --no-warnings "$engine" git-hook ${name} "$@"
 exit $?` : `exec node --no-warnings "$engine" git-hook ${name} "$@"`
@@ -44895,10 +44934,10 @@ function runGit(cwd, args) {
   return String(r.stdout).trim();
 }
 function preCommit(e, cwd) {
-  const top = runBounded(e, cwd, "git", ["rev-parse", "--show-toplevel"]);
+  const top = runBounded(e, cwd, "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
   if (top.code !== 0) throw new EngineError("NOT_A_REPO", `not a git repository: ${cwd}`);
   const toplevel = top.stdout.trim();
-  const staged = runBounded(e, toplevel, "git", ["diff", "--cached", "--name-only", "-z"]);
+  const staged = runBounded(e, toplevel, "git", ["diff", "--cached", "--name-only", "-z"], HOOK_GIT_TIMEOUT_MS);
   if (staged.code !== 0) throw new EngineError("NOT_A_REPO", `git diff failed: ${staged.stderr.trim()}`);
   const paths = staged.stdout.split("\0").filter(Boolean);
   for (const p of paths) if (isProtected(p, e.policy)) return `commit touches protected ${p}`;
@@ -44913,9 +44952,8 @@ function prePush(e, cwd, stdin) {
     const [localRef, localSha] = line.trim().split(/\s+/);
     if (!localRef || !localSha || ZEROS.test(localSha) || !localRef.startsWith("refs/heads/")) continue;
     const b = localRef.slice("refs/heads/".length);
-    const t = e.db.prepare("SELECT * FROM tasks WHERE branch = ? ORDER BY id DESC LIMIT 1").get(b);
-    const verify = t ? e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'verify'").get(t.id) : void 0;
-    if (t && verify && (verify.status === "done" || verify.status === "skipped")) continue;
+    const { task: t, verifySettled } = pushReadiness(e, b);
+    if (verifySettled) continue;
     if (consumeOverride(e, "git_push", `pre-push:${b}`) !== null) continue;
     return t ? `branch ${b} has no verify evidence (task #${t.id})` : `no estack task for branch ${b}`;
   }
