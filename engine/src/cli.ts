@@ -1,4 +1,5 @@
 import { readFileSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Engine } from "./engine";
 import { openEngine } from "./engine";
@@ -6,14 +7,17 @@ import { runHook, type HookEvent } from "./hooks";
 import { runCheck } from "./checks";
 import { serveStdio } from "./mcp";
 import { assertOwner, cancelTask, recordOverride, skipStep } from "./owner";
+import { preCommit, prePush, installGitHooks } from "./githooks";
 import { initRepo } from "./policy";
+import { findRepo } from "./repo";
 import { listOpen } from "./tasks";
 import { EngineError } from "./types";
 
 export interface Io { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => void; err: (s: string) => void; stdin?: string }
 
 const USAGE = `usage: estack <command>
-  init
+  init [--engine <path>]
+  git-hook <pre-commit|pre-push>                     (called by the installed git hooks)
   status [--json]
   run --task <id> --step <test|verify> [--timeout <sec>]
   skip --task <id> --step <name> --reason <text>     (owner only)
@@ -67,9 +71,38 @@ function status(e: Engine, json: boolean, out: (s: string) => void): void {
 function dispatch(cmd: string, rest: string[], io: Io): number {
   switch (cmd) {
     case "init": {
+      const { opt } = parse(rest, ["engine"]);
       const { created } = initRepo(io.cwd);
       io.out(created.length ? created.map((f) => `created ${f}`).join("\n") + "\n" : "already initialised\n");
+      const entry = process.argv[1];
+      const enginePath = opt.engine !== undefined ? resolve(io.cwd, opt.engine)
+        : entry && /estack\.mjs$/.test(entry) ? realpathSync(entry) : null;
+      if (enginePath === null) io.out("git hooks not installed: engine path unknown\n");
+      else {
+        const h = installGitHooks(findRepo(io.cwd).root, enginePath);
+        io.out(`installed git hooks: ${h.installed.join(", ")}\n`);
+        if (h.chained.length) io.out(`chained existing hooks: ${h.chained.join(", ")}\n`);
+      }
       return 0;
+    }
+    case "git-hook": {
+      const name = rest[0] ?? "";
+      if (name !== "pre-commit" && name !== "pre-push") throw new Usage("git-hook needs pre-commit or pre-push");
+      let e: Engine;
+      try {
+        e = openEngine(io.cwd);
+      } catch (x) {
+        if (x instanceof EngineError && (x.code === "NOT_OPTED_IN" || x.code === "NOT_A_REPO")) return 0;
+        throw x;
+      }
+      try {
+        const msg = name === "pre-commit" ? preCommit(e, io.cwd) : prePush(e, io.cwd, io.stdin ?? readFileSync(0, "utf8"));
+        if (msg === null) return 0;
+        io.err(`estack: ${msg}\n`);
+        return 1;
+      } finally {
+        e.db.close();
+      }
     }
     case "status": {
       const { bool } = parse(rest, [], ["json"]);
