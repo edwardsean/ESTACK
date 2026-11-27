@@ -40,8 +40,17 @@ export function contextTokens(transcriptPath: string): number | null {
   }
 }
 
+/** The largest context window a model has; usage past the configured window means the session runs on one. */
+export const FALLBACK_WINDOW_TOKENS = 1_000_000;
+
+/**
+ * Fraction of the context window in use. Usage beyond `windowTokens` means the model's window is larger than
+ * configured, so it is measured against FALLBACK_WINDOW_TOKENS; beyond that too, the ratio is unknown (null).
+ */
 export function contextRatio(transcriptPath: string | undefined, windowTokens: number): number | null {
   if (!transcriptPath || !(windowTokens > 0)) return null;
   const t = contextTokens(transcriptPath);
-  return t === null ? null : t / windowTokens;
+  if (t === null) return null;
+  if (t <= windowTokens) return t / windowTokens;
+  return t <= FALLBACK_WINDOW_TOKENS ? t / FALLBACK_WINDOW_TOKENS : null;
 }

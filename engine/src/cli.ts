@@ -77,7 +77,7 @@ function handovers(e: Engine, json: boolean, out: (s: string) => void): void {
   for (const h of all) {
     const bodies = h.body.kind === "session" ? (h.body as SessionHandoverBody).tasks : [h.body];
     const next = bodies.map((t) => `#${t.task.id} ${t.next_step ?? "done"}`).join(", ");
-    out(`${h.kind === "session" ? "session" : `#${h.task_id}`} ${h.created_at} from ${h.from_session} ${h.auto ? "auto" : "manual"} next: ${next}\n`);
+    out(`#${h.id} ${h.kind === "session" ? "session" : `task #${h.task_id}`} ${h.created_at} from ${h.from_session} ${h.auto ? "auto" : "manual"} next: ${next}\n`);
   }
 }
 

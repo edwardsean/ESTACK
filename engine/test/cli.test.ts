@@ -131,13 +131,13 @@ describe("cli hook", () => {
   test("estack handovers lists pending handovers, else says none", () => {
     const { dir, e, id } = setup();
     expect(run(dir, ["handovers"]).out).toBe("no pending handovers\n");
-    saveTaskHandover(e, id, {}, { session_id: "s" });
+    const th = saveTaskHandover(e, id, {}, { session_id: "s" });
     const r = run(dir, ["handovers"]);
     expect(r.status).toBe(0);
-    expect(r.out).toMatch(new RegExp(`^#${id} \\S+ from s manual next: #${id} plan\\n$`));
-    saveSessionHandover(e, { goal: "g", workers_done: true }, { session_id: "s" });
+    expect(r.out).toMatch(new RegExp(`^#${th.id} task #${id} \\S+ from s manual next: #${id} plan\\n$`));
+    const sh = saveSessionHandover(e, { goal: "g", workers_done: true }, { session_id: "s" });
     const s = run(dir, ["handovers"]).out;
-    expect(s).toMatch(/^session \S+ from s manual next: #\d+ plan\n$/);
+    expect(s).toMatch(new RegExp(`^#${sh.id} session \\S+ from s manual next: #\\d+ plan\\n$`));
     const j = JSON.parse(run(dir, ["handovers", "--json"]).out);
     expect(j).toHaveLength(1);
     expect(j[0].kind).toBe("session");

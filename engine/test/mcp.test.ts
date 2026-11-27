@@ -153,4 +153,21 @@ describe("mcp server", () => {
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/^NO_TASK: /);
   });
+
+  test("I2 resume with handover_id picks that handover", async () => {
+    const dir = initedRepo();
+    const { call } = await connect(dir);
+    for (const sid of ["A", "C"]) {
+      expect((await call("start_task", { title: sid, type: "feature", goal: "g", done_check: "d", actor: { session_id: sid }, cwd: dir })).isError).toBe(false);
+    }
+    const older = JSON.parse((await call("handover", { goal: "A goal", actor: { session_id: "A" } })).text);
+    expect((await call("handover", { goal: "C goal", actor: { session_id: "C" } })).isError).toBe(false);
+    const r = await call("resume", { handover_id: older.id, actor: { session_id: "N" } });
+    expect(r.isError, r.text).toBe(false);
+    const out = JSON.parse(r.text);
+    expect(out.handover.id).toBe(older.id);
+    expect(out.instructions).toContain("Goal: A goal.");
+    const again = await call("resume", { handover_id: older.id, actor: { session_id: "M" } });
+    expect(again.text).toMatch(/^NO_TASK: /);
+  });
 });

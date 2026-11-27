@@ -54,6 +54,13 @@ test("ratio uses the window", () => {
   expect(contextRatio(p, 400000)).toBe(0.25);
 });
 
+test("I4 past the configured window the ratio falls back to a 1M window, and past that it is unknown", () => {
+  expect(contextRatio(file([asst({ input_tokens: 660000 })]), 200000)).toBe(0.66);
+  expect(contextRatio(file([asst({ input_tokens: 1000000 })]), 200000)).toBe(1);
+  expect(contextRatio(file([asst({ input_tokens: 1000001 })]), 200000)).toBeNull();
+  expect(contextRatio(file([asst({ input_tokens: 200000 })]), 200000)).toBe(1);
+});
+
 test("handover settings default to 0.5 and 200000 and reject bad values", () => {
   expect(parsePolicy(DEFAULT_POLICY_YAML).handover).toEqual({ threshold: 0.5, window_tokens: 200000 });
   const ok = parsePolicy(DEFAULT_POLICY_YAML + "handover:\n  threshold: 0.7\n  window_tokens: 1000000\n");
