@@ -8,6 +8,7 @@ import {
 } from "./handover";
 import { openEngine } from "./engine";
 import type { Exec } from "./exec";
+import { READ_TOOLS, preRead } from "./mapfirst";
 import { classifyCommand, isExempt, isProtected } from "./match";
 import { HOOK_GIT_TIMEOUT_MS, listOpen, pushReadiness, runBounded, logEvent, tx, type TaskView } from "./tasks";
 import { EngineError, type Actor } from "./types";
@@ -31,9 +32,9 @@ function pre(decision: "allow" | "ask" | "deny", reason: string, updatedInput?: 
     },
   };
 }
-const deny = (reason: string) => pre("deny", reason);
+export const deny = (reason: string) => pre("deny", reason);
 
-const actorOf = (ev: HookEvent): Actor => ({ session_id: ev.session_id, ...(ev.agent_id ? { agent_id: ev.agent_id } : {}) });
+export const actorOf = (ev: HookEvent): Actor => ({ session_id: ev.session_id, ...(ev.agent_id ? { agent_id: ev.agent_id } : {}) });
 
 const OVERRIDE_SQL = `SELECT id FROM approvals WHERE decision = 'override' AND action = ? AND at >= ?
   AND id NOT IN (SELECT json_extract(payload_json, '$.approval_id') FROM events
@@ -61,7 +62,7 @@ export function consumeOverride(e: Engine, action: string, ref: string): number 
 }
 
 /** Resolve a path against cwd, following symlinks through the nearest existing parent. */
-function resolveReal(cwd: string, p: string): string {
+export function resolveReal(cwd: string, p: string): string {
   const abs = resolve(cwd, p);
   let d = abs;
   const rest: string[] = [];
@@ -74,7 +75,7 @@ function resolveReal(cwd: string, p: string): string {
   return join(realpathSync(d), ...rest);
 }
 
-function nearestDir(p: string): string {
+export function nearestDir(p: string): string {
   let d = dirname(p);
   while (!existsSync(d)) {
     const up = dirname(d);
@@ -162,6 +163,7 @@ export function preToolUse(e: Engine, ev: HookEvent): HookOutput {
   const tool = ev.tool_name ?? "";
   if (EDIT_TOOLS.has(tool)) return preEdit(e, ev);
   if (tool === "Bash") return preBash(e, ev);
+  if (READ_TOOLS.has(tool)) return preRead(e, ev);
   if (tool.startsWith(MCP_PREFIX)) {
     // start_task records the caller's worktree, so stamp the real cwd too (the MCP server's own cwd may differ).
     const cwd = STAMP_CWD.has(tool.slice(MCP_PREFIX.length)) ? { cwd: ev.cwd } : {};
@@ -343,7 +345,8 @@ export function stop(e: Engine, ev: HookEvent): HookOutput {
 }
 
 export function runHook(name: string, ev: HookEvent, deps: { exec?: Exec; now?: () => Date } = {}): HookOutput {
-  const gate = name === "pre-tool-use";
+  // Read and Grep fail open; every other PreToolUse path fails closed.
+  const gate = name === "pre-tool-use" && !READ_TOOLS.has(ev.tool_name ?? "");
   let e: Engine | undefined;
   try {
     try {

@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -618,5 +618,41 @@ describe("hooks", () => {
       skipThrough(dir, id, "test", ["implement"]);
       expect(hook("subagent-stop", dir, { hook_event_name: "SubagentStop", agent_id: "A" })).toBeNull();
     });
+  });
+});
+
+describe("hooks: read tools and code-map tools", () => {
+  test("code-map tools get the real cwd stamped", () => {
+    const dir = repo();
+    for (const t of ["context_for", "find_existing", "who_uses"]) {
+      const r = pre(dir, { tool_name: `mcp__plugin_estack_estack__${t}`, agent_id: "w1", tool_input: { area: "x" } });
+      expect(r.hookSpecificOutput.updatedInput.cwd).toBe(dir);
+      expect(r.hookSpecificOutput.updatedInput.actor).toEqual({ session_id: S, agent_id: "w1" });
+    }
+  });
+
+  test("read tools fail open when the engine errors", () => {
+    const dir = repo();
+    writeFileSync(join(dir, ".estack", "policy.yaml"), "not: [valid");
+    expect(pre(dir, { tool_name: "Read", tool_input: { file_path: join(dir, "a.ts") } })).toBeNull();
+    expect(pre(dir, { tool_name: "Grep", tool_input: { pattern: "x" } })).toBeNull();
+    expect(decision(edit(dir, "a.ts"))).toBe("deny");
+  });
+
+  test("the hook script lets Read through without node", () => {
+    const dir = repo();
+    const script = join(__dirname, "../../core/hooks/scripts/estack-hook.sh");
+    const run = (tool: string) => {
+      const input = JSON.stringify({ hook_event_name: "PreToolUse", session_id: S, cwd: dir, tool_name: tool, tool_input: { file_path: join(dir, "a.ts") } });
+      return spawnSync("/bin/sh", [script, "pre-tool-use"], { input, encoding: "utf8", env: { PATH: "/usr/bin:/bin", CLAUDE_PROJECT_DIR: dir } });
+    };
+    for (const t of ["Read", "Grep"]) {
+      const r = run(t);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("");
+    }
+    const r = run("Edit");
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
   });
 });

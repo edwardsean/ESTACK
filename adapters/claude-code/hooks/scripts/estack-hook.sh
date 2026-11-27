@@ -4,8 +4,12 @@
 input="$(cat)"
 dir="${CLAUDE_PROJECT_DIR:-}"
 cwd="$(printf '%s' "$input" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+tool="$(printf '%s' "$input" | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+# Read and Grep fail open: a missing node or a crashed engine must never block a read.
+case "$1:$tool" in pre-tool-use:Read|pre-tool-use:Grep) readtool=1;; *) readtool=0;; esac
 if [ ! -f "$dir/.estack/policy.yaml" ] && [ ! -f "$cwd/.estack/policy.yaml" ]; then exit 0; fi
 if ! command -v node >/dev/null 2>&1; then
+  [ "$readtool" = 1 ] && exit 0
   case "$1" in pre-tool-use) printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"estack: node is not on PATH, so this repository'"'"'s gates cannot run"}}';; esac
   exit 0
 fi
@@ -19,6 +23,7 @@ errf="$(mktemp 2>/dev/null || echo /dev/null)"
 out="$(printf '%s' "$input" | node --no-warnings "$engine" hook "$1" 2>"$errf")"
 code=$?
 if [ "$code" -ne 0 ]; then
+  if [ "$readtool" = 1 ]; then [ "$errf" = /dev/null ] || rm -f "$errf"; exit 0; fi
   # The useful line is Node's message line ("Error: ...", "TypeError: ..."; it prints a file:line
   # header and the source line first), else any line naming an Error, else the last non-empty
   # line, else the exit status.

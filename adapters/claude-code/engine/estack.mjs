@@ -4003,10 +4003,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep: sep2, value } = collItem;
+        const { start, key, sep: sep3, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep2?.[0],
+          next: key ?? sep3?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4020,7 +4020,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep2) {
+          if (!keyProps.anchor && !keyProps.tag && !sep3) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map2.comment)
@@ -4044,7 +4044,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map2.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
+        const valueProps = resolveProps.resolveProps(sep3 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4060,7 +4060,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep3, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4151,7 +4151,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep2 = "";
+        let sep3 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4165,13 +4165,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep2 + cb;
-              sep2 = "";
+                comment += sep3 + cb;
+              sep3 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep2 += source;
+                sep3 += source;
               hasSpace = true;
               break;
             default:
@@ -4214,18 +4214,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep: sep2, value } = collItem;
+        const { start, key, sep: sep3, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep2?.[0],
+          next: key ?? sep3?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep2 && !value) {
+          if (!props.anchor && !props.tag && !sep3 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4279,8 +4279,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep2 && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
+        if (!isMap && !sep3 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep3, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4292,7 +4292,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
+          const valueProps = resolveProps.resolveProps(sep3 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4303,8 +4303,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep2)
-                for (const st of sep2) {
+              if (sep3)
+                for (const st of sep3) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4321,7 +4321,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep3, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4501,7 +4501,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep2 = "";
+      let sep3 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines2[i][0].slice(trimIndent) + "\n";
@@ -4518,24 +4518,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep2 + indent.slice(trimIndent) + content;
-          sep2 = "\n";
+          value += sep3 + indent.slice(trimIndent) + content;
+          sep3 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep2 === " ")
-            sep2 = "\n";
-          else if (!prevMoreIndented && sep2 === "\n")
-            sep2 = "\n\n";
-          value += sep2 + indent.slice(trimIndent) + content;
-          sep2 = "\n";
+          if (sep3 === " ")
+            sep3 = "\n";
+          else if (!prevMoreIndented && sep3 === "\n")
+            sep3 = "\n\n";
+          value += sep3 + indent.slice(trimIndent) + content;
+          sep3 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep2 === "\n")
+          if (sep3 === "\n")
             value += "\n";
           else
-            sep2 = "\n";
+            sep3 = "\n";
         } else {
-          value += sep2 + content;
-          sep2 = " ";
+          value += sep3 + content;
+          sep3 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4718,25 +4718,25 @@ var require_resolve_flow_scalar = __commonJS({
         trimBoth = /^[ \t]+|[ \t]+$/g;
       }
       let res = match[1].replace(trimEnd, "");
-      let sep2 = " ";
+      let sep3 = " ";
       let pos = line.lastIndex;
       while (match = line.exec(source)) {
         const lm = match[1].replace(trimBoth, "");
         if (lm === "") {
-          if (sep2 === "\n")
-            res += sep2;
+          if (sep3 === "\n")
+            res += sep3;
           else
-            sep2 = "\n";
+            sep3 = "\n";
         } else {
-          res += sep2 + lm;
-          sep2 = " ";
+          res += sep3 + lm;
+          sep3 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep2 + (match?.[1] ?? "");
+      return res + sep3 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5546,14 +5546,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep: sep2, value }) {
+    function stringifyItem({ start, key, sep: sep3, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep2)
-        for (const st of sep2)
+      if (sep3)
+        for (const st of sep3)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6720,18 +6720,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep2;
+          let sep3;
           if (scalar.end) {
-            sep2 = scalar.end;
-            sep2.push(this.sourceToken);
+            sep3 = scalar.end;
+            sep3.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep2 = [this.sourceToken];
+            sep3 = [this.sourceToken];
           const map2 = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep: sep2 }]
+            items: [{ start, key: scalar, sep: sep3 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map2;
@@ -6884,15 +6884,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep2 = it.sep;
-                  sep2.push(this.sourceToken);
+                  const sep3 = it.sep;
+                  sep3.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep: sep2 }]
+                    items: [{ start: start2, key, sep: sep3 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7086,13 +7086,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep2 = fc.end.splice(1, fc.end.length);
-            sep2.push(this.sourceToken);
+            const sep3 = fc.end.splice(1, fc.end.length);
+            sep3.push(this.sourceToken);
             const map2 = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep: sep2 }]
+              items: [{ start, key: fc, sep: sep3 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map2;
@@ -11248,50 +11248,50 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
-    function resolveComponent(base, relative2, options, skipNormalization) {
+    function resolveComponent(base, relative3, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
         base = parse5(serialize(base, options), options);
-        relative2 = parse5(serialize(relative2, options), options);
+        relative3 = parse5(serialize(relative3, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative2.scheme) {
-        target.scheme = relative2.scheme;
-        target.userinfo = relative2.userinfo;
-        target.host = relative2.host;
-        target.port = relative2.port;
-        target.path = removeDotSegments(relative2.path || "");
-        target.query = relative2.query;
+      if (!options.tolerant && relative3.scheme) {
+        target.scheme = relative3.scheme;
+        target.userinfo = relative3.userinfo;
+        target.host = relative3.host;
+        target.port = relative3.port;
+        target.path = removeDotSegments(relative3.path || "");
+        target.query = relative3.query;
       } else {
-        if (relative2.userinfo !== void 0 || relative2.host !== void 0 || relative2.port !== void 0) {
-          target.userinfo = relative2.userinfo;
-          target.host = relative2.host;
-          target.port = relative2.port;
-          target.path = removeDotSegments(relative2.path || "");
-          target.query = relative2.query;
+        if (relative3.userinfo !== void 0 || relative3.host !== void 0 || relative3.port !== void 0) {
+          target.userinfo = relative3.userinfo;
+          target.host = relative3.host;
+          target.port = relative3.port;
+          target.path = removeDotSegments(relative3.path || "");
+          target.query = relative3.query;
         } else {
-          if (!relative2.path) {
+          if (!relative3.path) {
             target.path = base.path;
-            if (relative2.query !== void 0) {
-              target.query = relative2.query;
+            if (relative3.query !== void 0) {
+              target.query = relative3.query;
             } else {
               target.query = base.query;
             }
           } else {
-            if (relative2.path[0] === "/") {
-              target.path = removeDotSegments(relative2.path);
+            if (relative3.path[0] === "/") {
+              target.path = removeDotSegments(relative3.path);
             } else {
               const baseHasAuthority = base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0;
               if (baseHasAuthority && !base.path) {
-                target.path = "/" + relative2.path;
+                target.path = "/" + relative3.path;
               } else if (!base.path) {
-                target.path = relative2.path;
+                target.path = relative3.path;
               } else {
-                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative2.path;
+                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative3.path;
               }
               target.path = base.scheme === void 0 && !baseHasAuthority && target.path[0] !== "/" ? removeDotSegmentsRelative(target.path) : removeDotSegments(target.path);
             }
-            target.query = relative2.query;
+            target.query = relative3.query;
           }
           target.userinfo = base.userinfo;
           target.host = base.host;
@@ -11299,7 +11299,7 @@ var require_fast_uri = __commonJS({
         }
         target.scheme = base.scheme;
       }
-      target.fragment = relative2.fragment;
+      target.fragment = relative3.fragment;
       return target;
     }
     function equal(uriA, uriB, options) {
@@ -34591,8 +34591,8 @@ function openEngine(cwd, deps = {}) {
 }
 
 // engine/src/hooks.ts
-import { existsSync as existsSync3, realpathSync as realpathSync2 } from "node:fs";
-import { dirname as dirname2, isAbsolute, join as join4, relative, resolve, sep } from "node:path";
+import { existsSync as existsSync4, realpathSync as realpathSync2 } from "node:fs";
+import { dirname as dirname2, isAbsolute, join as join5, relative as relative2, resolve, sep as sep2 } from "node:path";
 
 // engine/src/context.ts
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
@@ -35047,6 +35047,207 @@ function consumeHandover(e, actor, sel = {}) {
   return result;
 }
 
+// engine/src/mapfirst.ts
+import { relative, sep } from "node:path";
+
+// engine/src/graph.ts
+import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { basename, join as join4 } from "node:path";
+var GRAPHIFY_ENV = { GRAPHIFY_BACKEND: "none", GRAPHIFY_QUERY_LOG_DISABLE: "1" };
+var GRAPH_SCHEMA = 1;
+var BUILD_TIMEOUT_MS = 3e5;
+var START_TASK_BUILD_TIMEOUT_MS = 6e4;
+var INSTALL_HINT = 'uv tool install "graphifyy>=0.9.121,<0.10"';
+var MAP_ACTOR = { session_id: "map" };
+var OUT_DIR = "graphify-out";
+function graphifyVersion(e) {
+  try {
+    const r = e.exec.run("graphify", ["--version"], { cwd: e.cwd, timeoutMs: 1e4 });
+    if (r.code !== 0) return null;
+    return /\d+\.\d+\.\d+/.exec(r.stdout)?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+function versionSupported(v) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+  if (!m) return false;
+  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  return maj === 0 && (min === 9 && pat >= 121);
+}
+function checkoutOf(e, cwd) {
+  const r = e.exec.run("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 1e4 });
+  return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : cwd;
+}
+function checkoutLabel(e, checkout) {
+  if (checkout === e.repo.root) return "main";
+  const row = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' AND cwd = ? ORDER BY id DESC LIMIT 1").get(checkout);
+  return row ? `task ${row.id}'s worktree` : checkout;
+}
+function writeIgnore(e, checkout) {
+  const lines2 = [".estack/", ...e.policy.code_map.exclude];
+  writeFileSync2(join4(checkout, ".graphifyignore"), lines2.map((l) => l + "\n").join(""));
+  const r = e.exec.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: checkout, timeoutMs: 1e4 });
+  if (r.code !== 0) return;
+  const info = join4(r.stdout.trim(), "info");
+  const file2 = join4(info, "exclude");
+  mkdirSync2(info, { recursive: true });
+  const have = existsSync3(file2) ? readFileSync2(file2, "utf8") : "";
+  const present = new Set(have.split("\n"));
+  const missing = [`${OUT_DIR}/`, ".graphifyignore"].filter((l) => !present.has(l));
+  if (missing.length) appendFileSync(file2, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
+}
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+function takeLock(lock, timeoutMs) {
+  for (; ; ) {
+    try {
+      writeFileSync2(lock, String(process.pid), { flag: "wx" });
+      return;
+    } catch (x) {
+      if (x.code !== "EEXIST") throw x;
+    }
+    let age;
+    try {
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (age >= timeoutMs) rmSync(lock, { force: true });
+    else sleep(200);
+  }
+}
+var readRaw = (checkout) => {
+  try {
+    return JSON.parse(readFileSync2(join4(checkout, OUT_DIR, "graph.json"), "utf8"));
+  } catch {
+    return null;
+  }
+};
+var lineOf = (loc) => Number(/(\d+)/.exec(loc ?? "")?.[1] ?? 0);
+function loadGraph(checkout) {
+  const raw = readRaw(checkout);
+  if (!raw) return null;
+  const nodes = /* @__PURE__ */ new Map();
+  for (const n of raw.nodes ?? []) {
+    if (!n.source_file) continue;
+    const label = n.label ?? n.id;
+    const line = lineOf(n.source_location);
+    const kind = label.endsWith("()") ? "function" : line === 1 && label.endsWith(basename(n.source_file)) ? "file" : "symbol";
+    nodes.set(n.id, { id: n.id, label, name: label.replace(/\(\)$/, "").replace(/^\./, ""), file: n.source_file, line, kind });
+  }
+  const edges = (raw.links ?? []).map((l) => ({
+    source: l.source,
+    target: l.target,
+    relation: l.relation ?? "",
+    confidence: l.confidence ?? "",
+    file: l.source_file ?? "",
+    line: lineOf(l.source_location)
+  }));
+  const files = /* @__PURE__ */ new Set();
+  for (const n of nodes.values()) files.add(n.file);
+  return { checkout, graphify_version: raw.graph?.graphify_version ?? "", built_at_commit: raw.built_at_commit ?? null, nodes, edges, files };
+}
+function mappedFiles(checkout) {
+  try {
+    const j = JSON.parse(readFileSync2(join4(checkout, OUT_DIR, "estack-files.json"), "utf8"));
+    return new Set(j.files ?? []);
+  } catch {
+    return null;
+  }
+}
+function folderShares(g) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const n of g.nodes.values()) {
+    const i = n.file.lastIndexOf("/");
+    const folder = i < 0 ? "." : n.file.slice(0, i);
+    counts.set(folder, (counts.get(folder) ?? 0) + 1);
+  }
+  const total = g.nodes.size || 1;
+  return [...counts].map(([folder, nodes]) => ({ folder, nodes, percent: Math.round(nodes / total * 100) })).sort((a, b) => b.nodes - a.nodes || a.folder.localeCompare(b.folder));
+}
+function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
+  const started = Date.now();
+  const finish = (r) => {
+    const res = { checkout, duration_ms: Date.now() - started, ...r };
+    logEvent(e, MAP_ACTOR, "map_built", null, {
+      checkout,
+      ok: res.ok,
+      duration_ms: res.duration_ms,
+      nodes: res.nodes,
+      ...res.error ? { error: res.error } : {}
+    });
+    return res;
+  };
+  const fail = (error62) => finish({ ok: false, nodes: 0, files: 0, error: error62 });
+  const v = graphifyVersion(e);
+  if (v === null || !versionSupported(v)) {
+    return fail(`Graphify ${v === null ? "is not installed" : `${v} is not supported`}; install it with: ${INSTALL_HINT}`);
+  }
+  mkdirSync2(join4(checkout, OUT_DIR), { recursive: true });
+  const lock = join4(checkout, OUT_DIR, ".estack-build.lock");
+  takeLock(lock, timeoutMs);
+  try {
+    writeIgnore(e, checkout);
+    const r = e.exec.run("graphify", ["extract", checkout, "--code-only"], { cwd: checkout, timeoutMs, env: GRAPHIFY_ENV });
+    if (r.timedOut) return fail(`graphify timed out after ${timeoutMs}ms`);
+    if (r.code !== 0) return fail(`graphify exited ${r.code}: ${(r.stderr || r.stdout).trim().slice(-500)}`);
+    const raw = readRaw(checkout);
+    if (!raw) return fail("graphify wrote no readable graph.json");
+    const found = raw.graph?.graphify_version ?? "unknown";
+    if (raw.graph?.schema_version !== GRAPH_SCHEMA || !versionSupported(found)) {
+      return fail(`expected schema ${GRAPH_SCHEMA} and Graphify >=0.9.121,<0.10, found schema ${raw.graph?.schema_version ?? "none"} and Graphify ${found}`);
+    }
+    const g = loadGraph(checkout);
+    const files = [...g.files].sort();
+    const out = join4(checkout, OUT_DIR, "estack-files.json");
+    writeFileSync2(out + ".tmp", JSON.stringify({ built_at_commit: g.built_at_commit, graphify_version: g.graphify_version, files }));
+    renameSync(out + ".tmp", out);
+    return finish({ ok: true, nodes: g.nodes.size, files: files.length });
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
+
+// engine/src/mapfirst.ts
+var READ_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep"]);
+function preRead(e, ev) {
+  try {
+    if (!e.policy.code_map.enabled) return null;
+    const input2 = ev.tool_input ?? {};
+    const isRead = ev.tool_name === "Read";
+    const raw = isRead ? input2.file_path : input2.path ?? ev.cwd;
+    if (typeof raw !== "string" || raw === "") return null;
+    const abs = resolveReal(ev.cwd, raw);
+    const top = runBounded(e, nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
+    if (top.code !== 0) return null;
+    const checkout = top.stdout.trim();
+    const task = e.db.prepare(
+      `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+       WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?
+         AND EXISTS (SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.name = 'reuse_check' AND s.status IN ('pending', 'in_progress'))
+       ORDER BY t.id DESC LIMIT 1`
+    ).get(checkout, ev.session_id);
+    if (!task) return null;
+    const mapped = mappedFiles(checkout);
+    if (!mapped) return null;
+    const rel = relative(checkout, abs).split(sep).join("/");
+    if (isRead && !mapped.has(rel)) return null;
+    const by = actorId(actorOf(ev));
+    const searched = e.db.prepare(
+      "SELECT 1 FROM code_queries WHERE task_id = ? AND recorded_by = ? AND ok = 1 AND auto = 0 LIMIT 1"
+    ).get(task.id, by);
+    if (searched) return null;
+    const told = e.db.prepare("SELECT 1 FROM events WHERE kind = 'map_first_denied' AND task_id = ? AND actor = ? LIMIT 1").get(task.id, by);
+    if (told) return null;
+    logEvent(e, actorOf(ev), "map_first_denied", task.id, { tool: ev.tool_name, path: rel });
+    return deny(`estack: look at the code map before reading code for task #${task.id}. Call context_for with the area you are working in, or find_existing with what you need, then read ${rel}. This happens once per task; the next read goes through either way.`);
+  } catch {
+    return null;
+  }
+}
+
 // engine/src/match.ts
 var escapeRe = (c) => c.replace(/[.+^${}()|[\]\\\/-]/g, "\\$&");
 function globToRegExp(glob, mode, ignoreCase = false) {
@@ -35167,17 +35368,17 @@ function resolveReal(cwd, p) {
   const abs = resolve(cwd, p);
   let d = abs;
   const rest = [];
-  while (!existsSync3(d)) {
+  while (!existsSync4(d)) {
     const up = dirname2(d);
     if (up === d) return abs;
     rest.unshift(d.slice(up.length + 1));
     d = up;
   }
-  return join4(realpathSync2(d), ...rest);
+  return join5(realpathSync2(d), ...rest);
 }
 function nearestDir(p) {
   let d = dirname2(p);
-  while (!existsSync3(d)) {
+  while (!existsSync4(d)) {
     const up = dirname2(d);
     if (up === d) break;
     d = up;
@@ -35206,13 +35407,13 @@ function preEdit(e, ev) {
   const top = runBounded(e, dir, "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
   if (top.code !== 0) {
     if (top.code === 128 && /work ?tree/i.test(top.stderr)) {
-      const inGit = abs === commonReal || abs.startsWith(commonReal + sep);
-      return inGit ? deny(`${relative(e.repo.root, abs).split(sep).join("/")} is protected (git directory)`) : null;
+      const inGit = abs === commonReal || abs.startsWith(commonReal + sep2);
+      return inGit ? deny(`${relative2(e.repo.root, abs).split(sep2).join("/")} is protected (git directory)`) : null;
     }
     throw new EngineError("NOT_A_REPO", `git failed while checking ${raw}: ${top.stderr.trim() || `exit ${top.code}`}`);
   }
   const worktree = top.stdout.trim();
-  const rel = relative(worktree, abs).split(sep).join("/");
+  const rel = relative2(worktree, abs).split(sep2).join("/");
   if (rel.startsWith("..") || isAbsolute(rel)) return null;
   if (rel === ".git" || rel.startsWith(".git/")) return deny(`${rel} is protected (git directory)`);
   if (isProtected(rel, e.policy)) return deny(`${rel} is protected by .estack/policy.yaml`);
@@ -35256,6 +35457,7 @@ function preToolUse(e, ev) {
   const tool = ev.tool_name ?? "";
   if (EDIT_TOOLS.has(tool)) return preEdit(e, ev);
   if (tool === "Bash") return preBash(e, ev);
+  if (READ_TOOLS.has(tool)) return preRead(e, ev);
   if (tool.startsWith(MCP_PREFIX)) {
     const cwd = STAMP_CWD.has(tool.slice(MCP_PREFIX.length)) ? { cwd: ev.cwd } : {};
     return pre("allow", "estack tool call", { ...ev.tool_input ?? {}, ...cwd, actor: actorOf(ev) });
@@ -35410,7 +35612,7 @@ function stop(e, ev) {
   return reasons.length ? { decision: "block", reason: reasons.join("\n") } : null;
 }
 function runHook(name, ev, deps = {}) {
-  const gate = name === "pre-tool-use";
+  const gate = name === "pre-tool-use" && !READ_TOOLS.has(ev.tool_name ?? "");
   let e;
   try {
     try {
@@ -45174,158 +45376,6 @@ var StdioServerTransport = class {
   }
 };
 
-// engine/src/graph.ts
-import { appendFileSync, existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { basename, join as join5 } from "node:path";
-var GRAPHIFY_ENV = { GRAPHIFY_BACKEND: "none", GRAPHIFY_QUERY_LOG_DISABLE: "1" };
-var GRAPH_SCHEMA = 1;
-var BUILD_TIMEOUT_MS = 3e5;
-var START_TASK_BUILD_TIMEOUT_MS = 6e4;
-var INSTALL_HINT = 'uv tool install "graphifyy>=0.9.121,<0.10"';
-var MAP_ACTOR = { session_id: "map" };
-var OUT_DIR = "graphify-out";
-function graphifyVersion(e) {
-  try {
-    const r = e.exec.run("graphify", ["--version"], { cwd: e.cwd, timeoutMs: 1e4 });
-    if (r.code !== 0) return null;
-    return /\d+\.\d+\.\d+/.exec(r.stdout)?.[0] ?? null;
-  } catch {
-    return null;
-  }
-}
-function versionSupported(v) {
-  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
-  if (!m) return false;
-  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  return maj === 0 && (min === 9 && pat >= 121);
-}
-function checkoutOf(e, cwd) {
-  const r = e.exec.run("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 1e4 });
-  return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : cwd;
-}
-function checkoutLabel(e, checkout) {
-  if (checkout === e.repo.root) return "main";
-  const row = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' AND cwd = ? ORDER BY id DESC LIMIT 1").get(checkout);
-  return row ? `task ${row.id}'s worktree` : checkout;
-}
-function writeIgnore(e, checkout) {
-  const lines2 = [".estack/", ...e.policy.code_map.exclude];
-  writeFileSync2(join5(checkout, ".graphifyignore"), lines2.map((l) => l + "\n").join(""));
-  const r = e.exec.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: checkout, timeoutMs: 1e4 });
-  if (r.code !== 0) return;
-  const info = join5(r.stdout.trim(), "info");
-  const file2 = join5(info, "exclude");
-  mkdirSync2(info, { recursive: true });
-  const have = existsSync4(file2) ? readFileSync2(file2, "utf8") : "";
-  const present = new Set(have.split("\n"));
-  const missing = [`${OUT_DIR}/`, ".graphifyignore"].filter((l) => !present.has(l));
-  if (missing.length) appendFileSync(file2, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
-}
-function sleep(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-function takeLock(lock, timeoutMs) {
-  for (; ; ) {
-    try {
-      writeFileSync2(lock, String(process.pid), { flag: "wx" });
-      return;
-    } catch (x) {
-      if (x.code !== "EEXIST") throw x;
-    }
-    let age;
-    try {
-      age = Date.now() - statSync(lock).mtimeMs;
-    } catch {
-      continue;
-    }
-    if (age >= timeoutMs) rmSync(lock, { force: true });
-    else sleep(200);
-  }
-}
-var readRaw = (checkout) => {
-  try {
-    return JSON.parse(readFileSync2(join5(checkout, OUT_DIR, "graph.json"), "utf8"));
-  } catch {
-    return null;
-  }
-};
-var lineOf = (loc) => Number(/(\d+)/.exec(loc ?? "")?.[1] ?? 0);
-function loadGraph(checkout) {
-  const raw = readRaw(checkout);
-  if (!raw) return null;
-  const nodes = /* @__PURE__ */ new Map();
-  for (const n of raw.nodes ?? []) {
-    if (!n.source_file) continue;
-    const label = n.label ?? n.id;
-    const line = lineOf(n.source_location);
-    const kind = label.endsWith("()") ? "function" : line === 1 && label.endsWith(basename(n.source_file)) ? "file" : "symbol";
-    nodes.set(n.id, { id: n.id, label, name: label.replace(/\(\)$/, "").replace(/^\./, ""), file: n.source_file, line, kind });
-  }
-  const edges = (raw.links ?? []).map((l) => ({
-    source: l.source,
-    target: l.target,
-    relation: l.relation ?? "",
-    confidence: l.confidence ?? "",
-    file: l.source_file ?? "",
-    line: lineOf(l.source_location)
-  }));
-  const files = /* @__PURE__ */ new Set();
-  for (const n of nodes.values()) files.add(n.file);
-  return { checkout, graphify_version: raw.graph?.graphify_version ?? "", built_at_commit: raw.built_at_commit ?? null, nodes, edges, files };
-}
-function folderShares(g) {
-  const counts = /* @__PURE__ */ new Map();
-  for (const n of g.nodes.values()) {
-    const i = n.file.lastIndexOf("/");
-    const folder = i < 0 ? "." : n.file.slice(0, i);
-    counts.set(folder, (counts.get(folder) ?? 0) + 1);
-  }
-  const total = g.nodes.size || 1;
-  return [...counts].map(([folder, nodes]) => ({ folder, nodes, percent: Math.round(nodes / total * 100) })).sort((a, b) => b.nodes - a.nodes || a.folder.localeCompare(b.folder));
-}
-function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
-  const started = Date.now();
-  const finish = (r) => {
-    const res = { checkout, duration_ms: Date.now() - started, ...r };
-    logEvent(e, MAP_ACTOR, "map_built", null, {
-      checkout,
-      ok: res.ok,
-      duration_ms: res.duration_ms,
-      nodes: res.nodes,
-      ...res.error ? { error: res.error } : {}
-    });
-    return res;
-  };
-  const fail = (error62) => finish({ ok: false, nodes: 0, files: 0, error: error62 });
-  const v = graphifyVersion(e);
-  if (v === null || !versionSupported(v)) {
-    return fail(`Graphify ${v === null ? "is not installed" : `${v} is not supported`}; install it with: ${INSTALL_HINT}`);
-  }
-  mkdirSync2(join5(checkout, OUT_DIR), { recursive: true });
-  const lock = join5(checkout, OUT_DIR, ".estack-build.lock");
-  takeLock(lock, timeoutMs);
-  try {
-    writeIgnore(e, checkout);
-    const r = e.exec.run("graphify", ["extract", checkout, "--code-only"], { cwd: checkout, timeoutMs, env: GRAPHIFY_ENV });
-    if (r.timedOut) return fail(`graphify timed out after ${timeoutMs}ms`);
-    if (r.code !== 0) return fail(`graphify exited ${r.code}: ${(r.stderr || r.stdout).trim().slice(-500)}`);
-    const raw = readRaw(checkout);
-    if (!raw) return fail("graphify wrote no readable graph.json");
-    const found = raw.graph?.graphify_version ?? "unknown";
-    if (raw.graph?.schema_version !== GRAPH_SCHEMA || !versionSupported(found)) {
-      return fail(`expected schema ${GRAPH_SCHEMA} and Graphify >=0.9.121,<0.10, found schema ${raw.graph?.schema_version ?? "none"} and Graphify ${found}`);
-    }
-    const g = loadGraph(checkout);
-    const files = [...g.files].sort();
-    const out = join5(checkout, OUT_DIR, "estack-files.json");
-    writeFileSync2(out + ".tmp", JSON.stringify({ built_at_commit: g.built_at_commit, graphify_version: g.graphify_version, files }));
-    renameSync(out + ".tmp", out);
-    return finish({ ok: true, nodes: g.nodes.size, files: files.length });
-  } finally {
-    rmSync(lock, { force: true });
-  }
-}
-
 // engine/src/codemap.ts
 var MAX_LIST = 40;
 var MAX_MATCHES = 15;
@@ -45367,9 +45417,9 @@ function contextFor(g, label, area) {
   };
 }
 function whoUses(g, label, symbol2) {
-  const sep2 = symbol2.lastIndexOf("::");
-  const path = sep2 >= 0 ? symbol2.slice(0, sep2) : null;
-  const name = sep2 >= 0 ? symbol2.slice(sep2 + 2) : symbol2;
+  const sep3 = symbol2.lastIndexOf("::");
+  const path = sep3 >= 0 ? symbol2.slice(0, sep3) : null;
+  const name = sep3 >= 0 ? symbol2.slice(sep3 + 2) : symbol2;
   const found = [...g.nodes.values()].filter((n) => n.name === name && (path === null || n.file === path));
   const defined_at = found.map(hitOf);
   const result = { graph: label, symbol: symbol2, defined_at, callers: [] };
