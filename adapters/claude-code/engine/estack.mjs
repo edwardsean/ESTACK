@@ -10131,11 +10131,11 @@ var require_validate = __commonJS({
         jsonPointer = $data;
         data = names_1.default.rootData;
       } else {
-        const matches = RELATIVE_JSON_POINTER.exec($data);
-        if (!matches)
+        const matches2 = RELATIVE_JSON_POINTER.exec($data);
+        if (!matches2)
           throw new Error(`Invalid JSON-pointer: ${$data}`);
-        const up = +matches[1];
-        jsonPointer = matches[2];
+        const up = +matches2[1];
+        jsonPointer = matches2[2];
         if (jsonPointer === "#") {
           if (up >= dataLevel)
             throw new Error(errorMsg("property/index", up));
@@ -11054,11 +11054,11 @@ var require_schemes = __commonJS({
         urnComponent.error = "URN can not be parsed";
         return urnComponent;
       }
-      const matches = urnComponent.path.match(URN_REG);
-      if (matches && matches[0] === urnComponent.path) {
+      const matches2 = urnComponent.path.match(URN_REG);
+      if (matches2 && matches2[0] === urnComponent.path) {
         const scheme = options.scheme || urnComponent.scheme || "urn";
-        urnComponent.nid = matches[1].toLowerCase();
-        urnComponent.nss = matches[2];
+        urnComponent.nid = matches2[1].toLowerCase();
+        urnComponent.nss = matches2[2];
         const urnScheme = `${scheme}:${options.nid || urnComponent.nid}`;
         const schemeHandler = getSchemeHandler(urnScheme);
         urnComponent.path = void 0;
@@ -11379,8 +11379,8 @@ var require_fast_uri = __commonJS({
     var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
     var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
     var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
-    function getParseError(parsed, matches) {
-      if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
+    function getParseError(parsed, matches2) {
+      if (matches2[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
         return 'URI path must start with "/" when authority is present.';
       }
       if (typeof parsed.port === "number" && (parsed.port < 0 || parsed.port > 65535)) {
@@ -11402,9 +11402,9 @@ var require_fast_uri = __commonJS({
     function isIPLiteral(host) {
       return host[0] === "[" && host[host.length - 1] === "]";
     }
-    function hasMalformedComponentPercentEncoding(matches) {
-      const host = matches[4];
-      return hasMalformedPercentEncoding(matches[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches[6]) || hasMalformedPercentEncoding(matches[7]) || hasMalformedPercentEncoding(matches[8]);
+    function hasMalformedComponentPercentEncoding(matches2) {
+      const host = matches2[4];
+      return hasMalformedPercentEncoding(matches2[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches2[6]) || hasMalformedPercentEncoding(matches2[7]) || hasMalformedPercentEncoding(matches2[8]);
     }
     function canonicalizeHost(parsed, options, schemeHandler, isIP) {
       if (hasForbiddenDomainHost(parsed, options, schemeHandler, isIP)) {
@@ -11479,15 +11479,15 @@ var require_fast_uri = __commonJS({
           }
         }
       }
-      const matches = uri.match(URI_PARSE);
-      if (matches) {
-        parsed.scheme = matches[1];
-        parsed.userinfo = matches[3];
-        parsed.host = matches[4];
-        parsed.port = parseInt(matches[5], 10);
-        parsed.path = matches[6] || "";
-        parsed.query = matches[7];
-        parsed.fragment = matches[8];
+      const matches2 = uri.match(URI_PARSE);
+      if (matches2) {
+        parsed.scheme = matches2[1];
+        parsed.userinfo = matches2[3];
+        parsed.host = matches2[4];
+        parsed.port = parseInt(matches2[5], 10);
+        parsed.path = matches2[6] || "";
+        parsed.query = matches2[7];
+        parsed.fragment = matches2[8];
         if (parsed.scheme !== void 0) {
           if (VALID_SCHEME.test(parsed.scheme)) {
             parsed.scheme = parsed.scheme.toLowerCase();
@@ -11496,14 +11496,14 @@ var require_fast_uri = __commonJS({
             malformedScheme = true;
           }
         }
-        malformedPercentEncoding = hasMalformedComponentPercentEncoding(matches);
+        malformedPercentEncoding = hasMalformedComponentPercentEncoding(matches2);
         if (malformedPercentEncoding) {
           parsed.error = parsed.error || "URI contains malformed percent-encoding.";
         }
         if (isNaN(parsed.port)) {
-          parsed.port = matches[5];
+          parsed.port = matches2[5];
         }
-        const parseError = getParseError(parsed, matches);
+        const parseError = getParseError(parsed, matches2);
         if (parseError !== void 0) {
           parsed.error = parsed.error || parseError;
           malformedAuthorityOrPort = true;
@@ -14353,12 +14353,12 @@ var require_formats = __commonJS({
     var DATE = /^(\d\d\d\d)-(\d\d)-(\d\d)$/;
     var DAYS = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     function date5(str) {
-      const matches = DATE.exec(str);
-      if (!matches)
+      const matches2 = DATE.exec(str);
+      if (!matches2)
         return false;
-      const year = +matches[1];
-      const month = +matches[2];
-      const day = +matches[3];
+      const year = +matches2[1];
+      const month = +matches2[2];
+      const day = +matches2[3];
       return month >= 1 && month <= 12 && day >= 1 && day <= (month === 2 && isLeapYear(year) ? 29 : DAYS[month]);
     }
     function compareDate(d1, d2) {
@@ -14373,16 +14373,16 @@ var require_formats = __commonJS({
     var TIME = /^(\d\d):(\d\d):(\d\d(?:\.\d+)?)(z|([+-])(\d\d)(?::?(\d\d))?)?$/i;
     function getTime(strictTimeZone) {
       return function time3(str) {
-        const matches = TIME.exec(str);
-        if (!matches)
+        const matches2 = TIME.exec(str);
+        if (!matches2)
           return false;
-        const hr = +matches[1];
-        const min = +matches[2];
-        const sec = +matches[3];
-        const tz = matches[4];
-        const tzSign = matches[5] === "-" ? -1 : 1;
-        const tzH = +(matches[6] || 0);
-        const tzM = +(matches[7] || 0);
+        const hr = +matches2[1];
+        const min = +matches2[2];
+        const sec = +matches2[3];
+        const tz = matches2[4];
+        const tzSign = matches2[5] === "-" ? -1 : 1;
+        const tzH = +(matches2[6] || 0);
+        const tzM = +(matches2[7] || 0);
         if (tzH > 23 || tzM > 59 || strictTimeZone && !tz)
           return false;
         if (hr <= 23 && min <= 59 && sec < 60)
@@ -14593,7 +14593,7 @@ var require_dist2 = __commonJS({
 });
 
 // engine/src/cli.ts
-import { readFileSync as readFileSync4, realpathSync as realpathSync3 } from "node:fs";
+import { readFileSync as readFileSync5, realpathSync as realpathSync3 } from "node:fs";
 import { resolve as resolve3 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18514,16 +18514,16 @@ var $ZodUnion = /* @__PURE__ */ $constructor("$ZodUnion", (inst, def) => {
   };
 });
 function handleExclusiveUnionResults(results, final, inst, ctx) {
-  const matches = [];
+  const matches2 = [];
   for (let i = 0; i < results.length; i++) {
     if (results[i].issues.length === 0)
-      matches.push(i);
+      matches2.push(i);
   }
-  if (matches.length === 1) {
-    final.value = results[matches[0]].value;
+  if (matches2.length === 1) {
+    final.value = results[matches2[0]].value;
     return final;
   }
-  if (matches.length === 0) {
+  if (matches2.length === 0) {
     final.issues.push({
       code: "invalid_union",
       input: final.value,
@@ -18537,7 +18537,7 @@ function handleExclusiveUnionResults(results, final, inst, ctx) {
       inst,
       errors: [],
       inclusive: false,
-      matches
+      matches: matches2
     });
   }
   return final;
@@ -33746,20 +33746,20 @@ function checkArrayGuards(arraySchema, guards) {
     if (guards.containsSchema) {
       const minContains = guards.minContains ?? 1;
       const ceiling = guards.maxContains !== void 0 ? guards.maxContains + 1 : Number.POSITIVE_INFINITY;
-      let matches = 0;
+      let matches2 = 0;
       for (const item of items) {
-        if (guards.containsSchema.safeParse(item).success && ++matches >= ceiling)
+        if (guards.containsSchema.safeParse(item).success && ++matches2 >= ceiling)
           break;
       }
-      if (matches < minContains) {
+      if (matches2 < minContains) {
         payload.issues.push({
           code: "custom",
-          message: `Array must contain at least ${minContains} matching ${plural(minContains)}; found ${matches}`,
+          message: `Array must contain at least ${minContains} matching ${plural(minContains)}; found ${matches2}`,
           input: items,
           continue: true
         });
       }
-      if (guards.maxContains !== void 0 && matches > guards.maxContains) {
+      if (guards.maxContains !== void 0 && matches2 > guards.maxContains) {
         payload.issues.push({
           code: "custom",
           message: `Array must contain at most ${guards.maxContains} matching ${plural(guards.maxContains)}`,
@@ -35652,6 +35652,131 @@ function runHook(name, ev, deps = {}) {
   }
 }
 
+// engine/src/duplicates.ts
+import { readFileSync as readFileSync3 } from "node:fs";
+import { join as join6 } from "node:path";
+var NAME_PREFIXES = ["get", "make", "build", "create", "compute", "calculate", "calc", "do"];
+var MAP_ACTOR2 = { session_id: "map" };
+var TEST_PATTERNS = ["**/*.test.*", "**/*.spec.*", "**/test/**", "**/tests/**", "**/__tests__/**"];
+function normaliseName(name) {
+  const n = name.toLowerCase().replace(/[_-]/g, "");
+  const p = NAME_PREFIXES.find((x) => n.startsWith(x) && n.length - x.length >= 3);
+  return p ? n.slice(p.length) : n;
+}
+function paramCount(checkout, file2, line) {
+  let src;
+  try {
+    src = readFileSync3(join6(checkout, file2), "utf8").split("\n").slice(Math.max(0, line - 1), line + 4).join("\n");
+  } catch {
+    return null;
+  }
+  const start = src.indexOf("(");
+  if (start < 0) return null;
+  let depth = 0;
+  let commas = 0;
+  let body = "";
+  for (let i = start; i < src.length; i++) {
+    const c = src[i];
+    if (c === "(" || c === "[" || c === "{" || c === "<") depth++;
+    else if (c === ")" || c === "]" || c === "}" || c === ">" && src[i - 1] !== "=") depth--;
+    if (depth === 0) return body.trim() === "" ? 0 : commas + 1;
+    if (i > start) {
+      if (c === "," && depth === 1) commas++;
+      body += c;
+    }
+  }
+  return null;
+}
+function isTestFile(file2) {
+  return TEST_PATTERNS.some((p) => pathMatches(file2, p));
+}
+function newFunctions(e, g, task) {
+  const r = runBounded(e, task.cwd, "git", ["diff", "-U0", "--no-color", `${task.base_sha}..refs/heads/${task.branch}`]);
+  if (r.code !== 0) return [];
+  const added = /* @__PURE__ */ new Map();
+  let file2 = null;
+  for (const l of r.stdout.split("\n")) {
+    if (l.startsWith("+++ ")) file2 = l.startsWith("+++ b/") ? l.slice(6) : null;
+    else if (file2) {
+      const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(l);
+      if (!m) continue;
+      const start = Number(m[1]);
+      const count = m[2] === void 0 ? 1 : Number(m[2]);
+      if (count > 0) (added.get(file2) ?? added.set(file2, []).get(file2)).push([start, start + count - 1]);
+    }
+  }
+  return [...g.nodes.values()].filter((n) => n.kind === "function" && !isTestFile(n.file) && (added.get(n.file) ?? []).some(([a, b]) => n.line >= a && n.line <= b));
+}
+var matches = (checkout, f, x) => {
+  if (normaliseName(f.name) !== normaliseName(x.name)) return false;
+  const a = paramCount(checkout, f.file, f.line);
+  const b = paramCount(checkout, x.file, x.line);
+  return a === null || b === null || a === b;
+};
+function openDuplicates(e, task_id) {
+  return e.db.prepare("SELECT * FROM duplicates WHERE task_id = ? AND status = 'open' ORDER BY id").all(task_id);
+}
+var branchHead = (e, task) => runBounded(e, task.cwd, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${task.branch}`]).stdout.trim();
+function checkDuplicates(e, task_id) {
+  const task = getTask(e, task_id).task;
+  const g = loadGraph(task.cwd);
+  if (!g) return [];
+  const now = e.now().toISOString();
+  const fresh = newFunctions(e, g, task);
+  const byKey = (file2, name) => [...g.nodes.values()].find((n) => n.kind === "function" && n.file === file2 && n.name === name);
+  for (const d of openDuplicates(e, task_id)) {
+    const f = fresh.find((n) => n.file === d.new_file && n.name === d.new_symbol);
+    const x = byKey(d.existing_file, d.existing_symbol);
+    if (f && x && !isTestFile(x.file) && matches(task.cwd, f, x)) continue;
+    e.db.prepare("UPDATE duplicates SET status = 'resolved', closed_at = ? WHERE id = ?").run(now, d.id);
+  }
+  const head = branchHead(e, task);
+  const freshIds = new Set(fresh.map((n) => n.id));
+  for (const f of fresh) {
+    for (const x of g.nodes.values()) {
+      if (x.kind !== "function" || x.id === f.id || isTestFile(x.file)) continue;
+      if (freshIds.has(x.id) && x.id < f.id) continue;
+      if (!matches(task.cwd, f, x)) continue;
+      const r = e.db.prepare(
+        `INSERT OR IGNORE INTO duplicates (task_id, commit_sha, new_symbol, new_file, new_line, existing_symbol, existing_file, existing_line, status, found_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`
+      ).run(task_id, head, f.name, f.file, f.line, x.name, x.file, x.line, now);
+      if (Number(r.changes) > 0) {
+        logEvent(e, MAP_ACTOR2, "possible_duplicate", task_id, { new: `${f.file}:${f.line}`, existing: `${x.file}:${x.line}`, symbol: f.name });
+      }
+    }
+  }
+  logEvent(e, MAP_ACTOR2, "duplicate_check_done", task_id, { head });
+  return openDuplicates(e, task_id);
+}
+function ensureDuplicateCheck(e, task_id) {
+  if (!e.policy.code_map.enabled) return;
+  const task = getTask(e, task_id).task;
+  const head = branchHead(e, task);
+  const last = e.db.prepare("SELECT payload_json FROM events WHERE task_id = ? AND kind = 'duplicate_check_done' ORDER BY id DESC LIMIT 1").get(task_id);
+  if (last && JSON.parse(last.payload_json).head === head) return;
+  const b = buildGraph(e, task.cwd);
+  if (!b.ok) throw new EngineError("MAP_BROKEN", `the duplicate check could not run: ${b.error}`);
+  checkDuplicates(e, task_id);
+}
+function dismissDuplicate(e, input2) {
+  const d = e.db.prepare("SELECT * FROM duplicates WHERE id = ?").get(input2.id);
+  if (!d) throw new EngineError("NO_TASK", `no possible duplicate with id ${input2.id}`);
+  if (d.status !== "open") throw new EngineError("BAD_EVIDENCE", `possible duplicate #${d.id} is already ${d.status}`);
+  if (!input2.reason.trim()) throw new EngineError("BAD_EVIDENCE", "a reason is required to dismiss a possible duplicate");
+  if (input2.actor.session_id === "unknown" && !input2.actor.agent_id) {
+    throw new EngineError("BAD_EVIDENCE", "an unidentified caller can't dismiss a possible duplicate; pass your actor");
+  }
+  const v = getTask(e, d.task_id);
+  const commit = [...v.evidence].reverse().find((x) => x.kind === "commit" && x.ok);
+  const author = commit ? commit.recorded_by : v.task.created_by;
+  const by = actorId(input2.actor);
+  if (by === author) throw new EngineError("BAD_EVIDENCE", "the task's author can't dismiss its own possible duplicate; ask a reviewer");
+  e.db.prepare("UPDATE duplicates SET status = 'dismissed', reason = ?, closed_by = ?, closed_at = ? WHERE id = ?").run(input2.reason, by, e.now().toISOString(), d.id);
+  logEvent(e, input2.actor, "duplicate_dismissed", d.task_id, { id: d.id, reason: input2.reason });
+  return e.db.prepare("SELECT * FROM duplicates WHERE id = ?").get(d.id);
+}
+
 // engine/src/checks.ts
 var DEFAULT_CHECK_TIMEOUT_MS = 6e5;
 function runCheck(e, input2) {
@@ -35668,6 +35793,17 @@ function runCheck(e, input2) {
   const on = runBounded(e, v.task.cwd, "git", ["branch", "--show-current"]).stdout.trim();
   if (on !== v.task.branch) {
     throw new EngineError("BAD_EVIDENCE", `worktree ${v.task.cwd} is on ${on || "no branch"}, task is on ${v.task.branch}`);
+  }
+  if (input2.step === "verify") {
+    ensureDuplicateCheck(e, v.task.id);
+    const open2 = openDuplicates(e, v.task.id);
+    if (open2.length > 0) {
+      const list = open2.map((d) => `${d.new_symbol} (${d.new_file}:${d.new_line}) matches ${d.existing_symbol} (${d.existing_file}:${d.existing_line}) [#${d.id}]`).join(", ");
+      throw new EngineError(
+        "BAD_EVIDENCE",
+        `task #${v.task.id} has possible duplicates: ${list}; remove the copy and commit, or have an agent other than the author call dismiss_duplicate with a reason`
+      );
+    }
   }
   const head = runBounded(e, v.task.cwd, "git", ["rev-parse", "HEAD"]);
   const head_sha = head.code === 0 ? head.stdout.trim() : null;
@@ -45605,6 +45741,10 @@ function createServer(cwd, deps = {}) {
   codeTool("context_for", "area", "Code map: what an area (folder or file) defines, what it uses and what uses it. Call it before writing code.", "folder or file path relative to the repository root");
   codeTool("find_existing", "description", "Code map: find existing functions that already do what you describe, before you write a new one.", "what you are about to write, in plain words");
   codeTool("who_uses", "symbol", "Code map: who calls or imports a symbol (name, or path::name).", "symbol name, or path::name");
+  server.registerTool("dismiss_duplicate", {
+    description: "Dismiss a possible duplicate the post-commit check found, with a reason. Not callable by the task's author.",
+    inputSchema: { duplicate_id: external_exports.number().int(), reason: external_exports.string(), actor: actorSchema }
+  }, tool((e, a, actor) => dismissDuplicate(e, { id: a.duplicate_id, reason: a.reason, actor })));
   server.registerTool("status", {
     description: "Show one task (with task_id) or all open tasks.",
     inputSchema: { task_id: external_exports.number().int().optional(), actor: actorSchema }
@@ -45717,8 +45857,8 @@ function recordOverride(e, input2, env) {
 
 // engine/src/githooks.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { chmodSync, existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join6, resolve as resolve2 } from "node:path";
+import { chmodSync, existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join7, resolve as resolve2 } from "node:path";
 var MANAGED_MARK = "# estack-managed-hook";
 var HOOKS = ["pre-commit", "pre-push"];
 var shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -45756,8 +45896,8 @@ function installGitHooks(repoRoot, enginePath) {
   mkdirSync3(dir, { recursive: true });
   const installed = [], chained = [];
   for (const name of HOOKS) {
-    const p = join6(dir, name);
-    if (existsSync6(p) && !readFileSync3(p, "utf8").includes(MANAGED_MARK)) {
+    const p = join7(dir, name);
+    if (existsSync6(p) && !readFileSync4(p, "utf8").includes(MANAGED_MARK)) {
       let dest = `${p}.estack-prev`;
       for (let n = 2; existsSync6(dest); n++) dest = `${p}.estack-prev.${n}`;
       renameSync2(p, dest);
@@ -45939,7 +46079,7 @@ function dispatch(cmd, rest, io) {
         throw x;
       }
       try {
-        const msg = name === "pre-commit" ? preCommit(e, io.cwd) : prePush(e, io.cwd, io.stdin ?? readFileSync4(0, "utf8"));
+        const msg = name === "pre-commit" ? preCommit(e, io.cwd) : prePush(e, io.cwd, io.stdin ?? readFileSync5(0, "utf8"));
         if (msg === null) return 0;
         io.err(`estack: ${msg}
 `);
@@ -46032,7 +46172,7 @@ function dispatch(cmd, rest, io) {
       const gate = name === "pre-tool-use";
       let ev;
       try {
-        ev = JSON.parse(io.stdin ?? readFileSync4(0, "utf8"));
+        ev = JSON.parse(io.stdin ?? readFileSync5(0, "utf8"));
         if (ev === null || typeof ev !== "object") throw new Error("not an object");
       } catch {
         if (gate) io.out(JSON.stringify(runHookDeny("invalid hook event on stdin")));

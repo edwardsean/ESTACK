@@ -5,6 +5,7 @@ import { runCheck } from "./checks";
 import { openEngine, type Engine } from "./engine";
 import type { Exec } from "./exec";
 import { consumeHandover, saveSessionHandover, saveTaskHandover, type SessionHandoverBody } from "./handover";
+import { dismissDuplicate } from "./duplicates";
 import { runCodeQuery, taskContext, type CodeTool } from "./codemap";
 import { completeStep, getTask, listOpen, startTask } from "./tasks";
 import { EngineError, type Actor } from "./types";
@@ -68,6 +69,12 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
   codeTool("context_for", "area", "Code map: what an area (folder or file) defines, what it uses and what uses it. Call it before writing code.", "folder or file path relative to the repository root");
   codeTool("find_existing", "description", "Code map: find existing functions that already do what you describe, before you write a new one.", "what you are about to write, in plain words");
   codeTool("who_uses", "symbol", "Code map: who calls or imports a symbol (name, or path::name).", "symbol name, or path::name");
+
+  server.registerTool("dismiss_duplicate", {
+    description: "Dismiss a possible duplicate the post-commit check found, with a reason. Not callable by the task's author.",
+    inputSchema: { duplicate_id: z.number().int(), reason: z.string(), actor: actorSchema },
+  }, tool((e, a: { duplicate_id: number; reason: string; actor?: Actor }, actor) =>
+    dismissDuplicate(e, { id: a.duplicate_id, reason: a.reason, actor })));
 
   server.registerTool("status", {
     description: "Show one task (with task_id) or all open tasks.",

@@ -36,10 +36,26 @@ function initedRepo(): string {
 }
 
 describe("mcp server", () => {
-  test("lists exactly the nine tools", async () => {
+  test("lists exactly the ten tools", async () => {
     const { client } = await connect(initedRepo());
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(["complete_step", "context_for", "find_existing", "handover", "resume", "run_check", "start_task", "status", "who_uses"]);
+    expect(names).toEqual(["complete_step", "context_for", "dismiss_duplicate", "find_existing", "handover", "resume", "run_check", "start_task", "status", "who_uses"]);
+  });
+
+  test("dismiss_duplicate by the author is refused", async () => {
+    const dir = initedRepo();
+    const { call } = await connect(dir);
+    const id = JSON.parse((await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", cwd: dir, actor: A })).text).task.id;
+    const db = new DatabaseSync(join(dir, ".estack", "state.db"));
+    try {
+      db.prepare("INSERT INTO duplicates (task_id, commit_sha, new_symbol, new_file, new_line, existing_symbol, existing_file, existing_line, status, found_at) VALUES (?, 'x', 'f', 'a.ts', 1, 'f', 'b.ts', 1, 'open', 'now')").run(id);
+    } finally { db.close(); }
+    const r = await call("dismiss_duplicate", { duplicate_id: 1, reason: "fine", actor: A });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/^BAD_EVIDENCE: the task's author can't dismiss/);
+    const ok = await call("dismiss_duplicate", { duplicate_id: 1, reason: "fine", actor: B });
+    expect(ok.isError, ok.text).toBe(false);
+    expect(JSON.parse(ok.text).status).toBe("dismissed");
   });
 
   test("code-map tools say the map is off", async () => {
