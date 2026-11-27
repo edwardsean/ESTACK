@@ -34474,7 +34474,11 @@ var PolicySchema = external_exports.object({
   })),
   protected_paths: strings.default([]),
   exempt_paths: strings.default([]),
-  commands: external_exports.object({ test: external_exports.string().optional(), verify: external_exports.string().optional() }).default({})
+  commands: external_exports.object({ test: external_exports.string().optional(), verify: external_exports.string().optional() }).default({}),
+  handover: external_exports.object({
+    threshold: external_exports.number().gt(0).max(1).default(0.5),
+    window_tokens: external_exports.number().int().positive().default(2e5)
+  }).default({ threshold: 0.5, window_tokens: 2e5 })
 });
 function parsePolicy(yamlText) {
   let raw;
@@ -34516,6 +34520,9 @@ exempt_paths: ["**/*.md", ".estack/brief.md", "docs/**"]   # editable with no ta
 commands:                 # the engine runs these itself for test and verify (section 7, Evidence)
   test:   "npm test"
   verify: "npm run build && npm run test:e2e"
+# handover:               # when to suggest handing the session over (all optional)
+#   threshold: 0.5        # fraction of the context window in use
+#   window_tokens: 200000 # size of the context window
 `.trimStart();
 var DEFAULT_BRIEF_MD = `# Project brief
 
@@ -34566,87 +34573,53 @@ function openEngine(cwd, deps = {}) {
 import { existsSync as existsSync3, realpathSync as realpathSync2 } from "node:fs";
 import { dirname as dirname2, isAbsolute, join as join4, relative, resolve, sep } from "node:path";
 
-// engine/src/match.ts
-var escapeRe = (c) => c.replace(/[.+^${}()|[\]\\\/-]/g, "\\$&");
-function globToRegExp(glob, mode, ignoreCase = false) {
-  let out = "";
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
-    if (c === "*") {
-      if (mode === "path" && glob[i + 1] === "*") {
-        if (glob[i + 2] === "/") {
-          out += "(?:.*/)?";
-          i += 2;
-        } else {
-          out += ".*";
-          i += 1;
-        }
-      } else {
-        out += mode === "path" ? "[^/]*" : ".*";
+// engine/src/context.ts
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+var TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
+function contextTokens(transcriptPath) {
+  let fd;
+  try {
+    fd = openSync(transcriptPath, "r");
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - TRANSCRIPT_TAIL_BYTES);
+    const buf = Buffer.alloc(size - start);
+    let got = 0;
+    while (got < buf.length) {
+      const n = readSync(fd, buf, got, buf.length - got, start + got);
+      if (n === 0) break;
+      got += n;
+    }
+    const lines2 = buf.subarray(0, got).toString("utf8").split("\n");
+    if (start > 0) lines2.shift();
+    for (let i = lines2.length - 1; i >= 0; i--) {
+      const line = lines2[i].trim();
+      if (!line) continue;
+      let o;
+      try {
+        o = JSON.parse(line);
+      } catch {
+        continue;
       }
-    } else if (c === "?") {
-      out += mode === "path" ? "[^/]" : ".";
-    } else {
-      out += escapeRe(c);
+      if (o?.type !== "assistant" || o.isSidechain === true) continue;
+      const u = o.message?.usage;
+      if (!u || typeof u !== "object") continue;
+      const num2 = (v) => typeof v === "number" && Number.isFinite(v) ? v : 0;
+      return num2(u.input_tokens) + num2(u.cache_read_input_tokens) + num2(u.cache_creation_input_tokens);
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== void 0) try {
+      closeSync(fd);
+    } catch {
     }
   }
-  return new RegExp(`^${out}$`, ignoreCase ? "si" : "s");
 }
-function commandMatches(command, pattern, ignoreCase = false) {
-  return globToRegExp(pattern, "command", ignoreCase).test(command) || globToRegExp(`*${pattern}`, "command", ignoreCase).test(command);
-}
-var GIT_OPT_VALUE = String.raw`(?:"[^"]*"|'[^']*'|[^\s"']+)+`;
-var GIT_GLOBAL_OPTS = String.raw`(?: (?:-C ${GIT_OPT_VALUE}|-c ${GIT_OPT_VALUE}|--git-dir=${GIT_OPT_VALUE}|--work-tree=${GIT_OPT_VALUE}|--git-dir ${GIT_OPT_VALUE}|--work-tree ${GIT_OPT_VALUE}|--no-pager|-P))+`;
-var GIT_GLOBAL_RE = new RegExp(String.raw`\bgit${GIT_GLOBAL_OPTS}(?= |$)`, "g");
-function normaliseCommand(command) {
-  return command.replace(/\s+/g, " ").replace(GIT_GLOBAL_RE, "git");
-}
-var COMMIT_NO_VERIFY = /\bgit commit\b[^|;&]*\s-[a-zA-Z]*n[a-zA-Z]*\b/;
-var HARDCODED_DENY = [
-  { action: "engine_state", pattern: "*.estack/state.db*" },
-  { action: "engine_state", pattern: "*sqlite3*state.db*" },
-  { action: "owner_only", pattern: "estack skip*" },
-  { action: "owner_only", pattern: "estack cancel*" },
-  { action: "owner_only", pattern: "estack override*" },
-  { action: "owner_only", pattern: "*estack.mjs skip*" },
-  { action: "owner_only", pattern: "*estack.mjs cancel*" },
-  { action: "owner_only", pattern: "*estack.mjs override*" },
-  { action: "disable_hooks", pattern: "*--no-verify*" },
-  { action: "disable_hooks", pattern: "*core.hooksPath*" },
-  { action: "disable_hooks", pattern: "git config*hooks*" },
-  { action: "disable_hooks", pattern: "*CLAUDECODE*" }
-];
-function classifyCommand(command, policy) {
-  const forms = [command, normaliseCommand(command)];
-  const any2 = (pattern, ignoreCase = false) => forms.some((c) => commandMatches(c, pattern, ignoreCase));
-  for (const h of HARDCODED_DENY) {
-    if (any2(h.pattern, true)) return { kind: "deny", action: h.action, pattern: h.pattern, hardcoded: true };
-  }
-  if (forms.some((c) => COMMIT_NO_VERIFY.test(c))) {
-    return { kind: "deny", action: "disable_hooks", pattern: "git commit -n", hardcoded: true };
-  }
-  for (const action of policy.actions.deny) {
-    for (const pattern of policy.patterns[action] ?? []) {
-      if (any2(pattern)) return { kind: "deny", action, pattern, hardcoded: false };
-    }
-  }
-  for (const action of policy.actions.ask) {
-    for (const pattern of policy.patterns[action] ?? []) {
-      if (any2(pattern)) return { kind: "ask", action, pattern };
-    }
-  }
-  return { kind: "none" };
-}
-function pathMatches(relPath, pattern) {
-  const re = globToRegExp(pattern, "path");
-  if (pattern.includes("/")) return re.test(relPath);
-  return re.test(relPath.slice(relPath.lastIndexOf("/") + 1));
-}
-function isProtected(relPath, policy) {
-  return policy.protected_paths.some((p) => pathMatches(relPath, p));
-}
-function isExempt(relPath, policy) {
-  return policy.exempt_paths.some((p) => pathMatches(relPath, p));
+function contextRatio(transcriptPath, windowTokens) {
+  if (!transcriptPath || !(windowTokens > 0)) return null;
+  const t = contextTokens(transcriptPath);
+  return t === null ? null : t / windowTokens;
 }
 
 // engine/src/tasks.ts
@@ -34811,6 +34784,279 @@ function completeStep(e, input2) {
   return result;
 }
 
+// engine/src/handover.ts
+var MAX_COMMITS = 30;
+var MAX_FILES = 50;
+var toHandover = ({ auto, body_json, ...r }) => ({ ...r, auto: auto === 1, body: JSON.parse(body_json) });
+var iso2 = (e) => e.now().toISOString();
+function cap(items, max) {
+  return items.length <= max ? items : [...items.slice(0, max), `+${items.length - max} more`];
+}
+function summarize(ev) {
+  const p = ev.payload;
+  switch (ev.kind) {
+    case "commit":
+      return String(p.sha ?? "").slice(0, 7);
+    case "command":
+      return p.timed_out ? `${p.command} timed out` : `${p.command} exit ${p.exit_code}`;
+    case "pr":
+      return String(p.url ?? "");
+    case "review":
+      return `${p.verdict} by ${ev.recorded_by}`;
+    default:
+      return String(p.text ?? "").replace(/\s+/g, " ").slice(0, 120);
+  }
+}
+function git(e, cwd, args) {
+  const r = runBounded(e, cwd, "git", args, HOOK_GIT_TIMEOUT_MS);
+  if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim() || `exit ${r.code}`}`);
+  return r.stdout;
+}
+var lines = (s) => s.split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.length > 0);
+function buildTaskBody(e, v, input2, actor, auto) {
+  const t = v.task;
+  let commits = [];
+  let files = [];
+  let git_error;
+  try {
+    const range = `${t.base_sha}..refs/heads/${t.branch}`;
+    commits = lines(git(e, t.cwd, ["log", "--format=%h %s", range]));
+    const changed = lines(git(e, t.cwd, ["diff", "--name-only", range]));
+    const dirty = lines(git(e, t.cwd, ["status", "--porcelain"])).map((l) => l.slice(3).split(" -> ").pop());
+    files = [...changed, ...dirty];
+  } catch (err) {
+    commits = [];
+    files = [];
+    git_error = err instanceof Error ? err.message : String(err);
+  }
+  files = [.../* @__PURE__ */ new Set([...files, ...input2.files ?? []])].sort();
+  return {
+    kind: "task",
+    auto,
+    created_at: iso2(e),
+    from_session: actor.session_id,
+    decisions: input2.decisions ?? [],
+    open_questions: input2.open_questions ?? [],
+    task: { id: t.id, title: t.title, type: t.type, goal: t.goal, done_check: t.done_check, branch: t.branch, cwd: t.cwd, base_sha: t.base_sha },
+    steps: v.steps.map((s) => ({
+      name: s.name,
+      status: s.status,
+      evidence: v.evidence.filter((x) => x.step === s.name).map((x) => ({ kind: x.kind, ok: x.ok, summary: summarize(x) }))
+    })),
+    next_step: v.next?.name ?? null,
+    commits: cap(commits, MAX_COMMITS),
+    files: cap(files, MAX_FILES),
+    ...git_error ? { git_error } : {}
+  };
+}
+function boundIds(e, session_id, agentOnly) {
+  const rows = e.db.prepare(
+    `SELECT DISTINCT task_id FROM task_bindings WHERE session_id = ?${agentOnly ? " AND agent_id IS NOT NULL" : ""}`
+  ).all(session_id);
+  return new Set(rows.map((r) => r.task_id));
+}
+function sessionTasks(e, session_id) {
+  const ids = boundIds(e, session_id);
+  return listOpen(e).filter((v) => ids.has(v.task.id));
+}
+function busyWorkerTasks(e, session_id) {
+  const ids = boundIds(e, session_id, true);
+  return listOpen(e).filter((v) => {
+    if (!ids.has(v.task.id) || !v.next) return false;
+    const test = v.steps.find((s) => s.name === "test");
+    return !test || v.next.ordinal <= test.ordinal;
+  });
+}
+function insertHandover(e, kind, task_id, actor, auto, body) {
+  const r = e.db.prepare(
+    "INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(kind, task_id, actor.session_id, body.created_at, auto ? 1 : 0, JSON.stringify(body));
+  const id = Number(r.lastInsertRowid);
+  logEvent(e, actor, "handover_saved", task_id, { id, kind, auto });
+  return toHandover(e.db.prepare("SELECT * FROM handovers WHERE id = ?").get(id));
+}
+function saveTaskHandover(e, task_id, input2, actor, auto = false) {
+  const v = getTask(e, task_id);
+  const body = buildTaskBody(e, v, input2, actor, auto);
+  return tx(e, () => insertHandover(e, "task", task_id, actor, auto, body));
+}
+function latestSessionHandover(e, session_id) {
+  const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND from_session = ? ORDER BY id DESC LIMIT 1").get(session_id);
+  return row ? toHandover(row) : null;
+}
+function lastConsumedBy(e, session_id) {
+  const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND consumed_by LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1").get(`${session_id.replace(/[\\%_]/g, "\\$&")}/%`);
+  return row ? toHandover(row) : null;
+}
+function saveSessionHandover(e, input2, actor, auto = false) {
+  if (!input2.workers_done && !auto) {
+    const busy = busyWorkerTasks(e, actor.session_id);
+    if (busy.length > 0) {
+      throw new EngineError(
+        "BAD_EVIDENCE",
+        `workers are still mid-task: ${busy.map((v) => `#${v.task.id} next: ${v.next?.name}`).join(", ")}; wait for them or pass workers_done`
+      );
+    }
+  }
+  const prev = auto ? latestSessionHandover(e, actor.session_id) ?? lastConsumedBy(e, actor.session_id) : null;
+  const pb = prev?.body;
+  const merged = {
+    ...input2,
+    goal: input2.goal ?? pb?.goal,
+    plan: input2.plan ?? pb?.plan,
+    decisions: input2.decisions ?? pb?.decisions,
+    open_questions: input2.open_questions ?? pb?.open_questions
+  };
+  const tasks = sessionTasks(e, actor.session_id).map((v) => buildTaskBody(e, v, {}, actor, auto));
+  const body = {
+    kind: "session",
+    auto,
+    created_at: iso2(e),
+    from_session: actor.session_id,
+    decisions: merged.decisions ?? [],
+    open_questions: merged.open_questions ?? [],
+    goal: merged.goal ?? "",
+    plan: merged.plan ?? [],
+    tasks
+  };
+  return tx(e, () => insertHandover(e, "session", null, actor, auto, body));
+}
+function pendingHandovers(e) {
+  const rows = e.db.prepare("SELECT * FROM handovers WHERE consumed_at IS NULL ORDER BY id").all().map(toHandover);
+  const newestSession = /* @__PURE__ */ new Map();
+  for (const h of rows) if (h.kind === "session") newestSession.set(h.from_session, h);
+  const sessions = [...newestSession.values()];
+  const open2 = new Set(listOpen(e).map((v) => v.task.id));
+  const newestTask = /* @__PURE__ */ new Map();
+  for (const h of rows) if (h.kind === "task" && h.task_id !== null && open2.has(h.task_id)) newestTask.set(h.task_id, h);
+  const tasks = [...newestTask.values()].filter((h) => !sessions.some((s) => s.id > h.id && s.body.tasks.some((t) => t.task.id === h.task_id)));
+  return [...sessions, ...tasks].sort((a, b) => a.id - b.id);
+}
+function bind(e, task_id, actor) {
+  const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id IS ?").get(task_id, actor.session_id, actor.agent_id ?? null);
+  if (dup) return;
+  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso2(e));
+}
+function consumeHandover(e, actor, task_id) {
+  return tx(e, () => {
+    let handover = null;
+    let ids;
+    if (task_id !== void 0) {
+      const v = getTask(e, task_id);
+      if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${v.task.status}`);
+      const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'task' AND task_id = ? AND consumed_at IS NULL ORDER BY id DESC LIMIT 1").get(task_id);
+      handover = row ? toHandover(row) : null;
+      ids = [task_id];
+    } else {
+      const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND consumed_at IS NULL ORDER BY id DESC LIMIT 1").get();
+      if (!row) throw new EngineError("NO_TASK", "no session handover waiting");
+      handover = toHandover(row);
+      ids = handover.body.tasks.map((t) => t.task.id);
+    }
+    if (handover) {
+      e.db.prepare("UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE id = ?").run(actorId(actor), iso2(e), handover.id);
+      handover = { ...handover, consumed_by: actorId(actor), consumed_at: iso2(e) };
+      const covered = handover.kind === "session" ? ids : [handover.task_id];
+      const marks = covered.map(() => "?").join(",");
+      e.db.prepare(
+        `UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE consumed_at IS NULL AND id < ? AND (${handover.kind === "session" ? "(kind = 'session' AND from_session = ?) OR " : ""}(kind = 'task' AND task_id IN (${marks || "NULL"})))`
+      ).run(actorId(actor), iso2(e), handover.id, ...handover.kind === "session" ? [handover.from_session] : [], ...covered);
+    }
+    const views = [];
+    for (const id of ids) {
+      const v = getTask(e, id);
+      if (v.task.status !== "open") continue;
+      bind(e, id, actor);
+      views.push(v);
+    }
+    logEvent(e, actor, "resumed", task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });
+    return { handover, views };
+  });
+}
+
+// engine/src/match.ts
+var escapeRe = (c) => c.replace(/[.+^${}()|[\]\\\/-]/g, "\\$&");
+function globToRegExp(glob, mode, ignoreCase = false) {
+  let out = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (mode === "path" && glob[i + 1] === "*") {
+        if (glob[i + 2] === "/") {
+          out += "(?:.*/)?";
+          i += 2;
+        } else {
+          out += ".*";
+          i += 1;
+        }
+      } else {
+        out += mode === "path" ? "[^/]*" : ".*";
+      }
+    } else if (c === "?") {
+      out += mode === "path" ? "[^/]" : ".";
+    } else {
+      out += escapeRe(c);
+    }
+  }
+  return new RegExp(`^${out}$`, ignoreCase ? "si" : "s");
+}
+function commandMatches(command, pattern, ignoreCase = false) {
+  return globToRegExp(pattern, "command", ignoreCase).test(command) || globToRegExp(`*${pattern}`, "command", ignoreCase).test(command);
+}
+var GIT_OPT_VALUE = String.raw`(?:"[^"]*"|'[^']*'|[^\s"']+)+`;
+var GIT_GLOBAL_OPTS = String.raw`(?: (?:-C ${GIT_OPT_VALUE}|-c ${GIT_OPT_VALUE}|--git-dir=${GIT_OPT_VALUE}|--work-tree=${GIT_OPT_VALUE}|--git-dir ${GIT_OPT_VALUE}|--work-tree ${GIT_OPT_VALUE}|--no-pager|-P))+`;
+var GIT_GLOBAL_RE = new RegExp(String.raw`\bgit${GIT_GLOBAL_OPTS}(?= |$)`, "g");
+function normaliseCommand(command) {
+  return command.replace(/\s+/g, " ").replace(GIT_GLOBAL_RE, "git");
+}
+var COMMIT_NO_VERIFY = /\bgit commit\b[^|;&]*\s-[a-zA-Z]*n[a-zA-Z]*\b/;
+var HARDCODED_DENY = [
+  { action: "engine_state", pattern: "*.estack/state.db*" },
+  { action: "engine_state", pattern: "*sqlite3*state.db*" },
+  { action: "owner_only", pattern: "estack skip*" },
+  { action: "owner_only", pattern: "estack cancel*" },
+  { action: "owner_only", pattern: "estack override*" },
+  { action: "owner_only", pattern: "*estack.mjs skip*" },
+  { action: "owner_only", pattern: "*estack.mjs cancel*" },
+  { action: "owner_only", pattern: "*estack.mjs override*" },
+  { action: "disable_hooks", pattern: "*--no-verify*" },
+  { action: "disable_hooks", pattern: "*core.hooksPath*" },
+  { action: "disable_hooks", pattern: "git config*hooks*" },
+  { action: "disable_hooks", pattern: "*CLAUDECODE*" }
+];
+function classifyCommand(command, policy) {
+  const forms = [command, normaliseCommand(command)];
+  const any2 = (pattern, ignoreCase = false) => forms.some((c) => commandMatches(c, pattern, ignoreCase));
+  for (const h of HARDCODED_DENY) {
+    if (any2(h.pattern, true)) return { kind: "deny", action: h.action, pattern: h.pattern, hardcoded: true };
+  }
+  if (forms.some((c) => COMMIT_NO_VERIFY.test(c))) {
+    return { kind: "deny", action: "disable_hooks", pattern: "git commit -n", hardcoded: true };
+  }
+  for (const action of policy.actions.deny) {
+    for (const pattern of policy.patterns[action] ?? []) {
+      if (any2(pattern)) return { kind: "deny", action, pattern, hardcoded: false };
+    }
+  }
+  for (const action of policy.actions.ask) {
+    for (const pattern of policy.patterns[action] ?? []) {
+      if (any2(pattern)) return { kind: "ask", action, pattern };
+    }
+  }
+  return { kind: "none" };
+}
+function pathMatches(relPath, pattern) {
+  const re = globToRegExp(pattern, "path");
+  if (pattern.includes("/")) return re.test(relPath);
+  return re.test(relPath.slice(relPath.lastIndexOf("/") + 1));
+}
+function isProtected(relPath, policy) {
+  return policy.protected_paths.some((p) => pathMatches(relPath, p));
+}
+function isExempt(relPath, policy) {
+  return policy.exempt_paths.some((p) => pathMatches(relPath, p));
+}
+
 // engine/src/hooks.ts
 var EDIT_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 var MCP_PREFIX = "mcp__plugin_estack_estack__";
@@ -34961,11 +35207,57 @@ var MAX_CONTEXT_TASKS = 20;
 function ctxOut(eventName, additionalContext) {
   return { hookSpecificOutput: { hookEventName: eventName, additionalContext } };
 }
-function sessionStart(e, _ev) {
+var MAX_LISTED_HANDOVERS = 10;
+function compactState(h) {
+  const b = h.body;
+  const out = [];
+  if (b.goal) out.push(`goal: ${b.goal}`);
+  if (b.plan.length) out.push(`plan: ${b.plan.join("; ")}`);
+  for (const t of b.tasks) out.push(`#${t.task.id} next: ${t.next_step ?? "none"}`);
+  if (b.decisions.length) out.push(`decisions: ${b.decisions.map((d) => `${d.what} (${d.why})`).join("; ")}`);
+  if (b.open_questions.length) out.push(`open questions: ${b.open_questions.join("; ")}`);
+  const files = [...new Set(b.tasks.flatMap((t) => t.files))];
+  if (files.length) out.push(`files: ${files.join(", ")}`);
+  return out;
+}
+var handoverLabel = (h) => h.kind === "session" ? "session" : `#${h.task_id}`;
+function handoverLines(e, ev) {
+  try {
+    if (ev.source === "compact") {
+      const h = latestSessionHandover(e, ev.session_id);
+      if (!h) return [];
+      return [
+        ...compactState(h),
+        "estack: context was compacted; this is the recorded state of your work. Re-read the listed files before changing anything."
+      ];
+    }
+    const pending = pendingHandovers(e);
+    if (pending.length === 1) {
+      const h = pending[0];
+      return [`estack: a handover is waiting (${handoverLabel(h)}, ${h.created_at}). Call the resume tool now${h.kind === "task" ? ` with task_id ${h.task_id}` : ""}, then re-read the files it lists and continue.`];
+    }
+    if (pending.length > 1) {
+      return [
+        ...pending.slice(0, MAX_LISTED_HANDOVERS).map((h) => `handover ${handoverLabel(h)}, ${h.created_at}`),
+        "estack: several handovers are waiting; ask the owner which to resume."
+      ];
+    }
+  } catch {
+  }
+  return [];
+}
+function sessionStart(e, ev) {
   const head = "estack: this repository is opted in; code edits need an open task (start_task), pushes need verify evidence.";
   const open2 = listOpen(e).slice(0, MAX_CONTEXT_TASKS);
   const lines2 = open2.length ? open2.map((v) => `#${v.task.id} [${v.task.type}] ${v.task.title} (${v.task.branch}) next: ${v.next?.name ?? "none"}`) : ["no open tasks"];
-  return ctxOut("SessionStart", [head, ...lines2].join("\n"));
+  return ctxOut("SessionStart", [head, ...lines2, ...handoverLines(e, ev)].join("\n"));
+}
+function preCompact(e, ev) {
+  try {
+    if (sessionTasks(e, ev.session_id).length > 0) saveSessionHandover(e, {}, actorOf({ session_id: ev.session_id, ...ev.agent_id ? { agent_id: ev.agent_id } : {} }), true);
+  } catch {
+  }
+  return null;
 }
 function boundTasks(e, ev, agentOnly) {
   const ids = new Set(e.db.prepare("SELECT task_id, agent_id FROM task_bindings WHERE session_id = ?").all(ev.session_id).filter((b) => !agentOnly || b.agent_id === (ev.agent_id ?? null)).map((b) => b.task_id));
@@ -34973,7 +35265,24 @@ function boundTasks(e, ev, agentOnly) {
 }
 function userPromptSubmit(e, ev) {
   const v = boundTasks(e, ev, false).find((t) => t.next);
-  return v ? ctxOut("UserPromptSubmit", `estack: task #${v.task.id} next step: ${v.next.name}`) : null;
+  if (!v) return null;
+  const lines2 = [`estack: task #${v.task.id} next step: ${v.next.name}`];
+  try {
+    const { threshold, window_tokens } = e.policy.handover;
+    const ratio = contextRatio(ev.transcript_path, window_tokens);
+    if (ratio !== null && ratio >= threshold) {
+      const seen = e.db.prepare(
+        `SELECT 1 FROM events WHERE kind = 'handover_suggested' AND json_extract(payload_json, '$.task_id') = ?
+         AND json_extract(payload_json, '$.step') = ? LIMIT 1`
+      ).get(v.task.id, v.next.name);
+      if (!seen) {
+        logEvent(e, actorOf(ev), "handover_suggested", v.task.id, { task_id: v.task.id, step: v.next.name, ratio });
+        lines2.push(`estack: context is ${Math.round(ratio * 100)}% full. Finish the current step and collect any running workers, then call the handover tool and tell the owner to run /clear; the new session picks up automatically. Use /compact instead only if the conversation itself must be kept.`);
+      }
+    }
+  } catch {
+  }
+  return ctxOut("UserPromptSubmit", lines2.join("\n"));
 }
 function stop(e, ev) {
   if (ev.stop_hook_active) return null;
@@ -35018,6 +35327,8 @@ function runHook(name, ev, deps = {}) {
         return postToolUse(e, ev);
       case "session-start":
         return sessionStart(e, ev);
+      case "pre-compact":
+        return preCompact(e, ev);
       case "user-prompt-submit":
         return userPromptSubmit(e, ev);
       case "stop":
@@ -44763,196 +45074,6 @@ var StdioServerTransport = class {
     });
   }
 };
-
-// engine/src/handover.ts
-var MAX_COMMITS = 30;
-var MAX_FILES = 50;
-var toHandover = ({ auto, body_json, ...r }) => ({ ...r, auto: auto === 1, body: JSON.parse(body_json) });
-var iso2 = (e) => e.now().toISOString();
-function cap(items, max) {
-  return items.length <= max ? items : [...items.slice(0, max), `+${items.length - max} more`];
-}
-function summarize(ev) {
-  const p = ev.payload;
-  switch (ev.kind) {
-    case "commit":
-      return String(p.sha ?? "").slice(0, 7);
-    case "command":
-      return p.timed_out ? `${p.command} timed out` : `${p.command} exit ${p.exit_code}`;
-    case "pr":
-      return String(p.url ?? "");
-    case "review":
-      return `${p.verdict} by ${ev.recorded_by}`;
-    default:
-      return String(p.text ?? "").replace(/\s+/g, " ").slice(0, 120);
-  }
-}
-function git(e, cwd, args) {
-  const r = runBounded(e, cwd, "git", args, HOOK_GIT_TIMEOUT_MS);
-  if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim() || `exit ${r.code}`}`);
-  return r.stdout;
-}
-var lines = (s) => s.split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.length > 0);
-function buildTaskBody(e, v, input2, actor, auto) {
-  const t = v.task;
-  let commits = [];
-  let files = [];
-  let git_error;
-  try {
-    const range = `${t.base_sha}..refs/heads/${t.branch}`;
-    commits = lines(git(e, t.cwd, ["log", "--format=%h %s", range]));
-    const changed = lines(git(e, t.cwd, ["diff", "--name-only", range]));
-    const dirty = lines(git(e, t.cwd, ["status", "--porcelain"])).map((l) => l.slice(3).split(" -> ").pop());
-    files = [...changed, ...dirty];
-  } catch (err) {
-    commits = [];
-    files = [];
-    git_error = err instanceof Error ? err.message : String(err);
-  }
-  files = [.../* @__PURE__ */ new Set([...files, ...input2.files ?? []])].sort();
-  return {
-    kind: "task",
-    auto,
-    created_at: iso2(e),
-    from_session: actor.session_id,
-    decisions: input2.decisions ?? [],
-    open_questions: input2.open_questions ?? [],
-    task: { id: t.id, title: t.title, type: t.type, goal: t.goal, done_check: t.done_check, branch: t.branch, cwd: t.cwd, base_sha: t.base_sha },
-    steps: v.steps.map((s) => ({
-      name: s.name,
-      status: s.status,
-      evidence: v.evidence.filter((x) => x.step === s.name).map((x) => ({ kind: x.kind, ok: x.ok, summary: summarize(x) }))
-    })),
-    next_step: v.next?.name ?? null,
-    commits: cap(commits, MAX_COMMITS),
-    files: cap(files, MAX_FILES),
-    ...git_error ? { git_error } : {}
-  };
-}
-function boundIds(e, session_id, agentOnly) {
-  const rows = e.db.prepare(
-    `SELECT DISTINCT task_id FROM task_bindings WHERE session_id = ?${agentOnly ? " AND agent_id IS NOT NULL" : ""}`
-  ).all(session_id);
-  return new Set(rows.map((r) => r.task_id));
-}
-function sessionTasks(e, session_id) {
-  const ids = boundIds(e, session_id);
-  return listOpen(e).filter((v) => ids.has(v.task.id));
-}
-function busyWorkerTasks(e, session_id) {
-  const ids = boundIds(e, session_id, true);
-  return listOpen(e).filter((v) => {
-    if (!ids.has(v.task.id) || !v.next) return false;
-    const test = v.steps.find((s) => s.name === "test");
-    return !test || v.next.ordinal <= test.ordinal;
-  });
-}
-function insertHandover(e, kind, task_id, actor, auto, body) {
-  const r = e.db.prepare(
-    "INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(kind, task_id, actor.session_id, body.created_at, auto ? 1 : 0, JSON.stringify(body));
-  const id = Number(r.lastInsertRowid);
-  logEvent(e, actor, "handover_saved", task_id, { id, kind, auto });
-  return toHandover(e.db.prepare("SELECT * FROM handovers WHERE id = ?").get(id));
-}
-function saveTaskHandover(e, task_id, input2, actor, auto = false) {
-  const v = getTask(e, task_id);
-  const body = buildTaskBody(e, v, input2, actor, auto);
-  return tx(e, () => insertHandover(e, "task", task_id, actor, auto, body));
-}
-function latestSessionHandover(e, session_id) {
-  const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND from_session = ? ORDER BY id DESC LIMIT 1").get(session_id);
-  return row ? toHandover(row) : null;
-}
-function lastConsumedBy(e, session_id) {
-  const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND consumed_by LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1").get(`${session_id.replace(/[\\%_]/g, "\\$&")}/%`);
-  return row ? toHandover(row) : null;
-}
-function saveSessionHandover(e, input2, actor, auto = false) {
-  if (!input2.workers_done && !auto) {
-    const busy = busyWorkerTasks(e, actor.session_id);
-    if (busy.length > 0) {
-      throw new EngineError(
-        "BAD_EVIDENCE",
-        `workers are still mid-task: ${busy.map((v) => `#${v.task.id} next: ${v.next?.name}`).join(", ")}; wait for them or pass workers_done`
-      );
-    }
-  }
-  const prev = auto ? latestSessionHandover(e, actor.session_id) ?? lastConsumedBy(e, actor.session_id) : null;
-  const pb = prev?.body;
-  const merged = {
-    ...input2,
-    goal: input2.goal ?? pb?.goal,
-    plan: input2.plan ?? pb?.plan,
-    decisions: input2.decisions ?? pb?.decisions,
-    open_questions: input2.open_questions ?? pb?.open_questions
-  };
-  const tasks = sessionTasks(e, actor.session_id).map((v) => buildTaskBody(e, v, {}, actor, auto));
-  const body = {
-    kind: "session",
-    auto,
-    created_at: iso2(e),
-    from_session: actor.session_id,
-    decisions: merged.decisions ?? [],
-    open_questions: merged.open_questions ?? [],
-    goal: merged.goal ?? "",
-    plan: merged.plan ?? [],
-    tasks
-  };
-  return tx(e, () => insertHandover(e, "session", null, actor, auto, body));
-}
-function pendingHandovers(e) {
-  const rows = e.db.prepare("SELECT * FROM handovers WHERE consumed_at IS NULL ORDER BY id").all().map(toHandover);
-  const newestSession = /* @__PURE__ */ new Map();
-  for (const h of rows) if (h.kind === "session") newestSession.set(h.from_session, h);
-  const sessions = [...newestSession.values()];
-  const open2 = new Set(listOpen(e).map((v) => v.task.id));
-  const newestTask = /* @__PURE__ */ new Map();
-  for (const h of rows) if (h.kind === "task" && h.task_id !== null && open2.has(h.task_id)) newestTask.set(h.task_id, h);
-  const tasks = [...newestTask.values()].filter((h) => !sessions.some((s) => s.id > h.id && s.body.tasks.some((t) => t.task.id === h.task_id)));
-  return [...sessions, ...tasks].sort((a, b) => a.id - b.id);
-}
-function bind(e, task_id, actor) {
-  const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id IS ?").get(task_id, actor.session_id, actor.agent_id ?? null);
-  if (dup) return;
-  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso2(e));
-}
-function consumeHandover(e, actor, task_id) {
-  return tx(e, () => {
-    let handover = null;
-    let ids;
-    if (task_id !== void 0) {
-      const v = getTask(e, task_id);
-      if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${v.task.status}`);
-      const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'task' AND task_id = ? AND consumed_at IS NULL ORDER BY id DESC LIMIT 1").get(task_id);
-      handover = row ? toHandover(row) : null;
-      ids = [task_id];
-    } else {
-      const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND consumed_at IS NULL ORDER BY id DESC LIMIT 1").get();
-      if (!row) throw new EngineError("NO_TASK", "no session handover waiting");
-      handover = toHandover(row);
-      ids = handover.body.tasks.map((t) => t.task.id);
-    }
-    if (handover) {
-      e.db.prepare("UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE id = ?").run(actorId(actor), iso2(e), handover.id);
-      handover = { ...handover, consumed_by: actorId(actor), consumed_at: iso2(e) };
-      const covered = handover.kind === "session" ? ids : [handover.task_id];
-      const marks = covered.map(() => "?").join(",");
-      e.db.prepare(
-        `UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE consumed_at IS NULL AND id < ? AND (${handover.kind === "session" ? "(kind = 'session' AND from_session = ?) OR " : ""}(kind = 'task' AND task_id IN (${marks || "NULL"})))`
-      ).run(actorId(actor), iso2(e), handover.id, ...handover.kind === "session" ? [handover.from_session] : [], ...covered);
-    }
-    const views = [];
-    for (const id of ids) {
-      const v = getTask(e, id);
-      if (v.task.status !== "open") continue;
-      bind(e, id, actor);
-      views.push(v);
-    }
-    logEvent(e, actor, "resumed", task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });
-    return { handover, views };
-  });
-}
 
 // engine/src/mcp.ts
 var actorSchema = external_exports.object({ session_id: external_exports.string(), agent_id: external_exports.string().optional() }).optional().describe('who is calling; defaults to {session_id: "unknown"}');

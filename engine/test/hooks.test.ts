@@ -10,6 +10,7 @@ import { initRepo } from "../src/policy";
 import { realExec, type Exec } from "../src/exec";
 import { preCommit, prePush } from "../src/githooks";
 import { startTask } from "../src/tasks";
+import { saveSessionHandover, type HandoverInput } from "../src/handover";
 import { fakeExec, makeRepo } from "./helpers";
 
 const S = "sess-1";
@@ -322,6 +323,98 @@ describe("hooks", () => {
       expect(r.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
       expect(ctx(r)).toBe(`estack: task #${id} next step: plan`);
       expect(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", session_id: "other" })).toBeNull();
+    });
+
+    describe("handover hooks", () => {
+      const usage = (dir: string, tokens: number) => {
+        const p = join(dir, `tr-${tokens}.jsonl`);
+        writeFileSync(p, JSON.stringify({ type: "assistant", isSidechain: false, message: { usage: { input_tokens: tokens } } }) + "\n");
+        return p;
+      };
+      const withEngine = <T,>(dir: string, f: (e: ReturnType<typeof openEngine>) => T): T => {
+        const e = openEngine(dir, deps);
+        try { return f(e); } finally { e.db.close(); }
+      };
+      const save = (dir: string, session: string, input: HandoverInput = {}) =>
+        withEngine(dir, (e) => saveSessionHandover(e, input, { session_id: session }, false));
+
+      test("pre-compact saves one auto session handover and returns nothing", () => {
+        const dir = repo();
+        expect(hook("pre-compact", dir, { hook_event_name: "PreCompact" })).toBeNull();
+        expect(rows(dir, "SELECT * FROM handovers")).toHaveLength(0);
+        const id = task(dir);
+        expect(hook("pre-compact", dir, { hook_event_name: "PreCompact", trigger: "auto" })).toBeNull();
+        const h = rows(dir, "SELECT * FROM handovers");
+        expect(h).toHaveLength(1);
+        expect(h[0].kind).toBe("session");
+        expect(h[0].auto).toBe(1);
+        expect(h[0].from_session).toBe(S);
+        expect(JSON.parse(h[0].body_json).tasks[0].task.id).toBe(id);
+      });
+
+      test("after compaction, session start injects the recorded state", () => {
+        const dir = repo();
+        const id = task(dir);
+        writeFileSync(join(dir, "new.ts"), "x");
+        save(dir, S, { goal: "ship the thing", plan: ["do later"], decisions: [{ what: "use sqlite", why: "simple" }], open_questions: ["which port?"] });
+        const text = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "compact" }));
+        expect(text).toContain("ship the thing");
+        expect(text).toContain("do later");
+        expect(text).toContain(`#${id} next: plan`);
+        expect(text).toContain("use sqlite");
+        expect(text).toContain("which port?");
+        expect(text).toContain("new.ts");
+        expect(text).toContain("estack: context was compacted; this is the recorded state of your work. Re-read the listed files before changing anything.");
+        expect(text).not.toContain("a handover is waiting");
+      });
+
+      test("after /clear with one waiting handover, session start tells the agent to resume it", () => {
+        const dir = repo();
+        task(dir);
+        const h = save(dir, S, { goal: "g" });
+        const text = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "clear", session_id: "new" }));
+        expect(text).toContain(`estack: a handover is waiting (session, ${h.created_at}). Call the resume tool now, then re-read the files it lists and continue.`);
+      });
+
+      test("with several waiting handovers, session start lists them and says to ask the owner", () => {
+        const dir = repo();
+        task(dir);
+        save(dir, S, { goal: "g" });
+        task(dir, "s2");
+        save(dir, "s2", { goal: "g2" });
+        const text = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "startup", session_id: "new" }));
+        expect(text).toContain("estack: several handovers are waiting; ask the owner which to resume.");
+        expect(text).not.toContain("Call the resume tool now");
+        expect(text.split("\n").filter((l) => l.startsWith("handover "))).toHaveLength(2);
+      });
+
+      test("prompt submit suggests a handover once per step above the threshold", () => {
+        const dir = repo();
+        const id = task(dir);
+        const transcript_path = usage(dir, 120000);
+        const first = ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path }));
+        expect(first).toContain(`estack: task #${id} next step: plan`);
+        expect(first).toContain("estack: context is 60% full. Finish the current step and collect any running workers, then call the handover tool and tell the owner to run /clear; the new session picks up automatically. Use /compact instead only if the conversation itself must be kept.");
+        const ev1 = rows(dir, "SELECT * FROM events WHERE kind = 'handover_suggested'");
+        expect(ev1).toHaveLength(1);
+        expect(JSON.parse(ev1[0].payload_json)).toEqual({ task_id: id, step: "plan", ratio: 0.6 });
+        const second = ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path }));
+        expect(second).toBe(`estack: task #${id} next step: plan`);
+        setDone(dir, id, "plan");
+        const third = ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path }));
+        expect(third).toContain("context is 60% full");
+        expect(rows(dir, "SELECT * FROM events WHERE kind = 'handover_suggested'")).toHaveLength(2);
+      });
+
+      test("prompt submit stays quiet below the threshold or when the transcript can't be read", () => {
+        const dir = repo();
+        const id = task(dir);
+        const line = `estack: task #${id} next step: plan`;
+        expect(ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path: usage(dir, 50000) }))).toBe(line);
+        expect(ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path: join(dir, "missing.jsonl") }))).toBe(line);
+        expect(ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit" }))).toBe(line);
+        expect(rows(dir, "SELECT * FROM events WHERE kind = 'handover_suggested'")).toHaveLength(0);
+      });
     });
 
     test("stop blocks when commits exist but implement has no evidence", () => {

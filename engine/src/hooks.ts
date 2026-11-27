@@ -1,6 +1,8 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { contextRatio } from "./context";
 import type { Engine } from "./engine";
+import { latestSessionHandover, pendingHandovers, saveSessionHandover, sessionTasks, type Handover, type SessionHandoverBody } from "./handover";
 import { openEngine } from "./engine";
 import type { Exec } from "./exec";
 import { classifyCommand, isExempt, isProtected } from "./match";
@@ -10,7 +12,7 @@ import { EngineError, type Actor } from "./types";
 export interface HookEvent {
   hook_event_name: string; session_id: string; cwd: string; agent_id?: string; agent_type?: string;
   tool_name?: string; tool_input?: Record<string, unknown>; tool_use_id?: string;
-  stop_hook_active?: boolean; prompt?: string; source?: string;
+  stop_hook_active?: boolean; prompt?: string; source?: string; transcript_path?: string; trigger?: string;
 }
 export type HookOutput = Record<string, unknown> | null;
 
@@ -186,13 +188,60 @@ function ctxOut(eventName: string, additionalContext: string): HookOutput {
   return { hookSpecificOutput: { hookEventName: eventName, additionalContext } };
 }
 
-export function sessionStart(e: Engine, _ev: HookEvent): HookOutput {
+const MAX_LISTED_HANDOVERS = 10;
+
+function compactState(h: Handover): string[] {
+  const b = h.body as SessionHandoverBody;
+  const out: string[] = [];
+  if (b.goal) out.push(`goal: ${b.goal}`);
+  if (b.plan.length) out.push(`plan: ${b.plan.join("; ")}`);
+  for (const t of b.tasks) out.push(`#${t.task.id} next: ${t.next_step ?? "none"}`);
+  if (b.decisions.length) out.push(`decisions: ${b.decisions.map((d) => `${d.what} (${d.why})`).join("; ")}`);
+  if (b.open_questions.length) out.push(`open questions: ${b.open_questions.join("; ")}`);
+  const files = [...new Set(b.tasks.flatMap((t) => t.files))];
+  if (files.length) out.push(`files: ${files.join(", ")}`);
+  return out;
+}
+
+const handoverLabel = (h: Handover) => h.kind === "session" ? "session" : `#${h.task_id}`;
+
+function handoverLines(e: Engine, ev: HookEvent): string[] {
+  try {
+    if (ev.source === "compact") {
+      const h = latestSessionHandover(e, ev.session_id);
+      if (!h) return [];
+      return [...compactState(h),
+        "estack: context was compacted; this is the recorded state of your work. Re-read the listed files before changing anything."];
+    }
+    const pending = pendingHandovers(e);
+    if (pending.length === 1) {
+      const h = pending[0];
+      return [`estack: a handover is waiting (${handoverLabel(h)}, ${h.created_at}). Call the resume tool now${
+        h.kind === "task" ? ` with task_id ${h.task_id}` : ""}, then re-read the files it lists and continue.`];
+    }
+    if (pending.length > 1) {
+      return [...pending.slice(0, MAX_LISTED_HANDOVERS).map((h) => `handover ${handoverLabel(h)}, ${h.created_at}`),
+        "estack: several handovers are waiting; ask the owner which to resume."];
+    }
+  } catch { /* context hooks fail open */ }
+  return [];
+}
+
+export function sessionStart(e: Engine, ev: HookEvent): HookOutput {
   const head = "estack: this repository is opted in; code edits need an open task (start_task), pushes need verify evidence.";
   const open = listOpen(e).slice(0, MAX_CONTEXT_TASKS);
   const lines = open.length
     ? open.map((v) => `#${v.task.id} [${v.task.type}] ${v.task.title} (${v.task.branch}) next: ${v.next?.name ?? "none"}`)
     : ["no open tasks"];
-  return ctxOut("SessionStart", [head, ...lines].join("\n"));
+  return ctxOut("SessionStart", [head, ...lines, ...handoverLines(e, ev)].join("\n"));
+}
+
+/** Save an auto session handover before compaction, if the session has open tasks. Never blocks. */
+export function preCompact(e: Engine, ev: HookEvent): HookOutput {
+  try {
+    if (sessionTasks(e, ev.session_id).length > 0) saveSessionHandover(e, {}, actorOf({ session_id: ev.session_id, ...(ev.agent_id ? { agent_id: ev.agent_id } : {}) } as HookEvent), true);
+  } catch { /* fail open */ }
+  return null;
 }
 
 /** Open tasks bound to this session (and, when `agentOnly`, to this agent). */
@@ -205,7 +254,23 @@ function boundTasks(e: Engine, ev: HookEvent, agentOnly: boolean): TaskView[] {
 
 export function userPromptSubmit(e: Engine, ev: HookEvent): HookOutput {
   const v = boundTasks(e, ev, false).find((t) => t.next);
-  return v ? ctxOut("UserPromptSubmit", `estack: task #${v.task.id} next step: ${v.next!.name}`) : null;
+  if (!v) return null;
+  const lines = [`estack: task #${v.task.id} next step: ${v.next!.name}`];
+  try {
+    const { threshold, window_tokens } = e.policy.handover;
+    const ratio = contextRatio(ev.transcript_path, window_tokens);
+    if (ratio !== null && ratio >= threshold) {
+      const seen = e.db.prepare(
+        `SELECT 1 FROM events WHERE kind = 'handover_suggested' AND json_extract(payload_json, '$.task_id') = ?
+         AND json_extract(payload_json, '$.step') = ? LIMIT 1`,
+      ).get(v.task.id, v.next!.name);
+      if (!seen) {
+        logEvent(e, actorOf(ev), "handover_suggested", v.task.id, { task_id: v.task.id, step: v.next!.name, ratio });
+        lines.push(`estack: context is ${Math.round(ratio * 100)}% full. Finish the current step and collect any running workers, then call the handover tool and tell the owner to run /clear; the new session picks up automatically. Use /compact instead only if the conversation itself must be kept.`);
+      }
+    }
+  } catch { /* fail open */ }
+  return ctxOut("UserPromptSubmit", lines.join("\n"));
 }
 
 export function stop(e: Engine, ev: HookEvent): HookOutput {
@@ -247,6 +312,7 @@ export function runHook(name: string, ev: HookEvent, deps: { exec?: Exec; now?: 
       case "pre-tool-use": return preToolUse(e, ev);
       case "post-tool-use": return postToolUse(e, ev);
       case "session-start": return sessionStart(e, ev);
+      case "pre-compact": return preCompact(e, ev);
       case "user-prompt-submit": return userPromptSubmit(e, ev);
       case "stop": return stop(e, { ...ev, hook_event_name: "Stop" });
       case "subagent-stop": return stop(e, { ...ev, hook_event_name: "SubagentStop" });
