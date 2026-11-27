@@ -86,11 +86,12 @@ describe("graph adapter", () => {
 });
 
 describe.skipIf(!HAS_GRAPHIFY)("real graphify", () => {
-  function fixture() {
-    const { dir, e } = engineFor(["dist/**"]);
-    mkdirSync(join(dir, "src")); mkdirSync(join(dir, "dist"));
+  // upstream/ is a folder Graphify maps on its own (unlike dist/ or build/), so only estack's exclude list keeps it out.
+  function fixture(exclude = ["upstream/**"]) {
+    const { dir, e } = engineFor(exclude);
+    mkdirSync(join(dir, "src")); mkdirSync(join(dir, "upstream"));
     writeFileSync(join(dir, "src/a.ts"), "export function hello(n: string) { return n; }\nexport function bye() { return hello('x'); }\n");
-    writeFileSync(join(dir, "dist/a.js"), "function gen() { return 1; }\n");
+    writeFileSync(join(dir, "upstream/a.js"), "function gen() { return 1; }\n");
     writeFileSync(join(dir, "README.md"), "# readme\n");
     return { dir, e };
   }
@@ -102,6 +103,12 @@ describe.skipIf(!HAS_GRAPHIFY)("real graphify", () => {
     expect(r.ok).toBe(true);
     expect(mappedFiles(dir)).toEqual(new Set(["src/a.ts"]));
     expect(existsSync(join(dir, "graphify-out", ".estack-build.lock"))).toBe(false);
+  });
+
+  test("without the exclude list the same folder is mapped", () => {
+    const { dir, e } = fixture([]);
+    expect(buildGraph(e, dir).ok).toBe(true);
+    expect(mappedFiles(dir)).toEqual(new Set(["src/a.ts", "upstream/a.js"]));
   });
 
   test("a second build waits for the lock", () => {

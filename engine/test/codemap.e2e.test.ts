@@ -31,7 +31,8 @@ function fixture(mapFlags: string[], exec: Exec): string {
   const dir = makeRepo();
   write(dir, "src/utils.ts", HELPER);
   write(dir, "src/orders/invoice.ts", 'import { formatInvoiceDate } from "../utils";\nexport function invoiceLine(d: Date): string {\n  return "Invoice " + formatInvoiceDate(d);\n}\n');
-  write(dir, "dist/utils.js", "export function formatInvoiceDate(d) {\n  return d.toISOString().slice(0, 10);\n}\n");
+  // A copy in a folder Graphify maps on its own (it skips dist/ and build/ itself): only the exclude list keeps it out.
+  write(dir, "upstream/utils.js", "export function formatInvoiceDate(d) {\n  return d.toISOString().slice(0, 10);\n}\n");
   git(dir, "add", "-A");
   git(dir, "commit", "-m", "seed");
   const status = main(["init", ...mapFlags], { cwd: dir, env: {}, out: () => {}, err: (s) => { throw new Error(s); }, exec });
@@ -65,7 +66,7 @@ describe.skipIf(!HAS_GRAPHIFY)("the utils.ts failure, end to end on real Graphif
   const denied = (out: any) => out?.hookSpecificOutput?.permissionDecision === "deny";
 
   async function setup() {
-    const dir = fixture(["--code-map", "on", "--exclude", "dist/**"], realExec);
+    const dir = fixture(["--code-map", "on", "--exclude", "upstream/**"], realExec);
     const call = await connect(dir, realExec);
     const started = await call("start_task", { title: "orders", type: "feature", goal: "format invoice dates", done_check: "d", area: "src/orders", actor: CTO });
     expect(started.isError, started.text).toBe(false);
@@ -76,7 +77,7 @@ describe.skipIf(!HAS_GRAPHIFY)("the utils.ts failure, end to end on real Graphif
     const { out } = await setup();
     const uses = out.context.uses as { symbol: string; file: string }[];
     expect(uses.some((u) => u.symbol === "formatInvoiceDate" && u.file === "src/utils.ts")).toBe(true);
-    expect(JSON.stringify(out.context)).not.toContain("dist/");
+    expect(JSON.stringify(out.context)).not.toContain("upstream/");
   });
 
   test("its worker is sent to the map once and its reviewer never", async () => {
@@ -110,7 +111,7 @@ describe.skipIf(!HAS_GRAPHIFY)("the utils.ts failure, end to end on real Graphif
     const dups = rows(dir, "SELECT * FROM duplicates");
     expect(dups.length).toBeGreaterThan(0);
     expect(dups[0]).toMatchObject({ new_symbol: "formatInvoiceDate", new_file: "src/orders/format.ts", existing_file: "src/utils.ts", status: "open" });
-    expect(dups.some((d) => JSON.stringify(d).includes("dist/"))).toBe(false);
+    expect(dups.some((d) => JSON.stringify(d).includes("upstream/"))).toBe(false);
 
     const refused = await call("run_check", { task_id: id, step: "verify", actor: W });
     expect(refused.isError).toBe(true);
@@ -123,7 +124,9 @@ describe.skipIf(!HAS_GRAPHIFY)("the utils.ts failure, end to end on real Graphif
     const verified = await call("run_check", { task_id: id, step: "verify", actor: W });
     expect(verified.isError, verified.text).toBe(false);
   });
+});
 
+describe("the code map off, end to end", () => {
   test("with the map off every task type runs end to end", async () => {
     const gh = fakeExec({ [`pr view ${PR} --json headRefName`]: { code: 0, stdout: '{"headRefName":"main"}' }, graphify: { code: 127 } });
     const dir = fixture(["--code-map", "off"], gh);
