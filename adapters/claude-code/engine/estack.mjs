@@ -14593,8 +14593,8 @@ var require_dist2 = __commonJS({
 });
 
 // engine/src/cli.ts
-import { readFileSync as readFileSync5, realpathSync as realpathSync3 } from "node:fs";
-import { resolve as resolve3 } from "node:path";
+import { readFileSync as readFileSync5, realpathSync as realpathSync3, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join8, resolve as resolve3 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // engine/src/engine.ts
@@ -46185,11 +46185,17 @@ function dispatch(cmd, rest, io) {
           if (e.policy.code_map.enabled) {
             const checkout = e.repo.root;
             const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
-            io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms
+            if (fresh && (!r.ok || r.files === 0)) {
+              writeFileSync4(join8(e.repo.estackDir, "policy.yaml"), defaultPolicyYaml({ codeMap: false, exclude }));
+              io.out(`code map off: ${r.ok ? "Graphify mapped no files" : r.error}; nothing to map yet. Turn it on later by editing the code_map block in .estack/policy.yaml.
+`);
+            } else {
+              io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms
 ` : `map build failed: ${r.error}
 `);
-            const g = r.ok ? loadGraph(checkout) : null;
-            if (g) io.out("folder shares: " + folderShares(g).slice(0, 10).map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+              const g = r.ok ? loadGraph(checkout) : null;
+              if (g) io.out("folder shares: " + folderShares(g).slice(0, 10).map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+            }
           }
         } finally {
           e.db.close();

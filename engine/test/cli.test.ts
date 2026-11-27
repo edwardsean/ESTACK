@@ -6,8 +6,8 @@ import { main } from "../src/cli";
 import { openEngine } from "../src/engine";
 import { saveSessionHandover, saveTaskHandover } from "../src/handover";
 import { getTask, startTask } from "../src/tasks";
-import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
-import type { Exec } from "../src/exec";
+import { HAS_GRAPHIFY, fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { realExec, type Exec } from "../src/exec";
 
 // Graphify scripted as missing unless a test opts in, so init leaves the map off on any machine.
 function run(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, exec: Exec = fakeExec({ graphify: { code: 127 } })) {
@@ -251,11 +251,60 @@ describe("cli init and the code map", () => {
 
   test("init with a supported Graphify turns the map on, builds it and prints folder shares", () => {
     const dir = makeRepo();
-    const exec = fakeExec({ graphify: { code: 0, stdout: "graphify 0.9.121\n" } });
-    const r = run(dir, ["init"], {}, exec);
+    const n = (id: string, f: string) => ({ id, label: `${id}()`, source_file: f, source_location: "L2" });
+    writeFakeGraph(dir, [n("a", "src/a.ts"), n("b", "src/b.ts"), n("c", "lib/c.ts")], []);
+    const r = run(dir, ["init"], {}, supportedGraphify());
     expect(r.status).toBe(0);
     expect(openEngine(dir).policy.code_map.enabled).toBe(true);
-    expect(r.out).toMatch(/map build failed|map built for main/);
+    expect(r.out).toMatch(/^map built for main: 3 entries, 3 files, \d+ms$/m);
+  });
+
+  const OFF_LATER = "; nothing to map yet. Turn it on later by editing the code_map block in .estack/policy.yaml.\n";
+
+  test("init turns its own new policy's map off when the first build fails", () => {
+    const dir = makeRepo();
+    const exec = fakeExec({ "graphify --version": { code: 0, stdout: "graphify 0.9.121\n" }, graphify: { code: 1, stderr: "boom" } });
+    const r = run(dir, ["init"], {}, exec);
+    expect(r.status).toBe(0);
+    expect(openEngine(dir).policy.code_map.enabled).toBe(false);
+    expect(r.out).toContain(`code map off: graphify exited 1: boom${OFF_LATER}`);
+    expect(r.out).not.toContain("map build failed");
+  });
+
+  test("init turns its own new policy's map off when the first build maps no files", () => {
+    const dir = makeRepo();
+    writeFakeGraph(dir, [], []);
+    const r = run(dir, ["init", "--exclude", "dist/**"], {}, supportedGraphify());
+    expect(r.status).toBe(0);
+    expect(openEngine(dir).policy.code_map).toEqual({ enabled: false, exclude: ["dist/**"] });
+    expect(r.out).toContain(`code map off: Graphify mapped no files${OFF_LATER}`);
+  });
+
+  test("init never rewrites an existing policy when its build fails", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, policyOf(dir).replace("enabled: false", "enabled: true"));
+    const before = policyOf(dir);
+    const exec = fakeExec({ "graphify --version": { code: 0, stdout: "graphify 0.9.121\n" }, graphify: { code: 1, stderr: "boom" } });
+    const r = run(dir, ["init"], {}, exec);
+    expect(policyOf(dir)).toBe(before);
+    expect(r.out).toContain("map build failed: graphify exited 1: boom\n");
+    expect(r.out).not.toContain("code map off");
+  });
+
+  test.skipIf(!HAS_GRAPHIFY)("init on a repository with no supported language turns the map off (real Graphify)", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "README.md"), "# readme\n");
+    writeFileSync(join(dir, "notes.md"), "notes\n");
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-m", "docs"], { cwd: dir, stdio: "ignore" });
+    const r = run(dir, ["init"], {}, realExec);
+    expect(r.status).toBe(0);
+    expect(openEngine(dir).policy.code_map.enabled).toBe(false);
+    expect(r.out).toMatch(/^code map off: graphify exited 1: /m);
+    expect(r.out).toContain(OFF_LATER);
+    expect(r.out).not.toContain("map build failed");
   });
 
   test("map suggest lists suggestions, or says there are none", () => {

@@ -1,5 +1,5 @@
-import { readFileSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Engine } from "./engine";
 import { openEngine } from "./engine";
@@ -9,7 +9,7 @@ import { serveStdio } from "./mcp";
 import { assertOwner, cancelTask, recordOverride, skipStep } from "./owner";
 import { preCommit, prePush, installGitHooks } from "./githooks";
 import { afterCommit } from "./duplicates";
-import { initRepo, loadPolicy } from "./policy";
+import { defaultPolicyYaml, initRepo, loadPolicy } from "./policy";
 import { realExec, type Exec } from "./exec";
 import { findRepo } from "./repo";
 import { pendingHandovers, type SessionHandoverBody } from "./handover";
@@ -161,9 +161,15 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
           if (e.policy.code_map.enabled) {
             const checkout = e.repo.root;
             const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
-            io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms\n` : `map build failed: ${r.error}\n`);
-            const g = r.ok ? loadGraph(checkout) : null;
-            if (g) io.out("folder shares: " + folderShares(g).slice(0, 10).map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+            if (fresh && (!r.ok || r.files === 0)) {
+              // A map that can't build would make every query MAP_BROKEN; init may rewrite only the policy it just created.
+              writeFileSync(join(e.repo.estackDir, "policy.yaml"), defaultPolicyYaml({ codeMap: false, exclude }));
+              io.out(`code map off: ${r.ok ? "Graphify mapped no files" : r.error}; nothing to map yet. Turn it on later by editing the code_map block in .estack/policy.yaml.\n`);
+            } else {
+              io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms\n` : `map build failed: ${r.error}\n`);
+              const g = r.ok ? loadGraph(checkout) : null;
+              if (g) io.out("folder shares: " + folderShares(g).slice(0, 10).map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+            }
           }
         } finally {
           e.db.close();
