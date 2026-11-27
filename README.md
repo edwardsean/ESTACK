@@ -11,6 +11,12 @@ orchestrator picks the right playbook, hands pieces of work to specialist
 subagents, makes independent reviewers check the result, and stops for a human
 before anything that touches shared systems (push, deploy, migration).
 
+What makes it a harness rather than a set of instructions: a small **engine**
+outside the model records every task, its required steps and the evidence for
+each step, and **hooks** check that engine before every code edit, risky command,
+agent commit, push and end of turn. An agent can't skip a step or claim a test
+passed: the engine runs the tests itself, and the hooks block what isn't proven.
+
 ## Install
 
 Inside a Claude Code session:
@@ -21,11 +27,20 @@ Inside a Claude Code session:
 /estack:setup-models          # pick a model and effort for each seat, once
 ```
 
-In a repository where you want the enterprise layer (gates, knowledge index,
-governance policy), run once:
+You need Node 22.5 or newer (the engine uses `node:sqlite`).
+
+In a repository where you want the engine and its guards (plus the knowledge
+index and governance policy), run once:
 
 ```text
 /estack:setup
+```
+
+Then commit the policy yourself, from your own terminal. Agents aren't allowed
+to commit `.estack/policy.yaml`, so the git hook refuses if they try:
+
+```bash
+git add .estack && git commit -m "Add estack policy"
 ```
 
 Then start real work:
@@ -37,7 +52,7 @@ test passes and the file opens in Excel.
 
 ## How it works
 
-![How estack works: your goal goes to one orchestrator, which picks a playbook and a delegation mode, dispatches seats, verifies the result, and stops at a human approval gate before push, deploy, or migration](docs/images/how-it-works.png)
+![How estack works: your goal goes to one orchestrator, which records the task in the engine, picks a playbook and a delegation mode, and dispatches seats behind an edit guard; each step is proven and recorded by the engine, and a push gate needs verify evidence and your approval. The engine sits outside the model and the hooks check it at every edit, command, commit, push and end of turn](docs/images/how-it-works.png)
 
 ### The pieces, in plain words
 
@@ -84,10 +99,16 @@ schemas), a governance policy (which change types need architecture, security, o
 DBA review), and `/estack:prd-rules` turns a PRD into business-rule cards. Each
 subagent only gets the slice relevant to its job.
 
-**Approval gates.** Claude Code hooks sit outside the model. In an opted-in repo,
-editing source needs an open task, a push needs verify evidence and your
-approval, and workers never push. In a repo that didn't opt in, the hooks do
-nothing. See [Hooks](#hooks).
+**The engine and its guards.** The green panel in the diagram. Before any code
+is written the orchestrator calls `start_task`, and the engine records the task
+and the steps its type requires (for a feature: plan, reuse check, implement,
+test, verify, review, PR). Each step needs real proof: a commit made after the
+task started, a test run the engine did itself, a review from a different agent.
+Claude Code hooks and git hooks, outside the model, check the engine at every
+edit, risky command, agent commit, push and end of turn: no task means no code
+edit, no verify evidence means no push, and pushes, merges, deploys and
+migrations wait for your approval. Workers never push. In a repo that didn't opt
+in, the hooks do nothing. See [Engine](#engine) and [Hooks](#hooks).
 
 **24 principles.** Short rules the agent cites when they change a decision: fix
 root causes, prove it works, subtract before you add, make illegal states
@@ -152,6 +173,7 @@ What the gates do not catch:
 estack/
   .claude-plugin/marketplace.json   the "estack" marketplace, points at adapters/claude-code/
   core/                             the harness content: you edit this
+  engine/                           the engine: tasks, evidence, MCP server, CLI, hooks, git hooks
   adapters/claude-code/             the Claude Code plugin, generated from core/ (what you install)
   adapters/*.ts                     the generator and its tests
   pstack-qoder/                     the Qoder edition, kept for reference
@@ -160,24 +182,40 @@ estack/
   docs/                             diagrams, design docs and plans
 ```
 
-**Edit `core/`, never `adapters/claude-code/`.** The generator copies `core/` into
-each adapter, filling in that coding agent's names and paths, so one set of content
-can serve several coding agents. Claude Code is the first adapter.
+**Edit `core/` and `engine/`, never `adapters/claude-code/`.** The generator copies
+`core/` into each adapter, filling in that coding agent's names and paths, and
+bundles the engine into one file inside it, so one set of content can serve
+several coding agents. Claude Code is the first adapter.
 
 ![How the plugin is built: you edit core/, the generator writes adapters/claude-code/](docs/images/build-chain.png)
 
 Rebuild and check everything:
 
 ```bash
-npm install
-npm run build:claude          # regenerate adapters/claude-code/ from core/
-npm test                      # the generator's tests
+npm ci
+npm run build:claude          # regenerate adapters/claude-code/ from core/ and engine/
+npm test                      # generator and engine tests
 (cd adapters/claude-code && bash scripts/selftest.sh)
 ```
 
 The self-test runs static conformance, an engine hook smoke test,
 `claude plugin validate`, and fails if `adapters/claude-code/` differs from what
 `core/` generates.
+
+## Status and roadmap
+
+estack is being built in phases, each one usable on its own
+([design](docs/superpowers/specs/2026-11-25-estack-engine-design.md)).
+
+| Phase | What it adds | Status |
+|---|---|---|
+| 1 | `core/` plus a generated Claude Code plugin; renamed from pstack to estack | Done |
+| 2 | The engine: tasks, required steps, evidence, MCP tools, CLI | Done |
+| 3 | Hooks and git hooks that enforce the engine | Done |
+| 4 | Handover: continue a task in a fresh session from recorded state | Next |
+| 5 | Code map on [Graphify](https://github.com/Graphify-Labs/graphify): agents see existing code before writing new code, and reuse searches count as evidence | Planned |
+| 6 | Parallel workers in their own worktrees, with claims so two never build the same thing | Planned |
+| 7 | A second coding agent (Cursor or OpenCode) from the same `core/` | Planned |
 
 ## More detail
 
@@ -186,7 +224,8 @@ The self-test runs static conformance, an engine hook smoke test,
 - [core/docs/MODEL-ROUTING.md](core/docs/MODEL-ROUTING.md): how each seat gets its model and effort
 - [core/COMPATIBILITY.md](core/COMPATIBILITY.md): what works, what differs from upstream, what's unproven
 - [core/docs/guide/](core/docs/guide/README.md): the 10-page user guide
-- [docs/superpowers/specs/2026-11-25-estack-engine-design.md](docs/superpowers/specs/2026-11-25-estack-engine-design.md): the plan for the workflow engine, code map and handover
+- [docs/superpowers/specs/2026-11-25-estack-engine-design.md](docs/superpowers/specs/2026-11-25-estack-engine-design.md): the engine design, including the Graphify code map (amendment 1)
+- [docs/superpowers/plans/](docs/superpowers/plans/): the step-by-step plan for each phase
 
 ## Credits
 
