@@ -2,13 +2,14 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, test } from "vitest";
 import { runHook } from "../src/hooks";
 import { createServer } from "../src/mcp";
 import { initRepo } from "../src/policy";
-import { fakeExec, makeRepo } from "./helpers";
+import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
 
 const PR = "https://github.com/o/r/pull/1";
 const A = { session_id: "s1", agent_id: "A" };
@@ -35,10 +36,78 @@ function initedRepo(): string {
 }
 
 describe("mcp server", () => {
-  test("lists exactly the six tools", async () => {
+  test("lists exactly the nine tools", async () => {
     const { client } = await connect(initedRepo());
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(["complete_step", "handover", "resume", "run_check", "start_task", "status"]);
+    expect(names).toEqual(["complete_step", "context_for", "find_existing", "handover", "resume", "run_check", "start_task", "status", "who_uses"]);
+  });
+
+  test("code-map tools say the map is off", async () => {
+    const { call } = await connect(initedRepo());
+    for (const [tool, args] of [["context_for", { area: "src" }], ["find_existing", { description: "format dates" }], ["who_uses", { symbol: "x" }]] as const) {
+      const r = await call(tool, { ...args, actor: A });
+      expect(r.isError).toBe(true);
+      expect(r.text).toMatch(/^MAP_OFF: /);
+    }
+  });
+
+  describe("with the map on", () => {
+    const mapRepo = (graph = true) => {
+      const dir = initedRepo();
+      const p = join(dir, ".estack", "policy.yaml");
+      writeFileSync(p, readFileSync(p, "utf8").replace("enabled: false", "enabled: true"));
+      if (graph) writeFakeGraph(dir, [{ id: "f", label: "fmt()", source_file: "src/a.ts", source_location: "L3" }], []);
+      return dir;
+    };
+    const rows = (dir: string) => {
+      const db = new DatabaseSync(join(dir, ".estack", "state.db"));
+      try { return db.prepare("SELECT * FROM code_queries ORDER BY id").all() as Record<string, unknown>[]; } finally { db.close(); }
+    };
+
+    test("no graph for checkout", async () => {
+      const dir = mapRepo(false);
+      const { call } = await connect(dir);
+      const r = await call("context_for", { area: "src", actor: A });
+      expect(r.isError).toBe(true);
+      expect(r.text).toMatch(/^MAP_BROKEN: /);
+      expect(r.text).toContain("estack map update");
+      const q = rows(dir);
+      expect(q).toHaveLength(1);
+      expect(q[0].ok).toBe(0);
+      expect(q[0].graph_version).toBeNull();
+    });
+
+    test("context_for logs a code_queries row for the caller's task", async () => {
+      const dir = mapRepo();
+      const { call } = await connect(dir);
+      const started = await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", cwd: dir, actor: A });
+      const id = JSON.parse(started.text).task.id;
+      const r = await call("context_for", { area: "src", cwd: dir, actor: A });
+      expect(r.isError, r.text).toBe(false);
+      expect(JSON.parse(r.text).defines[0].symbol).toBe("fmt");
+      const q = rows(dir).filter((x) => x.auto === 0);
+      expect(q).toHaveLength(1);
+      expect(q[0]).toMatchObject({ task_id: id, tool: "context_for", recorded_by: "s1/A", ok: 1, auto: 0, checkout: dir, graph_version: "0.9.121@abc1234" });
+    });
+
+    test("start_task with an area returns that area's context and logs it as automatic", async () => {
+      const dir = mapRepo();
+      const { call } = await connect(dir);
+      const r = await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", area: "src", cwd: dir, actor: A });
+      expect(r.isError, r.text).toBe(false);
+      const out = JSON.parse(r.text);
+      expect(out.task.id).toBeGreaterThan(0);
+      expect(out.context.area).toBe("src");
+      const q = rows(dir);
+      expect(q).toHaveLength(1);
+      expect(q[0]).toMatchObject({ task_id: out.task.id, auto: 1, ok: 1, recorded_by: "s1/A" });
+    });
+
+    test("start_task without an area asks for context_for", async () => {
+      const { call } = await connect(mapRepo());
+      const out = JSON.parse((await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", actor: A })).text);
+      expect(out.map_note).toMatch(/call context_for/);
+    });
   });
 
   test("not opted in returns isError with NOT_OPTED_IN text, server keeps working", async () => {

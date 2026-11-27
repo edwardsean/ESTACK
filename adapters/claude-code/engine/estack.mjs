@@ -34744,6 +34744,15 @@ function checkEvidence(e, v, step, ev, actor) {
   switch (ev.kind) {
     case "note":
       if (!ev.text || !ev.text.trim()) bad("a note must not be blank");
+      if (step === "reuse_check" && e.policy.code_map.enabled) {
+        const rows = e.db.prepare(
+          "SELECT id FROM code_queries WHERE task_id = ? AND recorded_by = ? AND ok = 1 AND auto = 0 AND tool IN ('find_existing','context_for') ORDER BY id"
+        ).all(v.task.id, actorId(actor));
+        if (rows.length === 0) {
+          bad("reuse_check needs a find_existing or context_for search you ran yourself for this task; the automatic context from start_task and other agents' searches don't count");
+        }
+        return { payload: { text: ev.text, queries: rows.map((r) => r.id) } };
+      }
       return { payload: { text: ev.text } };
     case "commit": {
       if (!/^[0-9a-fA-F]{4,64}$/.test(ev.sha ?? "")) bad(`not a valid commit sha: ${ev.sha}`);
@@ -35242,12 +35251,13 @@ function preBash(e, ev) {
   recordAsk(e, ev, t.id, v.action, command);
   return pre("ask", `${v.action} (pattern ${v.pattern}) for task #${t.id} "${t.title}": verify is settled, the owner must confirm`);
 }
+var STAMP_CWD = /* @__PURE__ */ new Set(["start_task", "context_for", "find_existing", "who_uses"]);
 function preToolUse(e, ev) {
   const tool = ev.tool_name ?? "";
   if (EDIT_TOOLS.has(tool)) return preEdit(e, ev);
   if (tool === "Bash") return preBash(e, ev);
   if (tool.startsWith(MCP_PREFIX)) {
-    const cwd = tool === `${MCP_PREFIX}start_task` ? { cwd: ev.cwd } : {};
+    const cwd = STAMP_CWD.has(tool.slice(MCP_PREFIX.length)) ? { cwd: ev.cwd } : {};
     return pre("allow", "estack tool call", { ...ev.tool_input ?? {}, ...cwd, actor: actorOf(ev) });
   }
   return null;
@@ -45164,6 +45174,330 @@ var StdioServerTransport = class {
   }
 };
 
+// engine/src/graph.ts
+import { appendFileSync, existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { basename, join as join5 } from "node:path";
+var GRAPHIFY_ENV = { GRAPHIFY_BACKEND: "none", GRAPHIFY_QUERY_LOG_DISABLE: "1" };
+var GRAPH_SCHEMA = 1;
+var BUILD_TIMEOUT_MS = 3e5;
+var START_TASK_BUILD_TIMEOUT_MS = 6e4;
+var INSTALL_HINT = 'uv tool install "graphifyy>=0.9.121,<0.10"';
+var MAP_ACTOR = { session_id: "map" };
+var OUT_DIR = "graphify-out";
+function graphifyVersion(e) {
+  try {
+    const r = e.exec.run("graphify", ["--version"], { cwd: e.cwd, timeoutMs: 1e4 });
+    if (r.code !== 0) return null;
+    return /\d+\.\d+\.\d+/.exec(r.stdout)?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+function versionSupported(v) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+  if (!m) return false;
+  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  return maj === 0 && (min === 9 && pat >= 121);
+}
+function checkoutOf(e, cwd) {
+  const r = e.exec.run("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 1e4 });
+  return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : cwd;
+}
+function checkoutLabel(e, checkout) {
+  if (checkout === e.repo.root) return "main";
+  const row = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' AND cwd = ? ORDER BY id DESC LIMIT 1").get(checkout);
+  return row ? `task ${row.id}'s worktree` : checkout;
+}
+function writeIgnore(e, checkout) {
+  const lines2 = [".estack/", ...e.policy.code_map.exclude];
+  writeFileSync2(join5(checkout, ".graphifyignore"), lines2.map((l) => l + "\n").join(""));
+  const r = e.exec.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: checkout, timeoutMs: 1e4 });
+  if (r.code !== 0) return;
+  const info = join5(r.stdout.trim(), "info");
+  const file2 = join5(info, "exclude");
+  mkdirSync2(info, { recursive: true });
+  const have = existsSync4(file2) ? readFileSync2(file2, "utf8") : "";
+  const present = new Set(have.split("\n"));
+  const missing = [`${OUT_DIR}/`, ".graphifyignore"].filter((l) => !present.has(l));
+  if (missing.length) appendFileSync(file2, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
+}
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+function takeLock(lock, timeoutMs) {
+  for (; ; ) {
+    try {
+      writeFileSync2(lock, String(process.pid), { flag: "wx" });
+      return;
+    } catch (x) {
+      if (x.code !== "EEXIST") throw x;
+    }
+    let age;
+    try {
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (age >= timeoutMs) rmSync(lock, { force: true });
+    else sleep(200);
+  }
+}
+var readRaw = (checkout) => {
+  try {
+    return JSON.parse(readFileSync2(join5(checkout, OUT_DIR, "graph.json"), "utf8"));
+  } catch {
+    return null;
+  }
+};
+var lineOf = (loc) => Number(/(\d+)/.exec(loc ?? "")?.[1] ?? 0);
+function loadGraph(checkout) {
+  const raw = readRaw(checkout);
+  if (!raw) return null;
+  const nodes = /* @__PURE__ */ new Map();
+  for (const n of raw.nodes ?? []) {
+    if (!n.source_file) continue;
+    const label = n.label ?? n.id;
+    const line = lineOf(n.source_location);
+    const kind = label.endsWith("()") ? "function" : line === 1 && label.endsWith(basename(n.source_file)) ? "file" : "symbol";
+    nodes.set(n.id, { id: n.id, label, name: label.replace(/\(\)$/, "").replace(/^\./, ""), file: n.source_file, line, kind });
+  }
+  const edges = (raw.links ?? []).map((l) => ({
+    source: l.source,
+    target: l.target,
+    relation: l.relation ?? "",
+    confidence: l.confidence ?? "",
+    file: l.source_file ?? "",
+    line: lineOf(l.source_location)
+  }));
+  const files = /* @__PURE__ */ new Set();
+  for (const n of nodes.values()) files.add(n.file);
+  return { checkout, graphify_version: raw.graph?.graphify_version ?? "", built_at_commit: raw.built_at_commit ?? null, nodes, edges, files };
+}
+function folderShares(g) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const n of g.nodes.values()) {
+    const i = n.file.lastIndexOf("/");
+    const folder = i < 0 ? "." : n.file.slice(0, i);
+    counts.set(folder, (counts.get(folder) ?? 0) + 1);
+  }
+  const total = g.nodes.size || 1;
+  return [...counts].map(([folder, nodes]) => ({ folder, nodes, percent: Math.round(nodes / total * 100) })).sort((a, b) => b.nodes - a.nodes || a.folder.localeCompare(b.folder));
+}
+function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
+  const started = Date.now();
+  const finish = (r) => {
+    const res = { checkout, duration_ms: Date.now() - started, ...r };
+    logEvent(e, MAP_ACTOR, "map_built", null, {
+      checkout,
+      ok: res.ok,
+      duration_ms: res.duration_ms,
+      nodes: res.nodes,
+      ...res.error ? { error: res.error } : {}
+    });
+    return res;
+  };
+  const fail = (error62) => finish({ ok: false, nodes: 0, files: 0, error: error62 });
+  const v = graphifyVersion(e);
+  if (v === null || !versionSupported(v)) {
+    return fail(`Graphify ${v === null ? "is not installed" : `${v} is not supported`}; install it with: ${INSTALL_HINT}`);
+  }
+  mkdirSync2(join5(checkout, OUT_DIR), { recursive: true });
+  const lock = join5(checkout, OUT_DIR, ".estack-build.lock");
+  takeLock(lock, timeoutMs);
+  try {
+    writeIgnore(e, checkout);
+    const r = e.exec.run("graphify", ["extract", checkout, "--code-only"], { cwd: checkout, timeoutMs, env: GRAPHIFY_ENV });
+    if (r.timedOut) return fail(`graphify timed out after ${timeoutMs}ms`);
+    if (r.code !== 0) return fail(`graphify exited ${r.code}: ${(r.stderr || r.stdout).trim().slice(-500)}`);
+    const raw = readRaw(checkout);
+    if (!raw) return fail("graphify wrote no readable graph.json");
+    const found = raw.graph?.graphify_version ?? "unknown";
+    if (raw.graph?.schema_version !== GRAPH_SCHEMA || !versionSupported(found)) {
+      return fail(`expected schema ${GRAPH_SCHEMA} and Graphify >=0.9.121,<0.10, found schema ${raw.graph?.schema_version ?? "none"} and Graphify ${found}`);
+    }
+    const g = loadGraph(checkout);
+    const files = [...g.files].sort();
+    const out = join5(checkout, OUT_DIR, "estack-files.json");
+    writeFileSync2(out + ".tmp", JSON.stringify({ built_at_commit: g.built_at_commit, graphify_version: g.graphify_version, files }));
+    renameSync(out + ".tmp", out);
+    return finish({ ok: true, nodes: g.nodes.size, files: files.length });
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
+
+// engine/src/codemap.ts
+var MAX_LIST = 40;
+var MAX_MATCHES = 15;
+var USES = /* @__PURE__ */ new Set(["calls", "indirect_call", "imports", "imports_from", "inherits", "references"]);
+var USED_BY = /* @__PURE__ */ new Set(["calls", "indirect_call", "imports", "inherits", "references"]);
+var CALLERS = /* @__PURE__ */ new Set(["calls", "indirect_call", "imports", "references", "inherits"]);
+var FILLER = new Set("the and for with from into this that some any are its function helper method code thing way something".split(" "));
+var hitOf = (n) => ({ symbol: n.name, file: n.file, line: n.line });
+function capped(hits, key, more) {
+  if (hits.length > MAX_LIST) more[key] = hits.length - MAX_LIST;
+  return hits.slice(0, MAX_LIST);
+}
+function contextFor(g, label, area) {
+  const a = area.replace(/\/+$/, "");
+  const inArea = (n) => n.file === a || n.file.startsWith(a + "/");
+  const defines = [...g.nodes.values()].filter((n) => inArea(n) && n.kind !== "file").map(hitOf);
+  const uses = /* @__PURE__ */ new Map();
+  const usedBy = /* @__PURE__ */ new Map();
+  for (const ed of g.edges) {
+    const s = g.nodes.get(ed.source);
+    const t = g.nodes.get(ed.target);
+    if (!s || !t) continue;
+    if (inArea(s) && !inArea(t) && USES.has(ed.relation)) {
+      uses.set(`${t.name}\0${t.file}`, { ...hitOf(t), relation: ed.relation, confidence: ed.confidence });
+    } else if (!inArea(s) && inArea(t) && USED_BY.has(ed.relation)) {
+      usedBy.set(`${s.name}\0${s.file}`, { symbol: s.name, file: ed.file, line: ed.line, relation: ed.relation, confidence: ed.confidence });
+    }
+  }
+  const more = {};
+  const seen = /* @__PURE__ */ new Set();
+  const uniqueDefines = defines.filter((h) => !seen.has(`${h.symbol}\0${h.file}`) && seen.add(`${h.symbol}\0${h.file}`));
+  return {
+    graph: label,
+    area: a,
+    defines: capped(uniqueDefines, "defines", more),
+    uses: capped([...uses.values()], "uses", more),
+    used_by: capped([...usedBy.values()], "used_by", more),
+    more
+  };
+}
+function whoUses(g, label, symbol2) {
+  const sep2 = symbol2.lastIndexOf("::");
+  const path = sep2 >= 0 ? symbol2.slice(0, sep2) : null;
+  const name = sep2 >= 0 ? symbol2.slice(sep2 + 2) : symbol2;
+  const found = [...g.nodes.values()].filter((n) => n.name === name && (path === null || n.file === path));
+  const defined_at = found.map(hitOf);
+  const result = { graph: label, symbol: symbol2, defined_at, callers: [] };
+  if (path === null && new Set(found.map((n) => n.file)).size > 1) {
+    result.ambiguous = defined_at;
+    return result;
+  }
+  const ids = new Set(found.map((n) => n.id));
+  const callers = g.edges.filter((ed) => ids.has(ed.target) && CALLERS.has(ed.relation) && g.nodes.has(ed.source)).map((ed) => ({ symbol: g.nodes.get(ed.source).name, file: ed.file, line: ed.line, relation: ed.relation, confidence: ed.confidence }));
+  result.callers = callers.slice(0, MAX_LIST);
+  if (callers.length > MAX_LIST) result.more = { callers: callers.length - MAX_LIST };
+  return result;
+}
+function descriptionWords(description) {
+  const out = [];
+  for (const w of description.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    if (w.length >= 3 && !FILLER.has(w) && !out.includes(w)) out.push(w);
+  }
+  return out;
+}
+function textHits(e, g, words) {
+  let stdout = "";
+  try {
+    const r = runBounded(e, g.checkout, "git", ["grep", "--untracked", "-n", "-i", "-F", ...words.flatMap((w) => ["-e", w])], HOOK_GIT_TIMEOUT_MS);
+    if (r.code !== 0) return [];
+    stdout = r.stdout;
+  } catch {
+    return [];
+  }
+  const hits = [];
+  for (const raw of stdout.split("\n")) {
+    const m = /^(.*?):(\d+):(.*)$/.exec(raw);
+    if (m && g.files.has(m[1])) hits.push({ file: m[1], line: Number(m[2]), text: m[3] });
+  }
+  return hits;
+}
+function findExisting(e, g, label, description) {
+  const words = descriptionWords(description);
+  const result = { graph: label, description, words, matches: [] };
+  if (words.length === 0) return result;
+  const byFile = /* @__PURE__ */ new Map();
+  const candidates = [...g.nodes.values()].filter((n) => n.kind !== "file");
+  for (const n of candidates) {
+    if (n.kind === "function") byFile.set(n.file, [...byFile.get(n.file) ?? [], n]);
+  }
+  const score = /* @__PURE__ */ new Map();
+  const entry2 = (n) => {
+    let s = score.get(n.id);
+    if (!s) score.set(n.id, s = { node: n, name: /* @__PURE__ */ new Set(), text: /* @__PURE__ */ new Set() });
+    return s;
+  };
+  for (const n of candidates) {
+    const lower = n.name.toLowerCase();
+    for (const w of words) if (lower.includes(w)) entry2(n).name.add(w);
+  }
+  for (const h of textHits(e, g, words)) {
+    const fns = byFile.get(h.file) ?? [];
+    let best;
+    for (const f of fns) if (f.line <= h.line && (!best || f.line > best.line)) best = f;
+    if (!best) {
+      for (const f of fns) if (f.line > h.line && f.line - h.line <= 3 && (!best || f.line < best.line)) best = f;
+    }
+    if (!best) continue;
+    const lower = h.text.toLowerCase();
+    const s = entry2(best);
+    for (const w of words) if (lower.includes(w)) s.text.add(w);
+  }
+  const ranked = [...score.values()].map((s) => ({ s, total: (/* @__PURE__ */ new Set([...s.name, ...s.text])).size })).filter((r) => r.total > 0).sort((x, y) => y.total - x.total || Number(y.s.name.size > 0) - Number(x.s.name.size > 0) || x.s.node.file.localeCompare(y.s.node.file) || x.s.node.line - y.s.node.line);
+  result.matches = ranked.slice(0, MAX_MATCHES).map(({ s }) => ({
+    ...hitOf(s.node),
+    why: [...s.name.size ? ["name"] : [], ...s.text.size ? ["text"] : []]
+  }));
+  return result;
+}
+var RESULT_CAP = 2e4;
+function runCodeQuery(e, input2) {
+  if (!e.policy.code_map.enabled) {
+    throw new EngineError("MAP_OFF", "the code map is off for this repository (code_map.enabled is false in .estack/policy.yaml); search with Read and Grep instead");
+  }
+  const checkout = checkoutOf(e, input2.cwd ?? e.cwd);
+  const by = actorId(input2.actor);
+  let taskId = null;
+  let version2 = null;
+  const log = (ok, result) => {
+    e.db.prepare(
+      "INSERT INTO code_queries (task_id, tool, input, result_json, ok, auto, graph_version, checkout, recorded_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(taskId, input2.tool, input2.arg, result.slice(0, RESULT_CAP), ok ? 1 : 0, input2.auto ? 1 : 0, version2, checkout, by, e.now().toISOString());
+  };
+  try {
+    if (input2.task_id !== void 0) {
+      const t = e.db.prepare("SELECT id, status FROM tasks WHERE id = ?").get(input2.task_id);
+      if (!t) throw new EngineError("NO_TASK", `no task with id ${input2.task_id}`);
+      if (t.status !== "open") throw new EngineError("TASK_CLOSED", `task ${t.id} is ${t.status}`);
+      taskId = t.id;
+    } else {
+      const t = e.db.prepare(
+        `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ? ORDER BY t.id DESC LIMIT 1`
+      ).get(checkout, input2.actor.session_id);
+      taskId = t?.id ?? null;
+    }
+    const label = checkoutLabel(e, checkout);
+    const g = loadGraph(checkout);
+    if (!g) throw new EngineError("MAP_BROKEN", `no code map for ${label} yet: run "estack map update" there, or start a task in it`);
+    version2 = `${g.graphify_version}@${g.built_at_commit}`;
+    const result = input2.tool === "context_for" ? contextFor(g, label, input2.arg) : input2.tool === "who_uses" ? whoUses(g, label, input2.arg) : findExisting(e, g, label, input2.arg);
+    log(true, JSON.stringify(result));
+    return result;
+  } catch (x) {
+    log(false, x instanceof EngineError ? `${x.code}: ${x.message}` : String(x instanceof Error ? x.message : x));
+    throw x;
+  }
+}
+function taskContext(e, v, area, actor) {
+  if (!e.policy.code_map.enabled) return {};
+  const cwd = v.task.cwd;
+  if (!loadGraph(cwd)) {
+    const b = buildGraph(e, cwd, START_TASK_BUILD_TIMEOUT_MS);
+    if (!b.ok) return { map_note: `code map unavailable: ${b.error}` };
+  }
+  if (area === void 0) return { map_note: "call context_for with the area you will change before writing code" };
+  try {
+    return { context: runCodeQuery(e, { tool: "context_for", arg: area, actor, cwd, task_id: v.task.id, auto: true }) };
+  } catch (x) {
+    return { map_note: `code map unavailable: ${x instanceof Error ? x.message : String(x)}` };
+  }
+}
+
 // engine/src/mcp.ts
 var actorSchema = external_exports.object({ session_id: external_exports.string(), agent_id: external_exports.string().optional() }).optional().describe('who is calling; defaults to {session_id: "unknown"}');
 var evidenceSchema = external_exports.discriminatedUnion("kind", [
@@ -45200,10 +45534,26 @@ function createServer(cwd, deps = {}) {
       goal: external_exports.string(),
       done_check: external_exports.string(),
       branch: external_exports.string().optional(),
+      area: external_exports.string().optional().describe("the folder or file you will change; with the code map on, its context is returned"),
       cwd: external_exports.string().optional().describe("the caller's working directory; its worktree becomes the task's (stamped by the hook)"),
       actor: actorSchema
     }
-  }, tool((e, a, actor) => startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor })));
+  }, tool((e, a, actor) => {
+    const v = startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor });
+    return { ...v, ...taskContext(e, v, a.area, actor) };
+  }));
+  const codeTool = (name, argName, description, argHelp) => server.registerTool(name, {
+    description,
+    inputSchema: {
+      [argName]: external_exports.string().describe(argHelp),
+      task_id: external_exports.number().int().optional(),
+      cwd: external_exports.string().optional().describe("the caller's working directory (stamped by the hook)"),
+      actor: actorSchema
+    }
+  }, tool((e, a, actor) => runCodeQuery(e, { tool: name, arg: String(a[argName]), actor, cwd: a.cwd, task_id: a.task_id })));
+  codeTool("context_for", "area", "Code map: what an area (folder or file) defines, what it uses and what uses it. Call it before writing code.", "folder or file path relative to the repository root");
+  codeTool("find_existing", "description", "Code map: find existing functions that already do what you describe, before you write a new one.", "what you are about to write, in plain words");
+  codeTool("who_uses", "symbol", "Code map: who calls or imports a symbol (name, or path::name).", "symbol name, or path::name");
   server.registerTool("status", {
     description: "Show one task (with task_id) or all open tasks.",
     inputSchema: { task_id: external_exports.number().int().optional(), actor: actorSchema }
@@ -45316,8 +45666,8 @@ function recordOverride(e, input2, env) {
 
 // engine/src/githooks.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { chmodSync, existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join5, resolve as resolve2 } from "node:path";
+import { chmodSync, existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join6, resolve as resolve2 } from "node:path";
 var MANAGED_MARK = "# estack-managed-hook";
 var HOOKS = ["pre-commit", "pre-push"];
 var shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -45352,17 +45702,17 @@ function installGitHooks(repoRoot, enginePath) {
   if (hp) return { installed: [], chained: [], skipped: `core.hooksPath is set (${hp})` };
   const r = runGit(repoRoot, ["rev-parse", "--git-path", "hooks"]);
   const dir = resolve2(repoRoot, r);
-  mkdirSync2(dir, { recursive: true });
+  mkdirSync3(dir, { recursive: true });
   const installed = [], chained = [];
   for (const name of HOOKS) {
-    const p = join5(dir, name);
-    if (existsSync4(p) && !readFileSync2(p, "utf8").includes(MANAGED_MARK)) {
+    const p = join6(dir, name);
+    if (existsSync5(p) && !readFileSync3(p, "utf8").includes(MANAGED_MARK)) {
       let dest = `${p}.estack-prev`;
-      for (let n = 2; existsSync4(dest); n++) dest = `${p}.estack-prev.${n}`;
-      renameSync(p, dest);
+      for (let n = 2; existsSync5(dest); n++) dest = `${p}.estack-prev.${n}`;
+      renameSync2(p, dest);
       chained.push(name);
     }
-    writeFileSync2(p, script(name, enginePath));
+    writeFileSync3(p, script(name, enginePath));
     chmodSync(p, 493);
     installed.push(name);
   }
@@ -45398,157 +45748,6 @@ function prePush(e, cwd, stdin) {
     return t ? `branch ${b} has no verify evidence (task #${t.id})` : `no estack task for branch ${b}`;
   }
   return null;
-}
-
-// engine/src/graph.ts
-import { appendFileSync, existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync2, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
-import { basename, join as join6 } from "node:path";
-var GRAPHIFY_ENV = { GRAPHIFY_BACKEND: "none", GRAPHIFY_QUERY_LOG_DISABLE: "1" };
-var GRAPH_SCHEMA = 1;
-var BUILD_TIMEOUT_MS = 3e5;
-var INSTALL_HINT = 'uv tool install "graphifyy>=0.9.121,<0.10"';
-var MAP_ACTOR = { session_id: "map" };
-var OUT_DIR = "graphify-out";
-function graphifyVersion(e) {
-  try {
-    const r = e.exec.run("graphify", ["--version"], { cwd: e.cwd, timeoutMs: 1e4 });
-    if (r.code !== 0) return null;
-    return /\d+\.\d+\.\d+/.exec(r.stdout)?.[0] ?? null;
-  } catch {
-    return null;
-  }
-}
-function versionSupported(v) {
-  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
-  if (!m) return false;
-  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  return maj === 0 && (min === 9 && pat >= 121);
-}
-function checkoutOf(e, cwd) {
-  const r = e.exec.run("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 1e4 });
-  return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : cwd;
-}
-function checkoutLabel(e, checkout) {
-  if (checkout === e.repo.root) return "main";
-  const row = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' AND cwd = ? ORDER BY id DESC LIMIT 1").get(checkout);
-  return row ? `task ${row.id}'s worktree` : checkout;
-}
-function writeIgnore(e, checkout) {
-  const lines2 = [".estack/", ...e.policy.code_map.exclude];
-  writeFileSync3(join6(checkout, ".graphifyignore"), lines2.map((l) => l + "\n").join(""));
-  const r = e.exec.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: checkout, timeoutMs: 1e4 });
-  if (r.code !== 0) return;
-  const info = join6(r.stdout.trim(), "info");
-  const file2 = join6(info, "exclude");
-  mkdirSync3(info, { recursive: true });
-  const have = existsSync5(file2) ? readFileSync3(file2, "utf8") : "";
-  const present = new Set(have.split("\n"));
-  const missing = [`${OUT_DIR}/`, ".graphifyignore"].filter((l) => !present.has(l));
-  if (missing.length) appendFileSync(file2, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
-}
-function sleep(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-function takeLock(lock, timeoutMs) {
-  for (; ; ) {
-    try {
-      writeFileSync3(lock, String(process.pid), { flag: "wx" });
-      return;
-    } catch (x) {
-      if (x.code !== "EEXIST") throw x;
-    }
-    let age;
-    try {
-      age = Date.now() - statSync(lock).mtimeMs;
-    } catch {
-      continue;
-    }
-    if (age >= timeoutMs) rmSync(lock, { force: true });
-    else sleep(200);
-  }
-}
-var readRaw = (checkout) => {
-  try {
-    return JSON.parse(readFileSync3(join6(checkout, OUT_DIR, "graph.json"), "utf8"));
-  } catch {
-    return null;
-  }
-};
-var lineOf = (loc) => Number(/(\d+)/.exec(loc ?? "")?.[1] ?? 0);
-function loadGraph(checkout) {
-  const raw = readRaw(checkout);
-  if (!raw) return null;
-  const nodes = /* @__PURE__ */ new Map();
-  for (const n of raw.nodes ?? []) {
-    if (!n.source_file) continue;
-    const label = n.label ?? n.id;
-    const line = lineOf(n.source_location);
-    const kind = label.endsWith("()") ? "function" : line === 1 && label.endsWith(basename(n.source_file)) ? "file" : "symbol";
-    nodes.set(n.id, { id: n.id, label, name: label.replace(/\(\)$/, "").replace(/^\./, ""), file: n.source_file, line, kind });
-  }
-  const edges = (raw.links ?? []).map((l) => ({
-    source: l.source,
-    target: l.target,
-    relation: l.relation ?? "",
-    confidence: l.confidence ?? "",
-    file: l.source_file ?? "",
-    line: lineOf(l.source_location)
-  }));
-  const files = /* @__PURE__ */ new Set();
-  for (const n of nodes.values()) files.add(n.file);
-  return { checkout, graphify_version: raw.graph?.graphify_version ?? "", built_at_commit: raw.built_at_commit ?? null, nodes, edges, files };
-}
-function folderShares(g) {
-  const counts = /* @__PURE__ */ new Map();
-  for (const n of g.nodes.values()) {
-    const i = n.file.lastIndexOf("/");
-    const folder = i < 0 ? "." : n.file.slice(0, i);
-    counts.set(folder, (counts.get(folder) ?? 0) + 1);
-  }
-  const total = g.nodes.size || 1;
-  return [...counts].map(([folder, nodes]) => ({ folder, nodes, percent: Math.round(nodes / total * 100) })).sort((a, b) => b.nodes - a.nodes || a.folder.localeCompare(b.folder));
-}
-function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
-  const started = Date.now();
-  const finish = (r) => {
-    const res = { checkout, duration_ms: Date.now() - started, ...r };
-    logEvent(e, MAP_ACTOR, "map_built", null, {
-      checkout,
-      ok: res.ok,
-      duration_ms: res.duration_ms,
-      nodes: res.nodes,
-      ...res.error ? { error: res.error } : {}
-    });
-    return res;
-  };
-  const fail = (error62) => finish({ ok: false, nodes: 0, files: 0, error: error62 });
-  const v = graphifyVersion(e);
-  if (v === null || !versionSupported(v)) {
-    return fail(`Graphify ${v === null ? "is not installed" : `${v} is not supported`}; install it with: ${INSTALL_HINT}`);
-  }
-  mkdirSync3(join6(checkout, OUT_DIR), { recursive: true });
-  const lock = join6(checkout, OUT_DIR, ".estack-build.lock");
-  takeLock(lock, timeoutMs);
-  try {
-    writeIgnore(e, checkout);
-    const r = e.exec.run("graphify", ["extract", checkout, "--code-only"], { cwd: checkout, timeoutMs, env: GRAPHIFY_ENV });
-    if (r.timedOut) return fail(`graphify timed out after ${timeoutMs}ms`);
-    if (r.code !== 0) return fail(`graphify exited ${r.code}: ${(r.stderr || r.stdout).trim().slice(-500)}`);
-    const raw = readRaw(checkout);
-    if (!raw) return fail("graphify wrote no readable graph.json");
-    const found = raw.graph?.graphify_version ?? "unknown";
-    if (raw.graph?.schema_version !== GRAPH_SCHEMA || !versionSupported(found)) {
-      return fail(`expected schema ${GRAPH_SCHEMA} and Graphify >=0.9.121,<0.10, found schema ${raw.graph?.schema_version ?? "none"} and Graphify ${found}`);
-    }
-    const g = loadGraph(checkout);
-    const files = [...g.files].sort();
-    const out = join6(checkout, OUT_DIR, "estack-files.json");
-    writeFileSync3(out + ".tmp", JSON.stringify({ built_at_commit: g.built_at_commit, graphify_version: g.graphify_version, files }));
-    renameSync2(out + ".tmp", out);
-    return finish({ ok: true, nodes: g.nodes.size, files: files.length });
-  } finally {
-    rmSync(lock, { force: true });
-  }
 }
 
 // engine/src/cli.ts

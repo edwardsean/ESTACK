@@ -1,6 +1,7 @@
 import type { Engine } from "./engine";
-import type { Graph, GraphEdge, GraphNode } from "./graph";
-import { HOOK_GIT_TIMEOUT_MS, runBounded } from "./tasks";
+import { START_TASK_BUILD_TIMEOUT_MS, buildGraph, checkoutLabel, checkoutOf, loadGraph, type Graph, type GraphEdge, type GraphNode } from "./graph";
+import { HOOK_GIT_TIMEOUT_MS, runBounded, type TaskView } from "./tasks";
+import { EngineError, actorId, type Actor } from "./types";
 
 export const MAX_LIST = 40;
 export const MAX_MATCHES = 15;
@@ -134,4 +135,65 @@ export function findExisting(e: Engine, g: Graph, label: string, description: st
     why: [...(s.name.size ? ["name" as const] : []), ...(s.text.size ? ["text" as const] : [])],
   }));
   return result;
+}
+
+export type CodeTool = "context_for" | "find_existing" | "who_uses";
+const RESULT_CAP = 20000;
+
+/** Run one code-map query for an actor and log it in code_queries (success or failure) before returning or throwing. */
+export function runCodeQuery(e: Engine, input: { tool: CodeTool; arg: string; actor: Actor; cwd?: string; task_id?: number; auto?: boolean }): unknown {
+  if (!e.policy.code_map.enabled) {
+    throw new EngineError("MAP_OFF", "the code map is off for this repository (code_map.enabled is false in .estack/policy.yaml); search with Read and Grep instead");
+  }
+  const checkout = checkoutOf(e, input.cwd ?? e.cwd);
+  const by = actorId(input.actor);
+  let taskId: number | null = null;
+  let version: string | null = null;
+  const log = (ok: boolean, result: string) => {
+    e.db.prepare(
+      "INSERT INTO code_queries (task_id, tool, input, result_json, ok, auto, graph_version, checkout, recorded_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(taskId, input.tool, input.arg, result.slice(0, RESULT_CAP), ok ? 1 : 0, input.auto ? 1 : 0, version, checkout, by, e.now().toISOString());
+  };
+  try {
+    if (input.task_id !== undefined) {
+      const t = e.db.prepare("SELECT id, status FROM tasks WHERE id = ?").get(input.task_id) as { id: number; status: string } | undefined;
+      if (!t) throw new EngineError("NO_TASK", `no task with id ${input.task_id}`);
+      if (t.status !== "open") throw new EngineError("TASK_CLOSED", `task ${t.id} is ${t.status}`);
+      taskId = t.id;
+    } else {
+      const t = e.db.prepare(
+        `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ? ORDER BY t.id DESC LIMIT 1`,
+      ).get(checkout, input.actor.session_id) as { id: number } | undefined;
+      taskId = t?.id ?? null;
+    }
+    const label = checkoutLabel(e, checkout);
+    const g = loadGraph(checkout);
+    if (!g) throw new EngineError("MAP_BROKEN", `no code map for ${label} yet: run "estack map update" there, or start a task in it`);
+    version = `${g.graphify_version}@${g.built_at_commit}`;
+    const result = input.tool === "context_for" ? contextFor(g, label, input.arg)
+      : input.tool === "who_uses" ? whoUses(g, label, input.arg)
+      : findExisting(e, g, label, input.arg);
+    log(true, JSON.stringify(result));
+    return result;
+  } catch (x) {
+    log(false, x instanceof EngineError ? `${x.code}: ${x.message}` : String(x instanceof Error ? x.message : x));
+    throw x;
+  }
+}
+
+/** The map context start_task adds: builds the task's checkout map if missing, then runs context_for for the area. */
+export function taskContext(e: Engine, v: TaskView, area: string | undefined, actor: Actor): { context?: ContextResult; map_note?: string } {
+  if (!e.policy.code_map.enabled) return {};
+  const cwd = v.task.cwd;
+  if (!loadGraph(cwd)) {
+    const b = buildGraph(e, cwd, START_TASK_BUILD_TIMEOUT_MS);
+    if (!b.ok) return { map_note: `code map unavailable: ${b.error}` };
+  }
+  if (area === undefined) return { map_note: "call context_for with the area you will change before writing code" };
+  try {
+    return { context: runCodeQuery(e, { tool: "context_for", arg: area, actor, cwd, task_id: v.task.id, auto: true }) as ContextResult };
+  } catch (x) {
+    return { map_note: `code map unavailable: ${x instanceof Error ? x.message : String(x)}` };
+  }
 }

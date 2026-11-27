@@ -156,13 +156,15 @@ function preBash(e: Engine, ev: HookEvent): HookOutput {
   return pre("ask", `${v.action} (pattern ${v.pattern}) for task #${t!.id} "${t!.title}": verify is settled, the owner must confirm`);
 }
 
+const STAMP_CWD = new Set(["start_task", "context_for", "find_existing", "who_uses"]);
+
 export function preToolUse(e: Engine, ev: HookEvent): HookOutput {
   const tool = ev.tool_name ?? "";
   if (EDIT_TOOLS.has(tool)) return preEdit(e, ev);
   if (tool === "Bash") return preBash(e, ev);
   if (tool.startsWith(MCP_PREFIX)) {
     // start_task records the caller's worktree, so stamp the real cwd too (the MCP server's own cwd may differ).
-    const cwd = tool === `${MCP_PREFIX}start_task` ? { cwd: ev.cwd } : {};
+    const cwd = STAMP_CWD.has(tool.slice(MCP_PREFIX.length)) ? { cwd: ev.cwd } : {};
     return pre("allow", "estack tool call", { ...(ev.tool_input ?? {}), ...cwd, actor: actorOf(ev) });
   }
   return null;
