@@ -200,10 +200,14 @@ export function activityAfter(e: Engine, h: Handover): string | null {
   return row?.at ?? null;
 }
 
+/** A session handover with plan items but no open task is dropped once it is this old. */
+export const STALE_PLAN_MS = 24 * 3600 * 1000;
+
 /**
- * Unconsumed handovers worth resuming: the newest session handover per session (unless its session owns no
- * open task and it has no plan left, so the work is finished), and the newest task handover per open task
- * not covered by a newer one.
+ * Unconsumed handovers worth resuming: the newest session handover per session, and the newest task handover
+ * per open task not covered by a newer one. A session handover whose session owns no open task is dropped when
+ * it has no plan left, or when its session logged events after saving it (the session carried on and finished),
+ * or when it is older than STALE_PLAN_MS.
  */
 export function pendingHandovers(e: Engine): Handover[] {
   const rows = (e.db.prepare("SELECT * FROM handovers WHERE consumed_at IS NULL ORDER BY id").all() as unknown as Row[]).map(toHandover);
@@ -215,7 +219,12 @@ export function pendingHandovers(e: Engine): Handover[] {
   for (const h of rows) if (h.kind === "task" && h.task_id !== null && open.has(h.task_id)) newestTask.set(h.task_id, h);
   const tasks = [...newestTask.values()].filter((h) =>
     !sessions.some((s) => s.id > h.id && (s.body as SessionHandoverBody).tasks.some((t) => t.task.id === h.task_id)));
-  const live = sessions.filter((h) => (h.body as SessionHandoverBody).plan.length > 0 || openBoundIds(e, h.from_session).length > 0);
+  const live = sessions.filter((h) => {
+    if (openBoundIds(e, h.from_session).length > 0) return true;
+    if ((h.body as SessionHandoverBody).plan.length === 0) return false;
+    // Plan items but no open task: worth resuming only while the old session went quiet right after saving it.
+    return activityAfter(e, h) === null && e.now().getTime() - Date.parse(h.created_at) < STALE_PLAN_MS;
+  });
   return [...live, ...tasks].sort((a, b) => a.id - b.id);
 }
 
