@@ -1,8 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
-const MIGRATION_1 = `
+export const MIGRATION_1 = `
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, type TEXT NOT NULL, goal TEXT NOT NULL,
@@ -32,7 +32,15 @@ CREATE TABLE events (
 );
 `;
 
-const MIGRATIONS = [MIGRATION_1];
+export const MIGRATION_2 = `
+CREATE TABLE handovers (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, task_id INTEGER REFERENCES tasks(id),
+  from_session TEXT NOT NULL, created_at TEXT NOT NULL, auto INTEGER NOT NULL, body_json TEXT NOT NULL,
+  consumed_by TEXT, consumed_at TEXT
+);
+`;
+
+const MIGRATIONS = [MIGRATION_1, MIGRATION_2];
 
 /** Open (creating if needed) the state database, apply pragmas and pending migrations. */
 export function openDb(path: string): DatabaseSync {
