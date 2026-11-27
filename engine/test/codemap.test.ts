@@ -150,6 +150,14 @@ describe("codemap", () => {
     expect(syms.indexOf("formatInvoiceDate")).toBeLessThan(syms.indexOf("render"));
   });
 
+  test("on a tie, more description words in the function's own name rank higher", () => {
+    const { dir, e, g } = setup([fileNode("bi", "src/billing/invoice.ts"), fn("inv2", "invoice", "src/billing/invoice.ts", 2)]);
+    put(dir, "src/billing/invoice.ts", 'import { formatInvoiceDate } from "../utils";\nexport function invoice(d: Date) {\n  return "Invoice " + formatInvoiceDate(d);\n}\n');
+    const syms = findExisting(e, g, "main", "format invoice date").matches.map((h) => h.symbol);
+    expect(syms.indexOf("invoice")).toBeGreaterThanOrEqual(0);
+    expect(syms[0]).toBe("formatInvoiceDate");
+  });
+
   test("who_uses callers are capped with a count of the rest", () => {
     const nodes: object[] = [];
     const links: object[] = [];

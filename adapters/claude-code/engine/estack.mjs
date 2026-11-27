@@ -45714,7 +45714,7 @@ function findExisting(e, g, label, description) {
     const s = entry2(best);
     for (const w of words) if (lower.includes(w)) s.text.add(w);
   }
-  const ranked = [...score.values()].map((s) => ({ s, total: (/* @__PURE__ */ new Set([...s.name, ...s.text])).size })).filter((r) => r.total > 0).sort((x, y) => y.total - x.total || Number(y.s.name.size > 0) - Number(x.s.name.size > 0) || x.s.node.file.localeCompare(y.s.node.file) || x.s.node.line - y.s.node.line);
+  const ranked = [...score.values()].map((s) => ({ s, total: (/* @__PURE__ */ new Set([...s.name, ...s.text])).size })).filter((r) => r.total > 0).sort((x, y) => y.total - x.total || y.s.name.size - x.s.name.size || x.s.node.file.localeCompare(y.s.node.file) || x.s.node.line - y.s.node.line);
   result.matches = ranked.slice(0, MAX_MATCHES).map(({ s }) => ({
     ...hitOf(s.node),
     why: [...s.name.size ? ["name"] : [], ...s.text.size ? ["text"] : []]

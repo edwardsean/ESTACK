@@ -145,7 +145,9 @@ export function findExisting(e: Engine, g: Graph, label: string, description: st
   const ranked = [...score.values()]
     .map((s) => ({ s, total: new Set([...s.name, ...s.text]).size }))
     .filter((r) => r.total > 0)
-    .sort((x, y) => y.total - x.total || Number(y.s.name.size > 0) - Number(x.s.name.size > 0) || x.s.node.file.localeCompare(y.s.node.file) || x.s.node.line - y.s.node.line);
+    // Ties: more of the words in the function's own name first, which also puts a name match before a text-only one.
+    .sort((x, y) => y.total - x.total || y.s.name.size - x.s.name.size
+      || x.s.node.file.localeCompare(y.s.node.file) || x.s.node.line - y.s.node.line);
   result.matches = ranked.slice(0, MAX_MATCHES).map(({ s }) => ({
     ...hitOf(s.node),
     why: [...(s.name.size ? ["name" as const] : []), ...(s.text.size ? ["text" as const] : [])],
