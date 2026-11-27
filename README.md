@@ -85,9 +85,9 @@ DBA review), and `/estack:prd-rules` turns a PRD into business-rule cards. Each
 subagent only gets the slice relevant to its job.
 
 **Approval gates.** Claude Code hooks sit outside the model. In an opted-in repo,
-a `git push`, deploy, or migration command makes Claude Code ask you first,
-approvals are logged, and a seat that ran a gated command without asking can't
-finish cleanly. In a repo that didn't opt in, the hooks do nothing.
+editing source needs an open task, a push needs verify evidence and your
+approval, and workers never push. In a repo that didn't opt in, the hooks do
+nothing. See [Hooks](#hooks).
 
 **24 principles.** Short rules the agent cites when they change a decision: fix
 root causes, prove it works, subtract before you add, make illegal states
@@ -122,6 +122,30 @@ failed.
 an agent session (when `CLAUDECODE=1`), as a guard against accidental use; it
 is not a security boundary. Run them from a normal terminal.
 
+## Hooks
+
+Every hook goes through `hooks/scripts/estack-hook.sh`, which runs the bundled engine. Without `.estack/policy.yaml` the script exits at once without starting Node. In an opted-in repository:
+
+| Hook | What it does |
+|---|---|
+| `PreToolUse` (edit tools, `Bash`, estack MCP tools) | Denies an edit with no open task, an edit to a protected path, a push without verify evidence, any `ask` action from a worker, and the hard-coded set (touching `.estack/state.db`, `estack skip`/`cancel`/`override`, `--no-verify` or `git commit -n`, `core.hooksPath` in any case, mentioning `CLAUDECODE`). Asks the owner for push, merge, deploy and migration. Fails closed if the engine errors |
+| `PostToolUse` (`Bash`) | Records an approved command in the events log. Never blocks |
+| `SessionStart` | Tells the session the repository is opted in and lists open tasks |
+| `UserPromptSubmit` | Reminds the session of its task's next step |
+| `Stop` | Blocks once when a session task has commits made after the task started but no evidence on its implement or fix step |
+| `SubagentStop` | The same check for the worker's own tasks, and also blocks when implement or fix is settled but the test step is not |
+
+`estack init` also installs git `pre-commit` and `pre-push` hooks that run the same engine against agents that run git (the owner's own terminal is never checked), unless `core.hooksPath` is set. If the recorded engine path disappears after a plugin update, the hooks fall back to the newest copy in the plugin cache.
+
+An owner override (`estack override git_push --reason ...`, run in the owner's terminal) lasts 30 minutes and is used up by the git `pre-push` hook when the push actually runs. The `Bash` gate only checks that one exists and then asks, so declining the prompt does not spend it.
+
+What the gates do not catch:
+
+- Shell writes (`echo > file`, `sed -i`, `tee`, a script) are not seen by the edit gate, which only watches the edit tools. The git `pre-commit` hook still checks what an agent commits.
+- `gh pr create` counts as a push: it needs verify evidence and the owner's approval like `git push`.
+- The hard-coded denials match text, so they also catch harmless mentions, such as grepping for `--no-verify` or printing `$CLAUDECODE`. Run those yourself in a terminal.
+- Deploy and migration patterns match command forms (`npm run deploy`, `terraform apply`, `prisma migrate deploy`, and so on), so a deploy behind a custom script name is not asked about until you add its pattern to `policy.yaml`.
+
 ## Repository layout
 
 ```text
@@ -151,7 +175,7 @@ npm test                      # the generator's tests
 (cd adapters/claude-code && bash scripts/selftest.sh)
 ```
 
-The self-test runs static conformance, 46 hook-gate assertions, a hook smoke test,
+The self-test runs static conformance, an engine hook smoke test,
 `claude plugin validate`, and fails if `adapters/claude-code/` differs from what
 `core/` generates.
 

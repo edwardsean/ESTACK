@@ -7,7 +7,7 @@
 # quietly passes.
 #
 # Usage:
-#   scripts/selftest.sh   static checks, gate tests, hook smoke test,
+#   scripts/selftest.sh   static checks, engine hook smoke test,
 #                         `claude plugin validate` and the generator check
 #                         when their tools are present
 #
@@ -43,38 +43,54 @@ else
   fail "scripts/selftest.py reported failures above"
 fi
 
-section "2. enterprise gate behaviour (scripts/test-gates.py)"
-if python3 scripts/test-gates.py; then
-  pass "gate, audit, and backstop entry points decide correctly on Claude Code hook events"
+section "2. engine hook smoke test (PreToolUse Write, opted-in repo and dormant repo)"
+if ! command -v node >/dev/null 2>&1; then
+  skip "node not on PATH"
 else
-  fail "scripts/test-gates.py reported failures above"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/estack-smoke.XXXXXX")"
+  mkdir -p "$tmp/on" "$tmp/off"
+  for r in on off; do
+    git -C "$tmp/$r" init -q
+  done
+  (cd "$tmp/on" && node --no-warnings "$ROOT/engine/estack.mjs" init >/dev/null 2>&1)
+  event() {
+    printf '{"session_id":"s1","transcript_path":"%s/t.jsonl","cwd":"%s","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"%s/src/a.ts","content":"x"},"tool_use_id":"toolu_smoke"}' "$1" "$1" "$1"
+  }
+  on_out="$(event "$tmp/on" | CLAUDE_PROJECT_DIR="$tmp/on" hooks/scripts/estack-hook.sh pre-tool-use 2>/dev/null)"; on_code=$?
+  off_out="$(event "$tmp/off" | CLAUDE_PROJECT_DIR="$tmp/off" hooks/scripts/estack-hook.sh pre-tool-use 2>/dev/null)"; off_code=$?
+  echo "  opted in : exit=$on_code stdout=$on_out"
+  echo "  dormant  : exit=$off_code stdout=${off_out:-<empty>}"
+  if [ "$on_code" = 0 ] && printf '%s' "$on_out" | grep -q '"permissionDecision":"deny"'; then
+    pass "opted-in repo: a Write with no open task is denied"
+  else
+    fail "opted-in repo did not emit a deny"
+  fi
+  if [ "$off_code" = 0 ] && [ -z "$off_out" ] && [ ! -e "$tmp/off/.estack" ] && [ -z "$(ls -A "$tmp/off" | grep -v '^\.git$')" ]; then
+    pass "dormant repo: silent, exit 0, nothing written"
+  else
+    fail "dormant repo was not left alone"
+  fi
+  # A broken engine must fail closed on PreToolUse: copy the hook script into a
+  # scratch plugin whose engine/estack.mjs throws.
+  mkdir -p "$tmp/broken/hooks/scripts" "$tmp/broken/engine"
+  cp hooks/scripts/estack-hook.sh "$tmp/broken/hooks/scripts/"
+  printf 'throw new Error("boom");\n' > "$tmp/broken/engine/estack.mjs"
+  br_out="$(event "$tmp/on" | CLAUDE_PROJECT_DIR="$tmp/on" "$tmp/broken/hooks/scripts/estack-hook.sh" pre-tool-use 2>/dev/null)"; br_code=$?
+  echo "  broken engine: exit=$br_code stdout=$br_out"
+  if [ "$br_code" = 0 ] && printf '%s' "$br_out" | grep -q '"permissionDecision":"deny"'; then
+    pass "broken engine: PreToolUse fails closed with a deny"
+  else
+    fail "broken engine did not produce a deny"
+  fi
+  if printf '%s' "$br_out" | grep -q 'could not run (Error: boom)'; then
+    pass "broken engine: the deny names the error line, not the stack header"
+  else
+    fail "broken engine deny does not name the error (Error: boom)"
+  fi
+  rm -rf "$tmp"
 fi
 
-section "3. hook smoke test (PreToolUse git push, opted-in repo and dormant repo)"
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/estack-smoke.XXXXXX")"
-mkdir -p "$tmp/on/.claude/enterprise" "$tmp/off"
-python3 -c 'import sys; sys.path.insert(0, "hooks/scripts"); sys.dont_write_bytecode = True
-import enterprise_hooks as eh, json; print(json.dumps(eh.default_config()))' > "$tmp/on/.claude/enterprise/gates.json"
-event() {
-  printf '{"session_id":"s1","transcript_path":"%s/t.jsonl","cwd":"%s","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push origin main"},"tool_use_id":"toolu_smoke"}' "$1" "$1"
-}
-on_out="$(event "$tmp/on" | CLAUDE_PROJECT_DIR="$tmp/on" hooks/scripts/gate-check.sh)"; on_code=$?
-off_out="$(event "$tmp/off" | CLAUDE_PROJECT_DIR="$tmp/off" hooks/scripts/gate-check.sh)"; off_code=$?
-echo "  opted in : exit=$on_code stdout=$on_out"
-echo "  dormant  : exit=$off_code stdout=${off_out:-<empty>}"
-if [ "$on_code" = 0 ] && printf '%s' "$on_out" | grep -q '"permissionDecision": "ask"'; then
-  pass "opted-in repo: git push gets permissionDecision ask"
-else
-  fail "opted-in repo did not emit an ask"
-fi
-if [ "$off_code" = 0 ] && [ -z "$off_out" ] && [ ! -e "$tmp/off/.claude" ]; then
-  pass "dormant repo: silent, exit 0, nothing written"
-else
-  fail "dormant repo was not left alone"
-fi
-rm -rf "$tmp"
-
-section "4. plugin validator (claude plugin validate)"
+section "3. plugin validator (claude plugin validate)"
 if command -v claude >/dev/null 2>&1; then
   if out="$(claude plugin validate . 2>&1)" && printf '%s' "$out" | grep -q "Validation passed"; then
     pass "claude plugin validate . -> Validation passed"
@@ -86,7 +102,7 @@ else
   skip "claude CLI not on PATH"
 fi
 
-section "5. generated plugin matches core/ (npm run check:claude)"
+section "4. generated plugin matches core/ (npm run check:claude)"
 REPO="$(cd "$ROOT/../.." && pwd)"
 if [ ! -f "$REPO/package.json" ]; then
   skip "no estack repository root above this folder"

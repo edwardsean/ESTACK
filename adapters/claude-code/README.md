@@ -135,15 +135,13 @@ Full guide: [docs/MODEL-ROUTING.md](./docs/MODEL-ROUTING.md).
 
 ### Approval gates
 
-A repository opts in by writing `.claude/enterprise/gates.json`, which
-`/estack:setup` does. Until that file exists the `PreToolUse` hook
-exits on a single file test and never prompts. When a `Bash` command matches a
-gated pattern (push, deploy, migration), the hook returns
-`permissionDecision: "ask"` and the human decides. An approved command is logged
-to `.claude/enterprise/approvals.jsonl` by a `PostToolUse` hook, and a
-`SubagentStop` hook blocks a seat from finishing cleanly when the log shows a
-gated command it ran with no ask behind it. Claude Code fires tool hooks inside
-subagents with `agent_id` and `agent_type` set, so seats are gated too.
+A repository opts in by creating `.estack/policy.yaml`, which
+`/estack:setup` does through `estack init`. Until that file exists every
+hook exits through `estack-hook.sh` on a single file test and never prompts.
+Once it exists, the bundled engine decides: an edit needs an open task, a push
+needs verify evidence and the owner's approval, and workers never push. Claude
+Code fires tool hooks inside subagents with `agent_id` set, so seats are gated
+too. `estack init` also installs git `pre-commit` and `pre-push` hooks.
 
 ## What is in the package
 
@@ -156,15 +154,14 @@ adapters/claude-code/               generated from core/, never edited by hand
     principle-*/                    24 principle leaves
     estack-seats/, enterprise-seats/, enterprise-gates/
                                     the three Qoder rules, now on-demand skills
-  hooks/hooks.json                  PreToolUse, PostToolUse, SubagentStop gates
-  hooks/scripts/                    gate-check.sh, audit-write.sh, seat-backstop.sh, enterprise_hooks.py
+  hooks/hooks.json                  PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop, SubagentStop
+  hooks/scripts/estack-hook.sh      the one entry point for every hook; runs engine/estack.mjs
   docs/guide/                       the 10-page user guide
   docs/MODEL-ROUTING.md             per-seat model and effort
   docs/ENTERPRISE-ARCHITECTURE.md   the six-layer enterprise design
   assets/logo.png                   upstream logo, MIT
   scripts/content_gate.py           the dash and vendor-coupling gate
   scripts/selftest.py               static conformance
-  scripts/test-gates.py             drives the hook scripts with Claude Code hook events
   scripts/selftest.sh               all of the above, plus claude plugin validate
   README.md COMPATIBILITY.md CONNECTORS.md LICENSE
 ```

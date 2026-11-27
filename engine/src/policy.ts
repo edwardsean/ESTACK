@@ -55,11 +55,12 @@ actions:
   auto:  [read, edit_in_task_worktree, run_tests, lint, commit, open_draft_pr]
   ask:   [git_push, merge, deploy, db_migration, delete_outside_repo, send_message]
   deny:  [force_push_protected, edit_secrets, disable_hooks]
-patterns:                 # how shell commands map to actions; replaces gates.json
-  git_push:      ["git push*"]
-  deploy:        ["*deploy*", "kubectl apply*", "terraform apply*"]
-  db_migration:  ["*migrate*", "prisma migrate*"]
-  force_push_protected: ["git push --force* origin main", "git push -f* origin main"]
+patterns:                 # how shell commands map to actions
+  git_push:      ["git push*", "gh pr create*"]
+  merge:         ["gh pr merge*"]
+  deploy:        ["npm run deploy*", "pnpm run deploy*", "pnpm deploy*", "yarn deploy*", "vercel --prod*", "vercel deploy*", "fly deploy*", "flyctl deploy*", "kubectl apply*", "kubectl delete*", "kubectl rollout*", "terraform apply*", "terraform destroy*", "helm install*", "helm upgrade*", "helm uninstall*"]
+  db_migration:  ["prisma migrate deploy*", "prisma migrate reset*", "prisma db push*", "alembic upgrade*", "alembic downgrade*", "flyway migrate*", "rails db:migrate*", "npm run migrate*", "psql * -c *", "mysql * -e *"]
+  force_push_protected: ["git push --force* origin main", "git push -f* origin main", "git push --force* origin master", "git push -f* origin master", "git push* origin main* --force*", "git push* origin main* -f*", "git push* origin +main*", "git push* origin master* --force*", "git push* origin master* -f*", "git push* origin +master*"]
 task_types:
   feature:  [plan, reuse_check, implement, test, verify, review, pr]
   bugfix:   [reproduce, reuse_check, fix, test, verify, pr]

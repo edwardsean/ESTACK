@@ -20,9 +20,11 @@ function toResult(r: ReturnType<typeof spawnSync>, started: number): ExecResult 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
 export const realExec: Exec = {
+  // git/gh output is parsed (e.g. "not a git repository"), so pin the C locale. shell() runs the project's own commands and keeps the user's.
   run(file, args, { cwd, timeoutMs }) {
     const t = Date.now();
-    return toResult(spawnSync(file, args, { cwd, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_BUFFER }), t);
+    const env = { ...process.env, LC_ALL: "C" };
+    return toResult(spawnSync(file, args, { cwd, env, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_BUFFER }), t);
   },
   shell(command, { cwd, timeoutMs }) {
     const t = Date.now();

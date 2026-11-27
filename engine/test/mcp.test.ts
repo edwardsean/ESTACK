@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -82,5 +83,15 @@ describe("mcp server", () => {
     const r = await call("complete_step", { task_id: t.task.id, step: "implement", evidence: { kind: "commit", sha: "abcd" } });
     expect(r.isError).toBe(true);
     expect(r.text.startsWith("OUT_OF_ORDER")).toBe(true);
+  });
+
+  test("C6 start_task records the cwd it is given (a linked worktree)", async () => {
+    const dir = initedRepo();
+    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    execFileSync("git", ["worktree", "add", "-b", "feat", wt], { cwd: dir, stdio: "ignore" });
+    const { call } = await connect(dir);
+    const r = await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", actor: A, cwd: wt });
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text).task).toMatchObject({ cwd: wt, branch: "feat" });
   });
 });

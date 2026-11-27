@@ -21,7 +21,7 @@ Make every stage safe to run twice. A pipeline that cannot be resumed gets re-ru
 
 Say what the platform enforces and what this plugin cannot. Branch protection, required reviewers, and CI quality gates live outside a model's reach, and describing them as covered here overstates what a reviewer can rely on.
 
-Name the gate before the command. Push, deploy, and migration classes ask a human under `.claude/enterprise/gates.json`. List every command in your change that will prompt, so nobody meets a surprise prompt mid-release.
+Name the gate before the command. Push, deploy, and migration classes ask the owner under `.estack/policy.yaml`, and a worker seat is denied them outright. List every command in your change that will prompt, so nobody meets a surprise prompt mid-release.
 
 Never apply infrastructure and never run a deployment. Writing the config and running it are different steps with different authorities, and the second one belongs to a human.
 
