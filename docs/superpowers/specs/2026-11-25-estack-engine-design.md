@@ -1,7 +1,12 @@
 # estack engine: design
 
 Date: 2026-11-25
-Status: draft, owner decisions folded in, awaiting approval
+Status: approved 2026-11-25; amendment 1 (2026-11-26, code map uses Graphify) awaiting approval
+
+**Amendment 1 (2026-11-26).** The code map is no longer an indexer the engine builds.
+It is [Graphify](https://github.com/Graphify-Labs/graphify) (Apache-2.0), a local
+tree-sitter knowledge graph, wrapped by the engine behind its own three tools. Sections
+3, 6, 7, 8, 9, 13, 14 and 15 change; nothing in phases 1 to 4 changes.
 
 ## 1. Intent
 
@@ -82,6 +87,10 @@ only human in the loop.
   working; the engine is added, not a rewrite.
 - Hooks must be fast (target under 200 ms) because they run on every edit and every command.
 - Repository is public on GitHub. No secrets, no customer data, no local absolute paths.
+- The code map needs Graphify (`graphifyy` on PyPI, Python 3.11+, installed with `uv` or
+  `pipx`). It runs code-only and local: the engine always invokes it with
+  `GRAPHIFY_BACKEND=none`, so no source, doc or image leaves the machine. Everything
+  except the code map works without it.
 
 ## 4. Approaches considered
 
@@ -144,7 +153,7 @@ estack/
   adapters/
     claude-code/             generated Claude Code plugin (what pstack-claude is today)
     build-claude-code.ts     the generator
-  engine/                    TypeScript package: library, MCP server, CLI, indexer
+  engine/                    TypeScript package: library, MCP server, CLI, Graphify adapter
   docs/
 ```
 
@@ -233,7 +242,8 @@ owner's own commits and pushes from a normal terminal pass untouched.
 - `pre-commit`: protected paths untouched; the commit's worktree has an open task.
 - `pre-push`: the task's required steps up to `verify` have evidence. A push from a
   branch with no task is refused unless the owner runs `estack override push` (logged).
-- `post-commit`: reindex the changed files into the code map (section 9).
+- `post-commit` and `post-checkout`: Graphify's own hooks (`graphify hook install`)
+  update the graph for changed files; the engine then runs its duplicate check (section 9).
 
 CI is out of scope for the engine, but the same `estack check` command can run there.
 
@@ -247,7 +257,7 @@ A step is complete only with evidence the engine can check, not a sentence:
 | `commit` | commit sha | The sha exists and is on the task's branch |
 | `pr` | PR URL | `gh pr view` succeeds |
 | `review` | reviewer seat, verdict, findings | Written by a different agent than the task's author (agent ids differ) |
-| `reuse_check` | queries made and what they returned | The queries were run through the engine's tools in this task (they are logged) |
+| `reuse_check` | queries made and what they returned | The engine ran the Graphify queries itself, for this task, through `context_for` / `find_existing` / `who_uses`, and logged them in `code_queries`; the agent can't describe a search it didn't run |
 | `note` | free text | Allowed only for steps the policy marks as `note_ok`, such as `plan` |
 
 The key rule: for `test` and `verify`, the engine runs the command and records the
@@ -292,11 +302,8 @@ evidence     id, task_id, step_name, kind, payload_json, recorded_by, recorded_a
 approvals    id, task_id, action, command, decision(approved|refused|override), by, at
 claims       id, task_id, kind(file|symbol|new_symbol), target, status(active|released), at
 handovers    id, task_id, from_session, created_at, body_json, consumed_by, consumed_at
-code_files   path, lang, hash, indexed_at, branch
-code_symbols id, file_path, name, kind, signature, description, start_line, end_line,
-             exported, branch, task_id(nullable, set when created inside a task)
-code_edges   from_symbol, to_symbol, kind(imports|calls|extends)
-code_fts     full-text index over symbol name, signature, description, file path
+code_queries id, task_id, tool(context_for|find_existing|who_uses), input, result_json,
+             graph_version, at          (every code-map query the engine ran, per task)
 events       id, at, actor, kind, task_id, payload_json   (append-only log of everything)
 ```
 
@@ -311,44 +318,76 @@ the hook input's `session_id` and `agent_id`, falling back to the worktree path 
 Purpose: let any session find what already exists, near the code it is about to touch
 and anywhere in the repo, so it reuses instead of rewriting.
 
-**Built only from code.** An indexer parses source files and writes `code_files`,
-`code_symbols`, `code_edges` and `code_fts`. Agents never write to these tables.
+### Graphify is the map; the engine owns the rules
 
-- **Languages:** TypeScript and JavaScript first (the owner's main stack), then Python.
-- **Description per symbol:** its doc comment if present, otherwise its signature. An
-  optional later step can generate one-line descriptions with a cheap model, marked as
-  generated and refreshed when the symbol's hash changes.
-- **When it runs:** full index at `/estack:setup`; incremental on `post-commit` for
-  changed files; on `start_task` for the task's worktree, so uncommitted work in progress
-  is visible. Each row carries the branch, so results can say "on main" or "in progress
-  in task 14".
+The graph itself comes from **Graphify**: it parses source with tree-sitter
+(deterministic, no LLM, about 40 languages), resolves `calls`, `imports` and `inherits`
+across files, and tags every edge `EXTRACTED` (read from the source) or `INFERRED`
+(resolved by Graphify). It writes `graphify-out/graph.json` and answers `graphify
+query`, `graphify explain` and `graphify path`. This meets the anti-goal "the map is
+only ever generated from code": agents never write to it.
 
-**Agent tools (MCP):**
+What Graphify does not do, and stays in the engine: showing context automatically,
+recording reuse searches as evidence, flagging duplicates after a commit, and claims.
 
-| Tool | Returns |
-|---|---|
-| `context_for(path or area)` | The area's imports and the helpers it uses, with signatures and descriptions; what calls into it; active claims in it |
-| `find_existing(description)` | Top 10 symbols by full-text match over name, signature, description, path; each with file, line, branch, and owning task if in progress |
-| `who_uses(symbol)` | Callers and importers |
+### How the engine uses it
 
-Queries are indexed lookups and a full-text search; they return small results and
-never load the whole map into the agent's context.
+- **Install and build.** `/estack:setup` checks for `graphify` on PATH (a clear message
+  with the install command if missing, never a silent install), runs the first build
+  with `GRAPHIFY_BACKEND=none`, and runs `graphify hook install` so the graph updates on
+  every commit and branch checkout. `graphify-out/` is gitignored.
+- **Version pin.** The engine reads `graph.schema_version` and `graph.graphify_version`
+  and refuses an unsupported schema with a message naming the version it expects, rather
+  than misreading the graph.
+- **Worktrees.** A worker's worktree has its own working copy. On `start_task` the
+  engine updates that worktree's graph (`graphify update`, changed files only) so
+  uncommitted work in progress is visible; results say which graph they came from
+  ("main" or "task 14's worktree").
+- **Agent tools (MCP), wrapping Graphify:**
 
-**How it stops the `utils.ts` failure:**
+| Tool | Runs | Returns |
+|---|---|---|
+| `context_for(path or area)` | `graphify query` seeded at the area | The area's imports and the helpers it uses, with file and line; what calls into it; active claims in it |
+| `find_existing(description)` | `graphify query "<description>"` | The matching functions and modules, each with file, line, edge confidence, and owning task if in progress |
+| `who_uses(symbol)` | `graphify explain <symbol>` | Callers and importers |
+
+Each call runs with a time limit and a size budget, is logged in `code_queries` for the
+current task, and returns a small result; the whole graph never enters the agent's
+context. Because agents only see these three tools, Graphify can be replaced later
+without changing any agent.
+
+### Graphify's own hooks: strict mode on
+
+Graphify installs a Claude Code `PreToolUse` hook that nudges agents to query the graph
+before reading or grepping source files. In **strict mode** the first Read or Grep of an
+indexed file in a session is denied once unless the agent queried the graph in the last
+30 minutes; after that, reads go through. Each subagent gets its own single denial, and
+compaction resets it.
+
+estack turns strict mode on (`graphify install --project --strict`). It and the engine's
+hooks guard different moments and don't clash: Graphify guards **reading** (look at the
+map before opening files), the engine guards **writing** (`reuse_check` evidence before
+`implement`, a task before any edit). When both fire on the same Bash call, Claude Code
+applies the stricter decision.
+
+To confirm in the phase 5 spike before relying on it: what strict mode does in a fresh
+worktree whose graph hasn't been built yet, and how often it bounces the verifier and
+reviewer seats, which are told to read specific changed files.
+
+### How it stops the `utils.ts` failure
 
 1. When a worker starts a task on a service, `start_task` returns `context_for` that
    service automatically, so `utils.ts` and its functions are in front of the agent
    before it writes anything.
-2. Every code task type has a `reuse_check` step before `implement`. Its evidence is
-   the `find_existing` and `context_for` calls the agent actually made.
-3. When a commit adds a new exported or top-level function, the `post-commit` reindex
-   compares it with existing symbols (same or similar name; same signature shape) and
-   records a `possible_duplicate` event. The `review` step must address any such event
-   before it can be completed.
-
-Search by meaning (embeddings) is a later addition if keyword search misses too often.
-A graph database is not used; the two tables above are the graph, and the storage sits
-behind the tools so it can be replaced without changing agents.
+2. Graphify's strict hook makes the agent look at the map before it starts reading
+   files one by one.
+3. Every code task type has a `reuse_check` step before `implement`. Its evidence is the
+   `code_queries` rows for this task: the engine ran them, so the agent can't claim a
+   search it didn't do.
+4. After a commit, the engine compares newly added top-level functions (from the updated
+   graph) with existing ones: same or similar name, same parameters, or a call into a
+   helper that does the same thing. A match is recorded as a `possible_duplicate` event,
+   and the `review` step can't be completed until it is addressed.
 
 ## 10. Parallel work and claims
 
@@ -423,15 +462,16 @@ Each phase is usable on its own and ends in a check.
 | 2 | Engine core: tasks, steps, evidence (incl. `estack run`), approvals, events; MCP server + CLI; `/estack:setup` | Tests cover the step state machine and evidence rules; a task can be driven end to end through MCP tools |
 | 3 | Claude Code hooks + git hooks wired to the engine, replacing the current gate scripts | Recorded-event tests (like today's `test-gates.py`) for every row of the hook table; a live session check that an edit with no task is denied |
 | 4 | Handover | A task interrupted mid-run is resumed in a fresh session from the handover alone |
-| 5 | Code map: indexer (TS/JS), `context_for`, `find_existing`, `who_uses`, `reuse_check` step, duplicate events | On a fixture repo reproducing the `utils.ts` failure, the second task is shown the helper and the duplicate is flagged if written anyway |
+| 5 | Code map: a short Graphify spike on a real repo (answer quality, worktree behaviour of strict mode, build time), then the engine's Graphify adapter, `context_for` / `find_existing` / `who_uses`, `code_queries` as `reuse_check` evidence, duplicate events, setup installing Graphify's hooks in strict mode | On a fixture repo reproducing the `utils.ts` failure, the second task is shown the helper and the duplicate is flagged if written anyway |
 | 6 | Parallel: `plan_tasks` overlap detection, claims, worktree creation | Two workers on overlapping tasks: the shared helper is built once; a claimed file edit is denied |
 | 7 | Second adapter (Cursor or OpenCode) | Same engine, same policy, the core flows work in that agent |
 
 ## 14. Left to the builder
 
 - TypeScript project structure, test framework, the SQLite driver, the MCP SDK version.
-- The indexer's parser (TypeScript compiler API or tree-sitter), provided it can add
-  Python later.
+- How the engine calls Graphify (CLI subprocess or its MCP server), provided each call
+  is time-limited, logged in `code_queries` and code-only.
+- The duplicate-match heuristic's exact thresholds.
 - Exact CLI command names and MCP tool parameter shapes, within the meaning above.
 - The default contents of `policy.yaml` and `brief.md` templates.
 - How the generator in phase 1 maps current pstack files into `core/`.
@@ -449,3 +489,14 @@ Each phase is usable on its own and ends in a check.
   `PreCompact`.
 - **Concurrency.** Several workers writing to SQLite at once: WAL mode and short
   transactions; claims use a unique constraint so two workers can't both win.
+- **Graphify changes fast.** It is on major version 8 and very active. Mitigation: pin a
+  supported version range, check `graph.schema_version`, and keep it behind the engine's
+  three tools so a change touches one adapter.
+- **Graphify upsell and data.** Its README pushes a hosted product, and its semantic pass
+  sends docs and media to an LLM when an API key is present. estack uses only the local
+  open-source CLI, always with `GRAPHIFY_BACKEND=none`. Graphify also logs every query to
+  `~/.cache/graphify-queries.log`; the engine sets `GRAPHIFY_QUERY_LOG_DISABLE=1`, since
+  its own `code_queries` table is the record.
+- **Strict mode friction.** One bounce per agent per session is cheap, but if the spike
+  shows it bouncing workers in fresh worktrees or reviewers often, drop to Graphify's
+  soft mode; the engine's `reuse_check` still enforces the part that matters.
