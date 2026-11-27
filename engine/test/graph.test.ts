@@ -26,7 +26,7 @@ describe("graph adapter", () => {
     const { dir, e } = engineFor(["dist/**", "upstream/**"]);
     writeIgnore(e, dir);
     writeIgnore(e, dir);
-    expect(readFileSync(join(dir, ".graphifyignore"), "utf8")).toBe("dist/**\nupstream/**\n");
+    expect(readFileSync(join(dir, ".graphifyignore"), "utf8")).toBe(".estack/\ndist/**\nupstream/**\n");
     const lines = readFileSync(join(dir, ".git", "info", "exclude"), "utf8").split("\n");
     expect(lines.filter((l) => l === "graphify-out/")).toHaveLength(1);
     expect(lines.filter((l) => l === ".graphifyignore")).toHaveLength(1);
@@ -70,7 +70,7 @@ describe("graph adapter", () => {
 
 describe.skipIf(!HAS_GRAPHIFY)("real graphify", () => {
   function fixture() {
-    const { dir, e } = engineFor(["dist/**", ".estack/**"]);
+    const { dir, e } = engineFor(["dist/**"]);
     mkdirSync(join(dir, "src")); mkdirSync(join(dir, "dist"));
     writeFileSync(join(dir, "src/a.ts"), "export function hello(n: string) { return n; }\nexport function bye() { return hello('x'); }\n");
     writeFileSync(join(dir, "dist/a.js"), "function gen() { return 1; }\n");

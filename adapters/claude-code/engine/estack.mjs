@@ -45434,7 +45434,7 @@ function checkoutLabel(e, checkout) {
   return row ? `task ${row.id}'s worktree` : checkout;
 }
 function writeIgnore(e, checkout) {
-  const lines2 = e.policy.code_map.exclude;
+  const lines2 = [".estack/", ...e.policy.code_map.exclude];
   writeFileSync3(join6(checkout, ".graphifyignore"), lines2.map((l) => l + "\n").join(""));
   const r = e.exec.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: checkout, timeoutMs: 1e4 });
   if (r.code !== 0) return;

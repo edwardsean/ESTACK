@@ -49,7 +49,7 @@ export function checkoutLabel(e: Engine, checkout: string): string {
 }
 
 export function writeIgnore(e: Engine, checkout: string): void {
-  const lines = e.policy.code_map.exclude;
+  const lines = [".estack/", ...e.policy.code_map.exclude];
   writeFileSync(join(checkout, ".graphifyignore"), lines.map((l) => l + "\n").join(""));
   const r = e.exec.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: checkout, timeoutMs: 10_000 });
   if (r.code !== 0) return;
