@@ -176,12 +176,10 @@ describe("cli hook", () => {
     const p = join(dir, ".estack", "policy.yaml");
     writeFileSync(p, readFileSync(p, "utf8").replace("enabled: false", "enabled: true"));
     const n = (id: string, f: string) => ({ id, label: `${id}()`, source_file: f, source_location: "L2" });
-    writeFakeGraph(dir, [n("a", "src/a.ts"), n("b", "src/b.ts"), n("c", "src/c.ts"), n("d", "dist/d.js")], []);
+    writeFakeGraph(dir, [n("a", "src/a.ts"), n("b", "src/orders/b.ts"), n("c", "src/orders/c.ts"), n("d", "dist/d.js")], []);
     const r = run(dir, ["map", "status"]);
     expect(r.status).toBe(0);
-    expect(r.out).toContain("src 75%");
-    expect(r.out).toContain("dist 25%");
-    expect(r.out).toContain("main");
+    expect(r.out).toContain("main: built at abc1234, 4 entries, 4 files\n  src 75%\n    src/orders 50%\n  dist 25%\n");
     expect(JSON.parse(run(dir, ["map", "status", "--json"]).out).checkouts[0].entries).toBe(4);
   });
 });
@@ -252,11 +250,12 @@ describe("cli init and the code map", () => {
   test("init with a supported Graphify turns the map on, builds it and prints folder shares", () => {
     const dir = makeRepo();
     const n = (id: string, f: string) => ({ id, label: `${id}()`, source_file: f, source_location: "L2" });
-    writeFakeGraph(dir, [n("a", "src/a.ts"), n("b", "src/b.ts"), n("c", "lib/c.ts")], []);
+    writeFakeGraph(dir, [n("a", "src/a.ts"), n("b", "src/orders/b.ts"), n("c", "lib/c.ts")], []);
     const r = run(dir, ["init"], {}, supportedGraphify());
     expect(r.status).toBe(0);
     expect(openEngine(dir).policy.code_map.enabled).toBe(true);
     expect(r.out).toMatch(/^map built for main: 3 entries, 3 files, \d+ms$/m);
+    expect(r.out).toContain("folder shares:\n  src 67%\n    src/orders 33%\n  lib 33%\n");
   });
 
   const OFF_LATER = "; nothing to map yet. Turn it on later by editing the code_map block in .estack/policy.yaml.\n";

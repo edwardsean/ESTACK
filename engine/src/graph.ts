@@ -131,16 +131,30 @@ export function mappedFiles(checkout: string): Set<string> | null {
   }
 }
 
-export function folderShares(g: Graph): { folder: string; nodes: number; percent: number }[] {
-  const counts = new Map<string, number>();
-  for (const n of g.nodes.values()) {
-    const i = n.file.lastIndexOf("/");
-    const folder = i < 0 ? "." : n.file.slice(0, i);
-    counts.set(folder, (counts.get(folder) ?? 0) + 1);
-  }
+export interface FolderShare { folder: string; nodes: number; percent: number }
+
+/**
+ * How much of the map each top-level folder takes (files at the root count as "(root)"), largest first, so a folder
+ * that is mostly copies stands out. The three largest also list their three largest second-level folders.
+ */
+export function folderShares(g: Graph): (FolderShare & { sub: FolderShare[] })[] {
   const total = g.nodes.size || 1;
-  return [...counts].map(([folder, nodes]) => ({ folder, nodes, percent: Math.round((nodes / total) * 100) }))
-    .sort((a, b) => b.nodes - a.nodes || a.folder.localeCompare(b.folder));
+  const ranked = (counts: Map<string, number>): FolderShare[] =>
+    [...counts].map(([folder, nodes]) => ({ folder, nodes, percent: Math.round((nodes / total) * 100) }))
+      .sort((a, b) => b.nodes - a.nodes || a.folder.localeCompare(b.folder));
+  const top = new Map<string, number>();
+  const second = new Map<string, Map<string, number>>();
+  for (const n of g.nodes.values()) {
+    const parts = n.file.split("/");
+    const first = parts.length > 1 ? parts[0] : "(root)";
+    top.set(first, (top.get(first) ?? 0) + 1);
+    if (parts.length > 2) {
+      const sub = second.get(first) ?? second.set(first, new Map()).get(first)!;
+      const folder = `${parts[0]}/${parts[1]}`;
+      sub.set(folder, (sub.get(folder) ?? 0) + 1);
+    }
+  }
+  return ranked(top).map((f, i) => ({ ...f, sub: i < 3 ? ranked(second.get(f.folder) ?? new Map()).slice(0, 3) : [] }));
 }
 
 export function buildGraph(e: Engine, checkout: string, timeoutMs: number = BUILD_TIMEOUT_MS): BuildResult {

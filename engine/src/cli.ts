@@ -13,7 +13,10 @@ import { defaultPolicyYaml, initRepo, loadPolicy } from "./policy";
 import { realExec, type Exec } from "./exec";
 import { findRepo } from "./repo";
 import { pendingHandovers, type SessionHandoverBody } from "./handover";
-import { BUILD_TIMEOUT_MS, INSTALL_HINT, buildGraph, checkoutLabel, checkoutOf, folderShares, graphifyVersion, loadGraph, suggestExcludes, versionSupported } from "./graph";
+import {
+  BUILD_TIMEOUT_MS, INSTALL_HINT, buildGraph, checkoutLabel, checkoutOf, folderShares, graphifyVersion, loadGraph, suggestExcludes, versionSupported,
+  type FolderShare,
+} from "./graph";
 import { listOpen } from "./tasks";
 import { EngineError } from "./types";
 
@@ -86,6 +89,10 @@ function handovers(e: Engine, json: boolean, out: (s: string) => void): void {
   }
 }
 
+/** One line per top-level folder, with its listed subfolders indented below it. */
+const shareLines = (folders: (FolderShare & { sub: FolderShare[] })[]): string =>
+  folders.map((f) => `  ${f.folder} ${f.percent}%\n` + f.sub.map((s) => `    ${s.folder} ${s.percent}%\n`).join("")).join("");
+
 const MAP_OFF = "the code map is off (code_map.enabled is false in .estack/policy.yaml)\n";
 const NOT_FOUND = `code map off: Graphify not found. Install it with ${INSTALL_HINT}, then add a code_map block to .estack/policy.yaml yourself (see /estack:setup) and run "estack map update".\n`;
 const NOT_APPLIED = "policy.yaml already exists, so --code-map and --exclude were not applied; to change the code map, edit the code_map block in .estack/policy.yaml yourself.\n";
@@ -124,7 +131,7 @@ function mapStatus(e: Engine, json: boolean, out: (s: string) => void): void {
   for (const c of checkouts) {
     if (!c.built) { out(`${c.label}: not built\n`); continue; }
     out(`${c.label}: built at ${c.built_at_commit ?? "unknown commit"}, ${c.entries} entries, ${c.files} files\n`);
-    out("  " + c.folders.map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+    out(shareLines(c.folders));
   }
   if (last_failure) out(`last build failure (${last_failure.at}): ${last_failure.error}\n`);
 }
@@ -168,7 +175,7 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
             } else {
               io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms\n` : `map build failed: ${r.error}\n`);
               const g = r.ok ? loadGraph(checkout) : null;
-              if (g) io.out("folder shares: " + folderShares(g).slice(0, 10).map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+              if (g) io.out("folder shares:\n" + shareLines(folderShares(g).slice(0, 10)));
             }
           }
         } finally {

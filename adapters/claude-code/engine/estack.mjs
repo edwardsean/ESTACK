@@ -35159,14 +35159,21 @@ function mappedFiles(checkout) {
   }
 }
 function folderShares(g) {
-  const counts = /* @__PURE__ */ new Map();
-  for (const n of g.nodes.values()) {
-    const i = n.file.lastIndexOf("/");
-    const folder = i < 0 ? "." : n.file.slice(0, i);
-    counts.set(folder, (counts.get(folder) ?? 0) + 1);
-  }
   const total = g.nodes.size || 1;
-  return [...counts].map(([folder, nodes]) => ({ folder, nodes, percent: Math.round(nodes / total * 100) })).sort((a, b) => b.nodes - a.nodes || a.folder.localeCompare(b.folder));
+  const ranked = (counts) => [...counts].map(([folder, nodes]) => ({ folder, nodes, percent: Math.round(nodes / total * 100) })).sort((a, b) => b.nodes - a.nodes || a.folder.localeCompare(b.folder));
+  const top = /* @__PURE__ */ new Map();
+  const second = /* @__PURE__ */ new Map();
+  for (const n of g.nodes.values()) {
+    const parts = n.file.split("/");
+    const first = parts.length > 1 ? parts[0] : "(root)";
+    top.set(first, (top.get(first) ?? 0) + 1);
+    if (parts.length > 2) {
+      const sub = second.get(first) ?? second.set(first, /* @__PURE__ */ new Map()).get(first);
+      const folder = `${parts[0]}/${parts[1]}`;
+      sub.set(folder, (sub.get(folder) ?? 0) + 1);
+    }
+  }
+  return ranked(top).map((f, i) => ({ ...f, sub: i < 3 ? ranked(second.get(f.folder) ?? /* @__PURE__ */ new Map()).slice(0, 3) : [] }));
 }
 function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
   const started = Date.now();
@@ -46100,6 +46107,9 @@ function handovers(e, json2, out) {
 `);
   }
 }
+var shareLines = (folders) => folders.map((f) => `  ${f.folder} ${f.percent}%
+` + f.sub.map((s) => `    ${s.folder} ${s.percent}%
+`).join("")).join("");
 var MAP_OFF = "the code map is off (code_map.enabled is false in .estack/policy.yaml)\n";
 var NOT_FOUND = `code map off: Graphify not found. Install it with ${INSTALL_HINT}, then add a code_map block to .estack/policy.yaml yourself (see /estack:setup) and run "estack map update".
 `;
@@ -46147,7 +46157,7 @@ function mapStatus(e, json2, out) {
     }
     out(`${c.label}: built at ${c.built_at_commit ?? "unknown commit"}, ${c.entries} entries, ${c.files} files
 `);
-    out("  " + c.folders.map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+    out(shareLines(c.folders));
   }
   if (last_failure) out(`last build failure (${last_failure.at}): ${last_failure.error}
 `);
@@ -46194,7 +46204,7 @@ function dispatch(cmd, rest, io) {
 ` : `map build failed: ${r.error}
 `);
               const g = r.ok ? loadGraph(checkout) : null;
-              if (g) io.out("folder shares: " + folderShares(g).slice(0, 10).map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+              if (g) io.out("folder shares:\n" + shareLines(folderShares(g).slice(0, 10)));
             }
           }
         } finally {

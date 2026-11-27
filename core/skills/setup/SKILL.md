@@ -99,7 +99,7 @@ Report each line it prints. It creates `.estack/policy.yaml` and `.estack/brief.
 
 `.estack/brief.md` is for the owner to fill in: it is where the project's goals and constraints go, and the engine does not write them for you. Init is safe to re-run and never overwrites an existing file. The repository is opted in once `.estack/policy.yaml` exists.
 
-With the map on, init builds it and prints the folder shares, the biggest folders by share of the map. Show them and ask whether any big folder is a copy of other code, such as a vendored library or a mirrored package. If one is, tell the owner to edit the `exclude:` line under `code_map` in `.estack/policy.yaml` to include the glob, for example `exclude: ["upstream/**"]` (add it to the existing list if there is one), and let them make the edit themselves. The agent cannot edit that file.
+With the map on, init builds it and prints the folder shares: how much of the map each top-level folder takes, largest first, with the largest subfolders of the three biggest indented below them (`estack map status` shows the same). Show them and ask whether any big folder is a copy of other code, such as a vendored library or a mirrored package. If one is, tell the owner to edit the `exclude:` line under `code_map` in `.estack/policy.yaml` to include the glob, for example `exclude: ["upstream/**"]` (add it to the existing list if there is one), and let them make the edit themselves. The agent cannot edit that file.
 
 Then tell the owner to commit `.estack/` themselves. Report that they should run, in their own terminal:
 

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
-import { buildGraph, checkoutLabel, INSTALL_HINT, loadGraph, mappedFiles, suggestExcludes, versionSupported, writeIgnore } from "../src/graph";
+import { buildGraph, checkoutLabel, folderShares, INSTALL_HINT, loadGraph, mappedFiles, suggestExcludes, versionSupported, writeIgnore } from "../src/graph";
 import { initRepo } from "../src/policy";
 import { startTask } from "../src/tasks";
 import { fakeExec, HAS_GRAPHIFY, makeRepo, writeFakeGraph } from "./helpers";
@@ -55,6 +55,23 @@ describe("graph adapter", () => {
     expect(g.edges[0]).toMatchObject({ relation: "calls", confidence: "EXTRACTED", line: 4 });
     expect(mappedFiles(dir)).toEqual(new Set(["src/util.ts"]));
     expect(loadGraph(makeRepo())).toBeNull();
+  });
+
+  test("folderShares groups by top-level folder and lists the largest folders' biggest subfolders", () => {
+    const dir = makeRepo();
+    const counts: [string, number][] = [
+      ["src/a.ts", 2], ["src/orders/x.ts", 3], ["src/orders/deep/y.ts", 1], ["src/billing/z.ts", 2], ["src/ui/w.ts", 1], ["src/misc/m.ts", 1],
+      ["lib/p/q.ts", 3], ["lib/r.ts", 2], ["index.ts", 3], ["tools/a/t.ts", 2],
+    ];
+    writeFakeGraph(dir, counts.flatMap(([f, n]) => Array.from({ length: n }, (_, i) => ({ id: `${f}#${i}`, label: `f${i}()`, source_file: f, source_location: `L${i + 2}` }))), []);
+    expect(folderShares(loadGraph(dir)!)).toEqual([
+      { folder: "src", nodes: 10, percent: 50, sub: [
+        { folder: "src/orders", nodes: 4, percent: 20 }, { folder: "src/billing", nodes: 2, percent: 10 }, { folder: "src/misc", nodes: 1, percent: 5 },
+      ] },
+      { folder: "lib", nodes: 5, percent: 25, sub: [{ folder: "lib/p", nodes: 3, percent: 15 }] },
+      { folder: "(root)", nodes: 3, percent: 15, sub: [] },
+      { folder: "tools", nodes: 2, percent: 10, sub: [] },
+    ]);
   });
 
   test("checkoutLabel names main and task worktrees", () => {
