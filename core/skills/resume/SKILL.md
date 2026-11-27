@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 Continue work from the state the last session recorded.
 
-1. Call the estack `resume` tool. Pass the task id if one was given.
+1. Call the estack `resume` tool. Pass the task id if one was given. If the start-of-session hint listed several handovers, or said a handover's session may still be running, ask the owner which one to resume (each line starts with its id, such as `#12`) and pass that as `handover_id`. Do not resume a handover whose session may still be running unless the owner says that session is finished.
 2. Read every file it lists before changing anything. The recorded state says where things stood, not what the code says now.
 3. Tell the owner, briefly: the goal, the remaining plan, and each task's next step.
 4. Continue under the rules in `${CLAUDE_PLUGIN_ROOT}/skills/poteto-mode/SKILL.md`. Trust the recorded steps and decisions, and re-read the code.

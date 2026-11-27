@@ -34616,10 +34616,13 @@ function contextTokens(transcriptPath) {
     }
   }
 }
+var FALLBACK_WINDOW_TOKENS = 1e6;
 function contextRatio(transcriptPath, windowTokens) {
   if (!transcriptPath || !(windowTokens > 0)) return null;
   const t = contextTokens(transcriptPath);
-  return t === null ? null : t / windowTokens;
+  if (t === null) return null;
+  if (t <= windowTokens) return t / windowTokens;
+  return t <= FALLBACK_WINDOW_TOKENS ? t / FALLBACK_WINDOW_TOKENS : null;
 }
 
 // engine/src/tasks.ts
@@ -34892,9 +34895,10 @@ function saveSessionHandover(e, input2, actor, auto = false) {
   if (!input2.workers_done && !auto) {
     const busy = busyWorkerTasks(e, actor.session_id);
     if (busy.length > 0) {
+      const noTest = busy.some((v) => !v.steps.some((s) => s.name === "test"));
       throw new EngineError(
         "BAD_EVIDENCE",
-        `workers are still mid-task: ${busy.map((v) => `#${v.task.id} next: ${v.next?.name}`).join(", ")}; wait for them or pass workers_done`
+        `workers are still mid-task: ${busy.map((v) => `#${v.task.id} next: ${v.next?.name}`).join(", ")}; wait for them or pass workers_done${noTest ? " (a worker-bound task with no test step counts as busy until it closes; pass workers_done if the workers are finished)" : ""}`
       );
     }
   }
@@ -34923,6 +34927,20 @@ function saveSessionHandover(e, input2, actor, auto = false) {
   };
   return tx(e, () => insertHandover(e, "session", null, actor, auto, body));
 }
+function openBoundIds(e, session_id) {
+  return e.db.prepare(
+    `SELECT DISTINCT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+     WHERE t.status = 'open' AND b.session_id = ? ORDER BY t.id`
+  ).all(session_id).map((r) => r.id);
+}
+function activityAfter(e, h) {
+  const saved = e.db.prepare(
+    "SELECT id FROM events WHERE kind = 'handover_saved' AND json_extract(payload_json, '$.id') = ? ORDER BY id LIMIT 1"
+  ).get(h.id);
+  if (!saved) return null;
+  const row = e.db.prepare("SELECT at FROM events WHERE id > ? AND actor LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1").get(saved.id, `${h.from_session.replace(/[\\%_]/g, "\\$&")}/%`);
+  return row?.at ?? null;
+}
 function pendingHandovers(e) {
   const rows = e.db.prepare("SELECT * FROM handovers WHERE consumed_at IS NULL ORDER BY id").all().map(toHandover);
   const newestSession = /* @__PURE__ */ new Map();
@@ -34932,28 +34950,44 @@ function pendingHandovers(e) {
   const newestTask = /* @__PURE__ */ new Map();
   for (const h of rows) if (h.kind === "task" && h.task_id !== null && open2.has(h.task_id)) newestTask.set(h.task_id, h);
   const tasks = [...newestTask.values()].filter((h) => !sessions.some((s) => s.id > h.id && s.body.tasks.some((t) => t.task.id === h.task_id)));
-  return [...sessions, ...tasks].sort((a, b) => a.id - b.id);
+  const live = sessions.filter((h) => h.body.plan.length > 0 || openBoundIds(e, h.from_session).length > 0);
+  return [...live, ...tasks].sort((a, b) => a.id - b.id);
 }
 function bind(e, task_id, actor) {
   const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id IS ?").get(task_id, actor.session_id, actor.agent_id ?? null);
   if (dup) return;
   e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso2(e));
 }
-function consumeHandover(e, actor, task_id) {
-  return tx(e, () => {
+function consumeHandover(e, actor, sel = {}) {
+  const { task_id, handover_id } = sel;
+  const result = tx(e, () => {
     let handover = null;
     let ids;
-    if (task_id !== void 0) {
-      const v = getTask(e, task_id);
-      if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${v.task.status}`);
+    const openTask = (id) => {
+      const v = getTask(e, id);
+      if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${id} is ${v.task.status}`);
+    };
+    if (handover_id !== void 0) {
+      const row = e.db.prepare("SELECT * FROM handovers WHERE id = ? AND consumed_at IS NULL").get(handover_id);
+      if (!row) throw new EngineError("NO_TASK", `no handover #${handover_id} waiting`);
+      handover = toHandover(row);
+      if (handover.kind === "task") {
+        openTask(handover.task_id);
+        ids = [handover.task_id];
+      } else ids = [];
+    } else if (task_id !== void 0) {
+      openTask(task_id);
       const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'task' AND task_id = ? AND consumed_at IS NULL ORDER BY id DESC LIMIT 1").get(task_id);
       handover = row ? toHandover(row) : null;
       ids = [task_id];
     } else {
-      const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND consumed_at IS NULL ORDER BY id DESC LIMIT 1").get();
-      if (!row) throw new EngineError("NO_TASK", "no session handover waiting");
-      handover = toHandover(row);
-      ids = handover.body.tasks.map((t) => t.task.id);
+      handover = pendingHandovers(e).filter((h2) => h2.kind === "session").at(-1) ?? null;
+      if (!handover) throw new EngineError("NO_TASK", "no session handover waiting");
+      ids = [];
+    }
+    if (handover?.kind === "session") {
+      const listed = handover.body.tasks.map((t) => t.task.id);
+      ids = [.../* @__PURE__ */ new Set([...openBoundIds(e, handover.from_session), ...listed])].sort((a, b) => a - b);
     }
     if (handover) {
       e.db.prepare("UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE id = ?").run(actorId(actor), iso2(e), handover.id);
@@ -34971,9 +35005,16 @@ function consumeHandover(e, actor, task_id) {
       bind(e, id, actor);
       views.push(v);
     }
-    logEvent(e, actor, "resumed", task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });
+    logEvent(e, actor, "resumed", handover?.task_id ?? task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });
     return { handover, views };
   });
+  const h = result.handover;
+  if (h?.kind === "session") {
+    const from = { session_id: h.from_session };
+    const tasks = result.views.map((v) => buildTaskBody(e, v, {}, from, h.auto));
+    return { handover: { ...h, body: { ...h.body, tasks } }, views: result.views };
+  }
+  return result;
 }
 
 // engine/src/match.ts
@@ -35210,38 +35251,65 @@ function ctxOut(eventName, additionalContext) {
   return { hookSpecificOutput: { hookEventName: eventName, additionalContext } };
 }
 var MAX_LISTED_HANDOVERS = 10;
-function compactState(h) {
-  const b = h.body;
+var LIVE_SESSION_MS = 10 * 60 * 1e3;
+var FRESH_COMPACT_MS = 10 * 60 * 1e3;
+function compactState(b, tasks) {
   const out = [];
   if (b.goal) out.push(`goal: ${b.goal}`);
-  if (b.plan.length) out.push(`plan: ${b.plan.join("; ")}`);
-  for (const t of b.tasks) out.push(`#${t.task.id} next: ${t.next_step ?? "none"}`);
+  if (b.plan?.length) out.push(`plan: ${b.plan.join("; ")}`);
+  for (const t of tasks) out.push(`#${t.task.id} next: ${t.next_step ?? "none"}`);
   if (b.decisions.length) out.push(`decisions: ${b.decisions.map((d) => `${d.what} (${d.why})`).join("; ")}`);
   if (b.open_questions.length) out.push(`open questions: ${b.open_questions.join("; ")}`);
-  const files = [.../* @__PURE__ */ new Set([...b.files ?? [], ...b.tasks.flatMap((t) => t.files)])];
+  const files = [.../* @__PURE__ */ new Set([...b.files ?? [], ...tasks.flatMap((t) => t.files)])];
   if (files.length) out.push(`files: ${files.join(", ")}`);
   return out;
 }
-var handoverLabel = (h) => h.kind === "session" ? "session" : `#${h.task_id}`;
+function dur(ms) {
+  const s = Math.max(0, Math.floor(ms / 1e3));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 48 * 3600) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+var since = (e, at) => dur(e.now().getTime() - Date.parse(at));
+var handoverKind = (h) => h.kind === "session" ? "session" : `task #${h.task_id}`;
+var handoverGoal = (h) => (h.body.kind === "session" ? h.body.goal : h.body.task.title).slice(0, 60) || "(none)";
+function stillRunning(e, h) {
+  const at = activityAfter(e, h);
+  return at !== null && e.now().getTime() - Date.parse(at) < LIVE_SESSION_MS ? at : null;
+}
+function listLine(e, h) {
+  const active = stillRunning(e, h);
+  return `#${h.id} ${handoverKind(h)} from ${h.from_session.slice(0, 8)} ${since(e, h.created_at)} ago goal: ${handoverGoal(h)}${active ? ` (that session was active ${since(e, active)} ago; it may still be running)` : ""}`;
+}
 function handoverLines(e, ev) {
   try {
     if (ev.source === "compact") {
       const h = latestSessionHandover(e, ev.session_id);
-      if (!h) return [];
+      const reread = "Re-read the listed files before changing anything.";
+      if (h && h.auto && e.now().getTime() - Date.parse(h.created_at) < FRESH_COMPACT_MS) {
+        const b = h.body;
+        return [...compactState(b, b.tasks), `estack: context was compacted; this is the recorded state of your work. ${reread}`];
+      }
+      const actor = { session_id: ev.session_id };
+      const tasks = sessionTasks(e, ev.session_id).map((v) => buildTaskBody(e, v, {}, actor, true));
+      if (tasks.length === 0) return [];
       return [
-        ...compactState(h),
-        "estack: context was compacted; this is the recorded state of your work. Re-read the listed files before changing anything."
+        ...compactState({ decisions: [], open_questions: [] }, tasks),
+        `estack: context was compacted; these are your open tasks as they are now. ${reread}`
       ];
     }
     const pending = pendingHandovers(e);
-    if (pending.length === 1) {
+    if (pending.length === 1 && stillRunning(e, pending[0]) === null) {
       const h = pending[0];
-      return [`estack: a handover is waiting (${handoverLabel(h)}, ${h.created_at}). Call the resume tool now${h.kind === "task" ? ` with task_id ${h.task_id}` : ""}, then re-read the files it lists and continue.`];
+      return [`estack: a handover is waiting (#${h.id}, ${handoverKind(h)}, ${since(e, h.created_at)} ago, goal: ${handoverGoal(h)}). Call the resume tool now${h.kind === "task" ? ` with task_id ${h.task_id}` : ""}, then re-read the files it lists and continue.`];
     }
-    if (pending.length > 1) {
+    if (pending.length > 0) {
+      const extra = pending.length - MAX_LISTED_HANDOVERS;
       return [
-        ...pending.slice(0, MAX_LISTED_HANDOVERS).map((h) => `handover ${handoverLabel(h)}, ${h.created_at}`),
-        "estack: several handovers are waiting; ask the owner which to resume."
+        ...pending.slice(0, MAX_LISTED_HANDOVERS).map((h) => listLine(e, h)),
+        ...extra > 0 ? [`+${extra} more`] : [],
+        pending.length === 1 ? "estack: a handover is waiting but its session may still be running; ask the owner whether to resume it, then call the resume tool with handover_id." : "estack: several handovers are waiting; ask the owner which one, then call the resume tool with handover_id."
       ];
     }
   } catch {
@@ -35256,7 +35324,7 @@ function sessionStart(e, ev) {
 }
 function preCompact(e, ev) {
   try {
-    if (sessionTasks(e, ev.session_id).length > 0) saveSessionHandover(e, {}, actorOf({ session_id: ev.session_id, ...ev.agent_id ? { agent_id: ev.agent_id } : {} }), true);
+    if (!ev.agent_id && sessionTasks(e, ev.session_id).length > 0) saveSessionHandover(e, {}, { session_id: ev.session_id }, true);
   } catch {
   }
   return null;
@@ -35271,16 +35339,14 @@ function userPromptSubmit(e, ev) {
   const lines2 = [`estack: task #${v.task.id} next step: ${v.next.name}`];
   try {
     const { threshold, window_tokens } = e.policy.handover;
-    const ratio = contextRatio(ev.transcript_path, window_tokens);
+    const seen = e.db.prepare(
+      `SELECT 1 FROM events WHERE kind = 'handover_suggested' AND json_extract(payload_json, '$.session_id') = ?
+       AND json_extract(payload_json, '$.task_id') = ? AND json_extract(payload_json, '$.step') = ? LIMIT 1`
+    ).get(ev.session_id, v.task.id, v.next.name);
+    const ratio = seen ? null : contextRatio(ev.transcript_path, window_tokens);
     if (ratio !== null && ratio >= threshold) {
-      const seen = e.db.prepare(
-        `SELECT 1 FROM events WHERE kind = 'handover_suggested' AND json_extract(payload_json, '$.task_id') = ?
-         AND json_extract(payload_json, '$.step') = ? LIMIT 1`
-      ).get(v.task.id, v.next.name);
-      if (!seen) {
-        logEvent(e, actorOf(ev), "handover_suggested", v.task.id, { task_id: v.task.id, step: v.next.name, ratio });
-        lines2.push(`estack: context is ${Math.round(ratio * 100)}% full. Finish the current step and collect any running workers, then call the handover tool and tell the owner to run /clear; the new session picks up automatically. Use /compact instead only if the conversation itself must be kept.`);
-      }
+      logEvent(e, actorOf(ev), "handover_suggested", v.task.id, { session_id: ev.session_id, task_id: v.task.id, step: v.next.name, ratio });
+      lines2.push(`estack: context is ${Math.round(ratio * 100)}% full. Finish the current step and collect any running workers, then call the handover tool and tell the owner to run /clear; the new session picks up automatically. Use /compact instead only if the conversation itself must be kept.`);
     }
   } catch {
   }
@@ -45155,10 +45221,14 @@ function createServer(cwd, deps = {}) {
     return { ...h, next: "Handover saved. Tell the owner: run /clear; the new session will load this automatically." };
   }));
   server.registerTool("resume", {
-    description: "Pick up a saved handover (the session's, or a task's with task_id) and bind its open tasks to this session.",
-    inputSchema: { task_id: external_exports.number().int().optional(), actor: actorSchema }
+    description: "Pick up a saved handover (the newest session one, a task's with task_id, or exactly one with handover_id) and bind its open tasks to this session.",
+    inputSchema: {
+      task_id: external_exports.number().int().optional(),
+      handover_id: external_exports.number().int().optional().describe("the handover the owner chose, from the start-of-session list"),
+      actor: actorSchema
+    }
   }, tool((e, a, actor) => {
-    const { handover, views } = consumeHandover(e, actor, a.task_id);
+    const { handover, views } = consumeHandover(e, actor, { task_id: a.task_id, handover_id: a.handover_id });
     const body = handover?.body;
     const goal = (body?.kind === "session" ? body.goal : "") || (views.length === 1 ? views[0].task.goal : "") || "(none recorded)";
     const next = views.map((v) => v.next ? `#${v.task.id} ${v.next.name}` : `#${v.task.id} done`).join(", ");
@@ -45369,7 +45439,7 @@ function handovers(e, json2, out) {
   for (const h of all) {
     const bodies = h.body.kind === "session" ? h.body.tasks : [h.body];
     const next = bodies.map((t) => `#${t.task.id} ${t.next_step ?? "done"}`).join(", ");
-    out(`${h.kind === "session" ? "session" : `#${h.task_id}`} ${h.created_at} from ${h.from_session} ${h.auto ? "auto" : "manual"} next: ${next}
+    out(`#${h.id} ${h.kind === "session" ? "session" : `task #${h.task_id}`} ${h.created_at} from ${h.from_session} ${h.auto ? "auto" : "manual"} next: ${next}
 `);
   }
 }

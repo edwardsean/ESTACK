@@ -148,20 +148,30 @@ is not a security boundary. Run them from a normal terminal.
 Long sessions fill their context. The engine measures it and, past
 `handover.threshold` (default 0.5 of `handover.window_tokens`, default 200000),
 suggests a handover. Set `window_tokens: 1000000` in `.estack/policy.yaml` on a
-1M-token model.
+1M-token model. If the context grows past `window_tokens` anyway, the engine
+measures it against 1000000 instead.
 
 1. Finish the step you are on and let the workers report.
 2. Run `/estack:handover`. It records the goal, the remaining plan, decisions,
    open questions, and the state of every open task.
 3. Run `/clear`. With one handover waiting, the new session is told to load it and
-   does so on its own; if several are waiting, it lists them and asks you which
-   (or run `/estack:resume <task>`). It re-reads the files before it changes
-   anything.
+   does so on its own. If several are waiting, it lists each one by id (`#12
+   session from 1a2b3c4d 5m ago goal: ...`) and asks you which; the session then
+   resumes that one with `handover_id`. You can also run `/estack:resume <task>`.
+   It re-reads the files before it changes anything.
+
+A handover is not loaded on its own when its session logged any activity in
+the last 10 minutes after saving it: that session may still be running, for
+example a second CTO session in another terminal. The new session lists it
+with "it may still be running" and asks you first. A session handover whose
+session has no open task left and no plan left is finished work and is not
+offered at all.
 
 Use `/compact` only when the conversation itself must be kept. The engine saves
 state before compaction and restores it afterward. A handover from the CTO
-moves every task bound to the session to the new session. `/estack:resume`
-picks one up by hand, and `estack handovers` lists what is waiting.
+moves every task bound to the old session to the new session, including tasks
+started after the handover was saved. `/estack:resume` picks one up by hand,
+and `estack handovers` lists what is waiting, each line starting with its id.
 
 ## Hooks
 
@@ -171,9 +181,9 @@ Every hook goes through `hooks/scripts/estack-hook.sh`, which runs the bundled e
 |---|---|
 | `PreToolUse` (edit tools, `Bash`, estack MCP tools) | Denies an edit with no open task, an edit to a protected path, a push without verify evidence, any `ask` action from a worker, and the hard-coded set (touching `.estack/state.db`, `estack skip`/`cancel`/`override`, `--no-verify` or `git commit -n`, `core.hooksPath` in any case, mentioning `CLAUDECODE`). Asks the owner for push, merge, deploy and migration. Fails closed if the engine errors |
 | `PostToolUse` (`Bash`) | Records an approved command in the events log. Never blocks |
-| `SessionStart` | Tells the session the repository is opted in and lists open tasks. After `/clear` it hints that a handover is waiting, and after a compaction it restores the saved state |
-| `UserPromptSubmit` | Reminds the session of its task's next step, and suggests a handover, once per task step, only when the session has a bound task with a next step and its context is past `handover.threshold` of `handover.window_tokens` |
-| `PreCompact` | Saves a session handover before the conversation is compacted, only when the session has open tasks. Never blocks |
+| `SessionStart` | Tells the session the repository is opted in and lists open tasks. On every start that is not a compaction (startup, `/clear`, resume) it hints at waiting handovers; it tells the session to load one on its own only when exactly one is waiting and that handover's session has not been active in the last 10 minutes, and otherwise lists them by id and asks the owner. After a compaction it restores the state saved for that compaction, or shows the session's open tasks as they are now |
+| `UserPromptSubmit` | Every prompt: reminds the session of its task's next step. Once per task step, and only past `handover.threshold` of the context window: suggests a handover |
+| `PreCompact` | Saves a session handover before the conversation is compacted, only when the main session (not a worker) has open tasks. Never blocks |
 | `Stop` | Blocks once when a session task has commits made after the task started but no evidence on its implement or fix step |
 | `SubagentStop` | The same check for the worker's own tasks, and also blocks when implement or fix is settled but the test step is not |
 
