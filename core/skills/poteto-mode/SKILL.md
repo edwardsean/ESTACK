@@ -99,6 +99,10 @@ Where a gated action ran and nothing asked or denied, the hooks are not firing. 
 
 In a repository with no `.estack/policy.yaml` none of this applies and no prompt appears. Do not tell a user their work is gated without checking that the file exists.
 
+## Context and handover
+
+Keep your own context small. Delegate reading and implementation to worker subagents, and take back short reports. When the engine says context is filling, finish the step you are on, collect your workers, run `/{{estack:ns}}:handover`, and ask the owner to `/clear`. Never hand over mid-step. After a compaction or a `/clear`, trust the recorded state, and re-read the files before you edit them.
+
 ## Subagents
 
 Each role is a **seat**, and each seat is one plugin subagent with its own brief, tool list, default model, and default effort. You pick a seat by the job, and the seat's line in `{{estack:models_file}}` picks its model and effort for this call. The seat catalog lives in the `estack-seats` skill, and the same table is at `skills/estack-seats/SKILL.md` under the plugin root.

@@ -127,14 +127,14 @@ along with `.estack/brief.md`, which the owner fills in. Every change appends a
 row to an events log.
 
 **MCP tools.** The plugin registers an `estack` MCP server (`core/.mcp.json`)
-that exposes four tools: `start_task`, `status`, `complete_step` and
-`run_check`. For `test` and `verify` the engine runs the command fixed in
+that exposes six tools: `start_task`, `status`, `complete_step`,
+`run_check`, `handover` and `resume`. For `test` and `verify` the engine runs the command fixed in
 `policy.yaml` itself, in the task's worktree, and never trusts evidence
 described in words.
 
 **CLI.** Run `npm link` once in the estack clone to get `estack` on your PATH,
 or call `node --no-warnings adapters/claude-code/engine/estack.mjs`. Commands:
-`init`, `status [--json]`, `run --task <id> --step <test|verify>`, `skip`,
+`init`, `status [--json]`, `handovers`, `run --task <id> --step <test|verify>`, `skip`,
 `cancel`, `override`, and `mcp`. Exit codes: 0 on success, 1 for an engine or
 internal error, 2 for a usage error, and 3 when `run` ran the check but it
 failed.
@@ -142,6 +142,24 @@ failed.
 **Owner-only commands.** `skip`, `cancel` and `override` refuse to run inside
 an agent session (when `CLAUDECODE=1`), as a guard against accidental use; it
 is not a security boundary. Run them from a normal terminal.
+
+### Handover
+
+Long sessions fill their context. The engine measures it and, past
+`handover.threshold` (default 0.5 of `handover.window_tokens`, default 200000),
+suggests a handover. Set `window_tokens: 1000000` in `.estack/policy.yaml` on a
+1M-token model.
+
+1. Finish the step you are on and let the workers report.
+2. Run `/estack:handover`. It records the goal, the remaining plan, decisions,
+   open questions, and the state of every open task.
+3. Run `/clear`. The new session resumes by itself from the recorded state and
+   re-reads the files before it changes anything.
+
+Use `/compact` only when the conversation itself must be kept. The engine saves
+state before compaction and restores it afterward. A handover from the CTO
+moves every task bound to the session to the new session. `/estack:resume`
+picks one up by hand, and `estack handovers` lists what is waiting.
 
 ## Hooks
 
@@ -151,8 +169,9 @@ Every hook goes through `hooks/scripts/estack-hook.sh`, which runs the bundled e
 |---|---|
 | `PreToolUse` (edit tools, `Bash`, estack MCP tools) | Denies an edit with no open task, an edit to a protected path, a push without verify evidence, any `ask` action from a worker, and the hard-coded set (touching `.estack/state.db`, `estack skip`/`cancel`/`override`, `--no-verify` or `git commit -n`, `core.hooksPath` in any case, mentioning `CLAUDECODE`). Asks the owner for push, merge, deploy and migration. Fails closed if the engine errors |
 | `PostToolUse` (`Bash`) | Records an approved command in the events log. Never blocks |
-| `SessionStart` | Tells the session the repository is opted in and lists open tasks |
-| `UserPromptSubmit` | Reminds the session of its task's next step |
+| `SessionStart` | Tells the session the repository is opted in and lists open tasks. After `/clear` it hints that a handover is waiting, and after a compaction it restores the saved state |
+| `UserPromptSubmit` | Reminds the session of its task's next step, and suggests a handover once context passes `handover.threshold` of `handover.window_tokens` |
+| `PreCompact` | Saves a handover before the conversation is compacted. Never blocks |
 | `Stop` | Blocks once when a session task has commits made after the task started but no evidence on its implement or fix step |
 | `SubagentStop` | The same check for the worker's own tasks, and also blocks when implement or fix is settled but the test step is not |
 
@@ -212,8 +231,8 @@ estack is being built in phases, each one usable on its own
 | 1 | `core/` plus a generated Claude Code plugin; renamed from pstack to estack | Done |
 | 2 | The engine: tasks, required steps, evidence, MCP tools, CLI | Done |
 | 3 | Hooks and git hooks that enforce the engine | Done |
-| 4 | Handover: continue a task in a fresh session from recorded state | Next |
-| 5 | Code map on [Graphify](https://github.com/Graphify-Labs/graphify): agents see existing code before writing new code, and reuse searches count as evidence | Planned |
+| 4 | Handover: continue a task in a fresh session from recorded state | Done |
+| 5 | Code map on [Graphify](https://github.com/Graphify-Labs/graphify): agents see existing code before writing new code, and reuse searches count as evidence | Next |
 | 6 | Parallel workers in their own worktrees, with claims so two never build the same thing | Planned |
 | 7 | A second coding agent (Cursor or OpenCode) from the same `core/` | Planned |
 
