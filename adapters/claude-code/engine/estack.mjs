@@ -14638,7 +14638,21 @@ CREATE TABLE handovers (
   consumed_by TEXT, consumed_at TEXT
 );
 `;
-var MIGRATIONS = [MIGRATION_1, MIGRATION_2];
+var MIGRATION_3 = `
+CREATE TABLE code_queries (
+  id INTEGER PRIMARY KEY, task_id INTEGER REFERENCES tasks(id), tool TEXT NOT NULL,
+  input TEXT NOT NULL, result_json TEXT NOT NULL, ok INTEGER NOT NULL, auto INTEGER NOT NULL,
+  graph_version TEXT, checkout TEXT NOT NULL, recorded_by TEXT NOT NULL, at TEXT NOT NULL
+);
+CREATE TABLE duplicates (
+  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id), commit_sha TEXT NOT NULL,
+  new_symbol TEXT NOT NULL, new_file TEXT NOT NULL, new_line INTEGER NOT NULL,
+  existing_symbol TEXT NOT NULL, existing_file TEXT NOT NULL, existing_line INTEGER NOT NULL,
+  status TEXT NOT NULL, reason TEXT, closed_by TEXT, found_at TEXT NOT NULL, closed_at TEXT,
+  UNIQUE (task_id, new_file, new_symbol, existing_file, existing_symbol)
+);
+`;
+var MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3];
 function openDb(path) {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA busy_timeout=5000");
@@ -14683,9 +14697,9 @@ function toResult(r, started) {
 var MAX_BUFFER = 64 * 1024 * 1024;
 var realExec = {
   // git/gh output is parsed (e.g. "not a git repository"), so pin the C locale. shell() runs the project's own commands and keeps the user's.
-  run(file2, args, { cwd, timeoutMs }) {
+  run(file2, args, { cwd, timeoutMs, env: extra }) {
     const t = Date.now();
-    const env = { ...process.env, LC_ALL: "C" };
+    const env = { ...process.env, LC_ALL: "C", ...extra };
     return toResult(spawnSync(file2, args, { cwd, env, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_BUFFER }), t);
   },
   shell(command, { cwd, timeoutMs }) {
@@ -34478,7 +34492,8 @@ var PolicySchema = external_exports.object({
   handover: external_exports.object({
     threshold: external_exports.number().gt(0).max(1).default(0.5),
     window_tokens: external_exports.number().int().positive().default(2e5)
-  }).default({ threshold: 0.5, window_tokens: 2e5 })
+  }).default({ threshold: 0.5, window_tokens: 2e5 }),
+  code_map: external_exports.object({ enabled: external_exports.boolean().default(false), exclude: strings.default([]) }).default({ enabled: false, exclude: [] })
 });
 function parsePolicy(yamlText) {
   let raw;
@@ -34498,7 +34513,8 @@ function loadPolicy(repo) {
   if (!repo.optedIn) throw new EngineError("NOT_OPTED_IN", "not an estack repository: run /estack:setup");
   return parsePolicy(readFileSync(join2(repo.estackDir, "policy.yaml"), "utf8"));
 }
-var DEFAULT_POLICY_YAML = `
+function defaultPolicyYaml(opts) {
+  return `
 # .estack/policy.yaml
 actions:
   auto:  [read, edit_in_task_worktree, run_tests, lint, commit, open_draft_pr]
@@ -34520,10 +34536,15 @@ exempt_paths: ["**/*.md", ".estack/brief.md", "docs/**"]   # editable with no ta
 commands:                 # the engine runs these itself for test and verify (section 7, Evidence)
   test:   "npm test"
   verify: "npm run build && npm run test:e2e"
+code_map:                 # Graphify code map (section 9 of the design)
+  enabled: ${opts.codeMap}   # false when Graphify is missing or finds no supported language
+  exclude: ${JSON.stringify(opts.exclude)}      # generated or copied code, kept out of the map
 # handover:               # when to suggest handing the session over (all optional)
 #   threshold: 0.5        # fraction of the context window in use
 #   window_tokens: 200000 # size of the context window
 `.trimStart();
+}
+var DEFAULT_POLICY_YAML = defaultPolicyYaml({ codeMap: false, exclude: [] });
 var DEFAULT_BRIEF_MD = `# Project brief
 
 ## Goals
@@ -34542,12 +34563,12 @@ Naming, testing and review habits agents should follow.
 
 Things agents must not change or build.
 `;
-function initRepo(cwd) {
+function initRepo(cwd, opts = {}) {
   const repo = findRepo(cwd);
   mkdirSync(repo.estackDir, { recursive: true });
   const created = [];
   const files = [
-    ["policy.yaml", DEFAULT_POLICY_YAML],
+    ["policy.yaml", defaultPolicyYaml({ codeMap: opts.codeMap ?? false, exclude: opts.exclude ?? [] })],
     ["brief.md", DEFAULT_BRIEF_MD],
     [".gitignore", "state.db*\n"]
   ];

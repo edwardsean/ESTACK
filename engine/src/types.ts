@@ -1,6 +1,6 @@
 export type ErrorCode =
   | "NOT_OPTED_IN" | "NOT_A_REPO" | "NO_TASK" | "OUT_OF_ORDER" | "BAD_EVIDENCE"
-  | "TASK_CLOSED" | "OWNER_ONLY" | "POLICY_INVALID";
+  | "TASK_CLOSED" | "OWNER_ONLY" | "POLICY_INVALID" | "MAP_OFF" | "MAP_BROKEN";
 
 export class EngineError extends Error {
   constructor(public code: ErrorCode, message: string) {

@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { expect, test } from "vitest";
-import { openDb } from "../src/db";
+import { DatabaseSync } from "node:sqlite";
+import { MIGRATION_1, MIGRATION_2, openDb } from "../src/db";
+import { realExec } from "../src/exec";
 import { DEFAULT_POLICY_YAML, initRepo, loadPolicy, parsePolicy } from "../src/policy";
 import { findRepo } from "../src/repo";
 import { makeRepo } from "./helpers";
@@ -70,7 +72,7 @@ test("openDb twice is idempotent and sets WAL", () => {
   openDb(path).close();
   const db = openDb(path);
   expect((db.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("wal");
-  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "2" });
+  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "3" });
   db.close();
 });
 
@@ -96,4 +98,41 @@ test("two connections writing at once both succeed", async () => {
   expect(await result).toBe("ok");
   expect((a.prepare("SELECT count(*) AS n FROM events").get() as { n: number }).n).toBe(1);
   a.close();
+});
+
+test("a version-2 database upgrades to 3 and keeps its rows", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "estack-mig3-")), "state.db");
+  const old = new DatabaseSync(path);
+  old.exec(MIGRATION_1);
+  old.exec(MIGRATION_2);
+  old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '2')").run();
+  old.prepare(`INSERT INTO tasks (id, title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at)
+    VALUES (1, 't', 'feature', 'g', 'd', 'open', 'main', '/x', 'abc', 's1/main', 't')`).run();
+  old.prepare("INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json) VALUES ('k', 1, 's1', 't', 0, '{}')").run();
+  old.close();
+  const db = openDb(path);
+  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "3" });
+  for (const t of ["code_queries", "duplicates"]) {
+    expect(db.prepare("SELECT COUNT(*) c FROM " + t).get()).toMatchObject({ c: 0 });
+  }
+  expect(db.prepare("SELECT COUNT(*) c FROM tasks").get()).toMatchObject({ c: 1 });
+  expect(db.prepare("SELECT COUNT(*) c FROM handovers").get()).toMatchObject({ c: 1 });
+  db.close();
+});
+
+test("policy without code_map behaves as phase 4", () => {
+  const phase4 = DEFAULT_POLICY_YAML.replace(/^code_map:.*\n(?:  .*\n)+/m, "");
+  expect(phase4).not.toContain("code_map");
+  expect(parsePolicy(phase4).code_map).toEqual({ enabled: false, exclude: [] });
+});
+
+test("initRepo writes code_map from its options", () => {
+  const dir = makeRepo();
+  initRepo(dir, { codeMap: true, exclude: ["dist/**"] });
+  expect(loadPolicy(findRepo(dir)).code_map).toEqual({ enabled: true, exclude: ["dist/**"] });
+});
+
+test("exec run passes extra env", () => {
+  const r = realExec.run("sh", ["-c", 'printf %s "$X"'], { cwd: tmpdir(), env: { X: "y" } });
+  expect(r.stdout).toBe("y");
 });

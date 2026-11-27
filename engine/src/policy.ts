@@ -14,6 +14,7 @@ export interface Policy {
   exempt_paths: string[];
   commands: { test?: string; verify?: string };
   handover: { threshold: number; window_tokens: number };
+  code_map: { enabled: boolean; exclude: string[] };
 }
 
 const strings = z.array(z.string());
@@ -32,6 +33,7 @@ const PolicySchema = z.object({
     threshold: z.number().gt(0).max(1).default(0.5),
     window_tokens: z.number().int().positive().default(200000),
   }).default({ threshold: 0.5, window_tokens: 200000 }),
+  code_map: z.object({ enabled: z.boolean().default(false), exclude: strings.default([]) }).default({ enabled: false, exclude: [] }),
 });
 
 export function parsePolicy(yamlText: string): Policy {
@@ -54,7 +56,8 @@ export function loadPolicy(repo: Repo): Policy {
   return parsePolicy(readFileSync(join(repo.estackDir, "policy.yaml"), "utf8"));
 }
 
-export const DEFAULT_POLICY_YAML = `
+export function defaultPolicyYaml(opts: { codeMap: boolean; exclude: string[] }): string {
+  return `
 # .estack/policy.yaml
 actions:
   auto:  [read, edit_in_task_worktree, run_tests, lint, commit, open_draft_pr]
@@ -76,10 +79,16 @@ exempt_paths: ["**/*.md", ".estack/brief.md", "docs/**"]   # editable with no ta
 commands:                 # the engine runs these itself for test and verify (section 7, Evidence)
   test:   "npm test"
   verify: "npm run build && npm run test:e2e"
+code_map:                 # Graphify code map (section 9 of the design)
+  enabled: ${opts.codeMap}   # false when Graphify is missing or finds no supported language
+  exclude: ${JSON.stringify(opts.exclude)}      # generated or copied code, kept out of the map
 # handover:               # when to suggest handing the session over (all optional)
 #   threshold: 0.5        # fraction of the context window in use
 #   window_tokens: 200000 # size of the context window
 `.trimStart();
+}
+
+export const DEFAULT_POLICY_YAML = defaultPolicyYaml({ codeMap: false, exclude: [] });
 
 export const DEFAULT_BRIEF_MD = `# Project brief
 
@@ -101,12 +110,12 @@ Things agents must not change or build.
 `;
 
 /** Write the default estack files and create the database. Never overwrites existing files. */
-export function initRepo(cwd: string): { created: string[] } {
+export function initRepo(cwd: string, opts: { codeMap?: boolean; exclude?: string[] } = {}): { created: string[] } {
   const repo = findRepo(cwd);
   mkdirSync(repo.estackDir, { recursive: true });
   const created: string[] = [];
   const files: [string, string][] = [
-    ["policy.yaml", DEFAULT_POLICY_YAML],
+    ["policy.yaml", defaultPolicyYaml({ codeMap: opts.codeMap ?? false, exclude: opts.exclude ?? [] })],
     ["brief.md", DEFAULT_BRIEF_MD],
     [".gitignore", "state.db*\n"],
   ];
