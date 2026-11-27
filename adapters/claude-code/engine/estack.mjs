@@ -35767,6 +35767,12 @@ function ensureDuplicateCheck(e, task_id) {
   if (!b.ok) throw new EngineError("MAP_BROKEN", `the duplicate check could not run: ${b.error}`);
   checkDuplicates(e, task_id);
 }
+function afterCommit(e, checkout) {
+  const branch = runBounded(e, checkout, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  if (!branch) return;
+  const row = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' AND cwd = ? AND branch = ? ORDER BY id DESC LIMIT 1").get(checkout, branch);
+  if (row) checkDuplicates(e, row.id);
+}
 function dismissDuplicate(e, input2) {
   const d = e.db.prepare("SELECT * FROM duplicates WHERE id = ?").get(input2.id);
   if (!d) throw new EngineError("NO_TASK", `no possible duplicate with id ${input2.id}`);
@@ -45868,17 +45874,11 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { chmodSync, existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { join as join7, resolve as resolve2 } from "node:path";
 var MANAGED_MARK = "# estack-managed-hook";
-var HOOKS = ["pre-commit", "pre-push"];
+var MAP_HOOKS = ["post-commit", "post-checkout", "post-merge", "post-rewrite"];
+var HOOKS = ["pre-commit", "pre-push", ...MAP_HOOKS];
 var shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
-function script(name, enginePath) {
-  const push = name === "pre-push";
-  const lines2 = [
-    "#!/bin/sh",
-    MANAGED_MARK,
-    `dir="$(dirname "$0")"`,
-    ...push ? ["input=$(cat)"] : [],
-    push ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || exit $?; done` : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || exit $?; done`,
-    `[ "$CLAUDECODE" = "1" ] || exit 0`,
+function resolveEngine(enginePath) {
+  return [
     `engine=${shq(enginePath)}`,
     // The recorded path sits in a versioned plugin cache folder that a plugin update replaces: fall back to the newest copy.
     `if [ ! -f "$engine" ]; then`,
@@ -45888,7 +45888,36 @@ function script(name, enginePath) {
     `  [ -n "$latest" ] || latest="$(printf '%s
 ' "$cands" | sort | tail -n 1)"`,
     `  if [ -n "$latest" ] && [ -f "$latest" ]; then engine="$latest"; fi`,
-    `fi`,
+    `fi`
+  ];
+}
+var isMapHook = (name) => MAP_HOOKS.includes(name);
+function mapScript(name, enginePath) {
+  const rewrite = name === "post-rewrite";
+  const lines2 = [
+    "#!/bin/sh",
+    MANAGED_MARK,
+    `dir="$(dirname "$0")"`,
+    ...rewrite ? ["input=$(cat)"] : [],
+    rewrite ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || true; done` : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || true; done`,
+    ...resolveEngine(enginePath),
+    `[ -f "$engine" ] || exit 0`,
+    `nohup node --no-warnings "$engine" map-hook ${name} </dev/null >/dev/null 2>&1 &`,
+    `exit 0`
+  ];
+  return lines2.join("\n") + "\n";
+}
+function script(name, enginePath) {
+  if (isMapHook(name)) return mapScript(name, enginePath);
+  const push = name === "pre-push";
+  const lines2 = [
+    "#!/bin/sh",
+    MANAGED_MARK,
+    `dir="$(dirname "$0")"`,
+    ...push ? ["input=$(cat)"] : [],
+    push ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || exit $?; done` : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || exit $?; done`,
+    `[ "$CLAUDECODE" = "1" ] || exit 0`,
+    ...resolveEngine(enginePath),
     `if [ ! -f "$engine" ]; then echo "estack: engine not found at $engine; re-run /estack:setup" >&2; exit 1; fi`,
     push ? `printf '%s\\n' "$input" | node --no-warnings "$engine" git-hook ${name} "$@"
 exit $?` : `exec node --no-warnings "$engine" git-hook ${name} "$@"`
@@ -45953,6 +45982,7 @@ function prePush(e, cwd, stdin) {
 var USAGE = `usage: estack <command>
   init [--engine <path>]
   git-hook <pre-commit|pre-push>                     (called by the installed git hooks)
+  map-hook <post-commit|post-checkout|post-merge|post-rewrite>   (called by the installed git hooks)
   status [--json]
   handovers [--json]                                 (pending handovers)
   run --task <id> --step <test|verify> [--timeout <sec>]
@@ -46095,6 +46125,21 @@ function dispatch(cmd, rest, io) {
       } finally {
         e.db.close();
       }
+    }
+    case "map-hook": {
+      const name = rest[0] ?? "";
+      try {
+        const e = openEngine(io.cwd);
+        try {
+          if (!e.policy.code_map.enabled) return 0;
+          const checkout = checkoutOf(e, io.cwd);
+          if (buildGraph(e, checkout).ok && (name === "post-commit" || name === "post-rewrite")) afterCommit(e, checkout);
+        } finally {
+          e.db.close();
+        }
+      } catch {
+      }
+      return 0;
     }
     case "status": {
       const { bool } = parse4(rest, [], ["json"]);

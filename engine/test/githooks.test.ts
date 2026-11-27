@@ -29,7 +29,7 @@ function setup() {
   const io = { cwd: dir, env: {}, out: () => {}, err: () => {} };
   expect(main(["init", "--engine", shim], io)).toBe(0);
   const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-bare-")));
-  git(bare, "init", "--bare");
+  git(bare, "init", "--bare", "-b", "main");
   git(dir, "remote", "add", "origin", bare);
   return { dir };
 }
@@ -52,6 +52,59 @@ describe("git hooks", { timeout: 60_000 }, () => {
     expect(readFileSync(hook(dir, "pre-commit"), "utf8")).toBe(before);
     expect(r.chained).toEqual([]);
     expect(existsSync(hook(dir, "pre-commit") + ".estack-prev")).toBe(false);
+  });
+
+  test("init installs the four map hooks", () => {
+    const { dir } = setup();
+    for (const n of ["post-commit", "post-checkout", "post-merge", "post-rewrite"]) {
+      expect(statSync(hook(dir, n)).mode & 0o111).toBeTruthy();
+      expect(readFileSync(hook(dir, n), "utf8")).toContain("# estack-managed-hook");
+    }
+  });
+
+  test("map hooks run in the background and never check CLAUDECODE", () => {
+    const { dir } = setup();
+    const body = readFileSync(hook(dir, "post-commit"), "utf8");
+    expect(body).toContain("nohup");
+    expect(body).toContain("map-hook post-commit </dev/null >/dev/null 2>&1 &");
+    expect(body).toContain("exit 0");
+    expect(body).not.toContain("CLAUDECODE");
+  });
+
+  test("an existing post-commit hook is chained, even when it fails", () => {
+    const dir = makeRepo();
+    const marker = join(dir, "pc-marker.txt");
+    writeFileSync(hook(dir, "post-commit"), `#!/bin/sh\necho ran > '${marker}'\nexit 3\n`, { mode: 0o755 });
+    installGitHooks(dir, join(dir, "no-such-engine.mjs"));
+    expect(existsSync(hook(dir, "post-commit") + ".estack-prev")).toBe(true);
+    const r = gitTry(dir, false, "commit", "--allow-empty", "-m", "x");
+    expect(r.status).toBe(0);
+    expect(readFileSync(marker, "utf8")).toContain("ran");
+  });
+
+  test("a commit returns without waiting for the map", () => {
+    const dir = makeRepo();
+    const stubDir = realpathSync(mkdtempSync(join(tmpdir(), "estack-stub-")));
+    const stub = join(stubDir, "estack.mjs");
+    const pidFile = join(stubDir, "pid");
+    writeFileSync(stub, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nsetTimeout(() => {}, 3000);\n`);
+    installGitHooks(dir, stub);
+    const t0 = Date.now();
+    const r = gitTry(dir, false, "commit", "--allow-empty", "-m", "x");
+    const took = Date.now() - t0;
+    expect(r.status).toBe(0);
+    expect(took).toBeLessThan(1500);
+    for (let i = 0; i < 50 && !existsSync(pidFile); i++) spawnSync("sleep", ["0.1"]);
+    try { process.kill(Number(readFileSync(pidFile, "utf8"))); } catch { /* already gone */ }
+  });
+
+  test("a missing engine makes a map hook exit 0 silently", () => {
+    const dir = makeRepo();
+    installGitHooks(dir, join(dir, "gone.mjs"));
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "estack-home-")));
+    const r = spawnSync("git", ["commit", "--allow-empty", "-m", "x"], { cwd: dir, env: { ...process.env, HOME: home, CLAUDECODE: "" }, encoding: "utf8" });
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toContain("engine not found");
   });
 
   test("an existing hook is chained and still runs", () => {

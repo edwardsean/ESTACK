@@ -28,6 +28,24 @@ describe("cli", () => {
     expect(r.err).toBe("estack: not an estack repository: run /estack:setup\n");
   });
 
+  test("map-hook with the map off does nothing and exits 0", () => {
+    const { dir } = setup();
+    for (const name of ["post-commit", "post-checkout", "post-merge", "post-rewrite"]) {
+      const r = run(dir, ["map-hook", name]);
+      expect(r.status).toBe(0);
+      expect(r.out + r.err).toBe("");
+    }
+    const e = openEngine(dir);
+    expect(e.db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind = 'map_built'").get()).toEqual({ n: 0 });
+  });
+
+  test("map-hook outside an opted-in repo exits 0", () => {
+    const dir = makeRepo();
+    const r = run(dir, ["map-hook", "post-commit"]);
+    expect(r.status).toBe(0);
+    expect(r.err).toBe("");
+  });
+
   test("init then status shows no open tasks", () => {
     const dir = makeRepo();
     run(dir, ["init"]);

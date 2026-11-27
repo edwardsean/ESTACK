@@ -8,6 +8,7 @@ import { runCheck } from "./checks";
 import { serveStdio } from "./mcp";
 import { assertOwner, cancelTask, recordOverride, skipStep } from "./owner";
 import { preCommit, prePush, installGitHooks } from "./githooks";
+import { afterCommit } from "./duplicates";
 import { initRepo } from "./policy";
 import { findRepo } from "./repo";
 import { pendingHandovers, type SessionHandoverBody } from "./handover";
@@ -20,6 +21,7 @@ export interface Io { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => v
 const USAGE = `usage: estack <command>
   init [--engine <path>]
   git-hook <pre-commit|pre-push>                     (called by the installed git hooks)
+  map-hook <post-commit|post-checkout|post-merge|post-rewrite>   (called by the installed git hooks)
   status [--json]
   handovers [--json]                                 (pending handovers)
   run --task <id> --step <test|verify> [--timeout <sec>]
@@ -151,6 +153,21 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       } finally {
         e.db.close();
       }
+    }
+    case "map-hook": {
+      const name = rest[0] ?? "";
+      // Runs detached for every git command the owner types: it must never fail, so every error is swallowed.
+      try {
+        const e = openEngine(io.cwd);
+        try {
+          if (!e.policy.code_map.enabled) return 0;
+          const checkout = checkoutOf(e, io.cwd);
+          if (buildGraph(e, checkout).ok && (name === "post-commit" || name === "post-rewrite")) afterCommit(e, checkout);
+        } finally {
+          e.db.close();
+        }
+      } catch { /* the map_built event records build failures */ }
+      return 0;
     }
     case "status": {
       const { bool } = parse(rest, [], ["json"]);
