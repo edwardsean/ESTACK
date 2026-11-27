@@ -34588,7 +34588,8 @@ function globToRegExp(glob, mode, ignoreCase = false) {
 function commandMatches(command, pattern, ignoreCase = false) {
   return globToRegExp(pattern, "command", ignoreCase).test(command) || globToRegExp(`*${pattern}`, "command", ignoreCase).test(command);
 }
-var GIT_GLOBAL_OPTS = String.raw`(?: (?:-C \S+|-c \S+|--git-dir=\S+|--work-tree=\S+|--git-dir \S+|--work-tree \S+|--no-pager|-P))+`;
+var GIT_OPT_VALUE = String.raw`(?:"[^"]*"|'[^']*'|[^\s"']+)+`;
+var GIT_GLOBAL_OPTS = String.raw`(?: (?:-C ${GIT_OPT_VALUE}|-c ${GIT_OPT_VALUE}|--git-dir=${GIT_OPT_VALUE}|--work-tree=${GIT_OPT_VALUE}|--git-dir ${GIT_OPT_VALUE}|--work-tree ${GIT_OPT_VALUE}|--no-pager|-P))+`;
 var GIT_GLOBAL_RE = new RegExp(String.raw`\bgit${GIT_GLOBAL_OPTS}(?= |$)`, "g");
 function normaliseCommand(command) {
   return command.replace(/\s+/g, " ").replace(GIT_GLOBAL_RE, "git");

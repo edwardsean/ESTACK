@@ -116,3 +116,22 @@ describe("path matching", () => {
     expect(isProtected("api/.env", policy)).toBe(true);
   });
 });
+
+describe("git options with quoted values", () => {
+  const policy = parsePolicy(DEFAULT_POLICY_YAML);
+  test.each([
+    `git -C "dir with space" push origin feat`,
+    `git -C 'dir with space' push origin feat`,
+    `git -c user.name="A B" push origin feat`,
+    `git --git-dir="a b/.git" push origin feat`,
+    `git --work-tree 'a b' push origin feat`,
+  ])("%s is classified as a push", (cmd) => {
+    expect(classifyCommand(cmd, policy)).toMatchObject({ kind: "ask", action: "git_push" });
+  });
+  test("a quoted -C path doesn't hide commit -n", () => {
+    expect(classifyCommand(`git -C "d e" commit -n -m x`, policy)).toMatchObject({ kind: "deny", action: "disable_hooks" });
+  });
+  test("a quoted -C path on a harmless command stays silent", () => {
+    expect(classifyCommand(`git -C "d e" status`, policy)).toEqual({ kind: "none" });
+  });
+});

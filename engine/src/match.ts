@@ -37,8 +37,10 @@ export function commandMatches(command: string, pattern: string, ignoreCase = fa
   return globToRegExp(pattern, "command", ignoreCase).test(command) || globToRegExp(`*${pattern}`, "command", ignoreCase).test(command);
 }
 
+// An option value: quoted or unquoted pieces, so `-C "a b"` and `-c k="A B"` are one value.
+const GIT_OPT_VALUE = String.raw`(?:"[^"]*"|'[^']*'|[^\s"']+)+`;
 /** git options that may sit between `git` and its subcommand. */
-const GIT_GLOBAL_OPTS = String.raw`(?: (?:-C \S+|-c \S+|--git-dir=\S+|--work-tree=\S+|--git-dir \S+|--work-tree \S+|--no-pager|-P))+`;
+const GIT_GLOBAL_OPTS = String.raw`(?: (?:-C ${GIT_OPT_VALUE}|-c ${GIT_OPT_VALUE}|--git-dir=${GIT_OPT_VALUE}|--work-tree=${GIT_OPT_VALUE}|--git-dir ${GIT_OPT_VALUE}|--work-tree ${GIT_OPT_VALUE}|--no-pager|-P))+`;
 const GIT_GLOBAL_RE = new RegExp(String.raw`\bgit${GIT_GLOBAL_OPTS}(?= |$)`, "g");
 
 /** Collapse whitespace runs to one space and drop git global options, so `git -C x  push` reads `git push`. */
