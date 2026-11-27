@@ -1,3 +1,4 @@
+import { existsSync, statSync } from "node:fs";
 import { relative, sep } from "node:path";
 import type { Engine } from "./engine";
 import { mappedFiles } from "./graph";
@@ -19,7 +20,7 @@ export function preRead(e: Engine, ev: HookEvent): HookOutput {
     const raw = isRead ? input.file_path : (input.path ?? ev.cwd);
     if (typeof raw !== "string" || raw === "") return null;
     const abs = resolveReal(ev.cwd, raw);
-    const top = runBounded(e, nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
+    const top = runBounded(e, existsSync(abs) && statSync(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
     if (top.code !== 0) return null;
     const checkout = top.stdout.trim();
     const task = e.db.prepare(
@@ -31,7 +32,7 @@ export function preRead(e: Engine, ev: HookEvent): HookOutput {
     if (!task) return null;
     const mapped = mappedFiles(checkout);
     if (!mapped) return null;
-    const rel = relative(checkout, abs).split(sep).join("/");
+    const rel = relative(checkout, abs).split(sep).join("/") || ".";
     if (isRead && !mapped.has(rel)) return null;
     const by = actorId(actorOf(ev));
     const searched = e.db.prepare(

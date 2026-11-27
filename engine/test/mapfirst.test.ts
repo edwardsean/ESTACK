@@ -113,7 +113,23 @@ describe("map first", () => {
   test("grep inside the checkout counts as a first read", () => {
     const { dir } = setup();
     expect(grep(dir, A, join(dir, "src")).hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(grep(dir, A, join(dir, "src"))).toBeNull();
+    // Another agent is still denied at the root, so the null above came from the once-per-task record.
+    expect(grep(dir, B).hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  test("a grep with no path is denied once", () => {
+    const { dir } = setup();
+    const r = grep(dir, A);
+    expect(r.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(reasonOf(r)).toContain("then read .");
     expect(grep(dir, A)).toBeNull();
+  });
+
+  test("a grep at the checkout root is denied once", () => {
+    const { dir } = setup();
+    expect(grep(dir, A, dir).hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(grep(dir, A, dir)).toBeNull();
   });
 
   test("a session with no bound task is never denied", () => {

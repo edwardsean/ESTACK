@@ -34591,7 +34591,7 @@ function openEngine(cwd, deps = {}) {
 }
 
 // engine/src/hooks.ts
-import { existsSync as existsSync4, realpathSync as realpathSync2 } from "node:fs";
+import { existsSync as existsSync5, realpathSync as realpathSync2 } from "node:fs";
 import { dirname as dirname2, isAbsolute, join as join5, relative as relative2, resolve, sep as sep2 } from "node:path";
 
 // engine/src/context.ts
@@ -35048,6 +35048,7 @@ function consumeHandover(e, actor, sel = {}) {
 }
 
 // engine/src/mapfirst.ts
+import { existsSync as existsSync4, statSync as statSync2 } from "node:fs";
 import { relative, sep } from "node:path";
 
 // engine/src/graph.ts
@@ -35220,7 +35221,7 @@ function preRead(e, ev) {
     const raw = isRead ? input2.file_path : input2.path ?? ev.cwd;
     if (typeof raw !== "string" || raw === "") return null;
     const abs = resolveReal(ev.cwd, raw);
-    const top = runBounded(e, nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
+    const top = runBounded(e, existsSync4(abs) && statSync2(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
     if (top.code !== 0) return null;
     const checkout = top.stdout.trim();
     const task = e.db.prepare(
@@ -35232,7 +35233,7 @@ function preRead(e, ev) {
     if (!task) return null;
     const mapped = mappedFiles(checkout);
     if (!mapped) return null;
-    const rel = relative(checkout, abs).split(sep).join("/");
+    const rel = relative(checkout, abs).split(sep).join("/") || ".";
     if (isRead && !mapped.has(rel)) return null;
     const by = actorId(actorOf(ev));
     const searched = e.db.prepare(
@@ -35368,7 +35369,7 @@ function resolveReal(cwd, p) {
   const abs = resolve(cwd, p);
   let d = abs;
   const rest = [];
-  while (!existsSync4(d)) {
+  while (!existsSync5(d)) {
     const up = dirname2(d);
     if (up === d) return abs;
     rest.unshift(d.slice(up.length + 1));
@@ -35378,7 +35379,7 @@ function resolveReal(cwd, p) {
 }
 function nearestDir(p) {
   let d = dirname2(p);
-  while (!existsSync4(d)) {
+  while (!existsSync5(d)) {
     const up = dirname2(d);
     if (up === d) break;
     d = up;
@@ -45716,7 +45717,7 @@ function recordOverride(e, input2, env) {
 
 // engine/src/githooks.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { chmodSync, existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { chmodSync, existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { join as join6, resolve as resolve2 } from "node:path";
 var MANAGED_MARK = "# estack-managed-hook";
 var HOOKS = ["pre-commit", "pre-push"];
@@ -45756,9 +45757,9 @@ function installGitHooks(repoRoot, enginePath) {
   const installed = [], chained = [];
   for (const name of HOOKS) {
     const p = join6(dir, name);
-    if (existsSync5(p) && !readFileSync3(p, "utf8").includes(MANAGED_MARK)) {
+    if (existsSync6(p) && !readFileSync3(p, "utf8").includes(MANAGED_MARK)) {
       let dest = `${p}.estack-prev`;
-      for (let n = 2; existsSync5(dest); n++) dest = `${p}.estack-prev.${n}`;
+      for (let n = 2; existsSync6(dest); n++) dest = `${p}.estack-prev.${n}`;
       renameSync2(p, dest);
       chained.push(name);
     }
