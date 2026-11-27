@@ -8,11 +8,48 @@ import { HOOK_GIT_TIMEOUT_MS, pushReadiness, runBounded } from "./tasks";
 import { EngineError } from "./types";
 
 export const MANAGED_MARK = "# estack-managed-hook";
-const HOOKS = ["pre-commit", "pre-push"] as const;
+export const MAP_HOOKS = ["post-commit", "post-checkout", "post-merge", "post-rewrite"] as const;
+const HOOKS = ["pre-commit", "pre-push", ...MAP_HOOKS] as const;
 
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
+/** Lines that set `engine`, falling back to the newest plugin cache copy when the recorded path is gone. */
+function resolveEngine(enginePath: string): string[] {
+  return [
+    `engine=${shq(enginePath)}`,
+    // The recorded path sits in a versioned plugin cache folder that a plugin update replaces: fall back to the newest copy.
+    `if [ ! -f "$engine" ]; then`,
+    `  cands="$(ls -d "$HOME"/.claude/plugins/cache/estack/estack/*/engine/estack.mjs 2>/dev/null)"`,
+    `  latest="$(printf '%s\n' "$cands" | sort -V 2>/dev/null | tail -n 1)"`,
+    `  [ -n "$latest" ] || latest="$(printf '%s\n' "$cands" | sort | tail -n 1)"`,
+    `  if [ -n "$latest" ] && [ -f "$latest" ]; then engine="$latest"; fi`,
+    `fi`,
+  ];
+}
+
+const isMapHook = (name: string) => (MAP_HOOKS as readonly string[]).includes(name);
+
+/** Map hooks never make git wait or fail: chained hooks run with their status ignored, the engine runs detached. */
+function mapScript(name: string, enginePath: string): string {
+  const rewrite = name === "post-rewrite";
+  const lines = [
+    "#!/bin/sh",
+    MANAGED_MARK,
+    `dir="$(dirname "$0")"`,
+    ...(rewrite ? ["input=$(cat)"] : []),
+    rewrite
+      ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || true; done`
+      : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || true; done`,
+    ...resolveEngine(enginePath),
+    `[ -f "$engine" ] || exit 0`,
+    `nohup node --no-warnings "$engine" map-hook ${name} </dev/null >/dev/null 2>&1 &`,
+    `exit 0`,
+  ];
+  return lines.join("\n") + "\n";
+}
+
 function script(name: string, enginePath: string): string {
+  if (isMapHook(name)) return mapScript(name, enginePath);
   const push = name === "pre-push";
   const lines = [
     "#!/bin/sh",
@@ -23,14 +60,7 @@ function script(name: string, enginePath: string): string {
       ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || exit $?; done`
       : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || exit $?; done`,
     `[ "$CLAUDECODE" = "1" ] || exit 0`,
-    `engine=${shq(enginePath)}`,
-    // The recorded path sits in a versioned plugin cache folder that a plugin update replaces: fall back to the newest copy.
-    `if [ ! -f "$engine" ]; then`,
-    `  cands="$(ls -d "$HOME"/.claude/plugins/cache/estack/estack/*/engine/estack.mjs 2>/dev/null)"`,
-    `  latest="$(printf '%s\n' "$cands" | sort -V 2>/dev/null | tail -n 1)"`,
-    `  [ -n "$latest" ] || latest="$(printf '%s\n' "$cands" | sort | tail -n 1)"`,
-    `  if [ -n "$latest" ] && [ -f "$latest" ]; then engine="$latest"; fi`,
-    `fi`,
+    ...resolveEngine(enginePath),
     `if [ ! -f "$engine" ]; then echo "estack: engine not found at $engine; re-run /estack:setup" >&2; exit 1; fi`,
     push
       ? `printf '%s\\n' "$input" | node --no-warnings "$engine" git-hook ${name} "$@"\nexit $?`

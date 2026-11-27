@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const MIGRATION_1 = `
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -40,7 +40,24 @@ CREATE TABLE handovers (
 );
 `;
 
-const MIGRATIONS = [MIGRATION_1, MIGRATION_2];
+export const MIGRATION_3 = `
+CREATE TABLE code_queries (
+  id INTEGER PRIMARY KEY, task_id INTEGER REFERENCES tasks(id), tool TEXT NOT NULL,
+  input TEXT NOT NULL, result_json TEXT NOT NULL, ok INTEGER NOT NULL, auto INTEGER NOT NULL,
+  graph_version TEXT, checkout TEXT NOT NULL, recorded_by TEXT NOT NULL, at TEXT NOT NULL
+);
+CREATE TABLE duplicates (
+  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id), commit_sha TEXT NOT NULL,
+  new_symbol TEXT NOT NULL, new_file TEXT NOT NULL, new_line INTEGER NOT NULL,
+  existing_symbol TEXT NOT NULL, existing_file TEXT NOT NULL, existing_line INTEGER NOT NULL,
+  status TEXT NOT NULL, reason TEXT, closed_by TEXT, found_at TEXT NOT NULL, closed_at TEXT,
+  UNIQUE (task_id, new_file, new_symbol, existing_file, existing_symbol)
+);
+CREATE INDEX events_kind_task_actor ON events(kind, task_id, actor);
+CREATE INDEX code_queries_task_actor ON code_queries(task_id, recorded_by);
+`;
+
+const MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3];
 
 /** Open (creating if needed) the state database, apply pragmas and pending migrations. */
 export function openDb(path: string): DatabaseSync {

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, test } from "vitest";
@@ -7,7 +8,8 @@ import { initRepo } from "../src/policy";
 import { completeStep, getTask, startTask, type EvidenceInput } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
 import type { Exec, ExecResult } from "../src/exec";
-import { fakeExec, makeRepo } from "./helpers";
+import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { runCodeQuery } from "../src/codemap";
 
 const cto: Actor = { session_id: "s1" };
 const worker: Actor = { session_id: "s1", agent_id: "w1" };
@@ -307,5 +309,77 @@ describe("tasks", () => {
     const row = v.evidence.at(-1)!;
     expect(row).toMatchObject({ step: "review", kind: "review", ok: false, payload: { verdict: "changes", findings: "fix x" } });
     expect(v.next?.name).toBe("review");
+  });
+});
+
+describe("reuse_check with the code map", () => {
+  function mapSetup(on = true) {
+    const dir = makeRepo();
+    initRepo(dir);
+    if (on) {
+      const p = join(dir, ".estack", "policy.yaml");
+      writeFileSync(p, readFileSync(p, "utf8").replace("enabled: false", "enabled: true"));
+      writeFakeGraph(dir, [{ id: "f", label: "fmt()", source_file: "src/a.ts", source_location: "L3" }], []);
+    }
+    const e = openEngine(dir, { exec: fakeExec({}) });
+    const t = start(e, dir);
+    done(e, t.task.id, "plan");
+    return { dir, e, id: t.task.id };
+  }
+  const search = (e: Engine, dir: string, id: number, actor: Actor, arg = "src") =>
+    runCodeQuery(e, { tool: "find_existing", arg, actor, cwd: dir, task_id: id });
+
+  test("with the map on, reuse_check needs the agent's own search", () => {
+    const { dir, e, id } = mapSetup();
+    expect(code(() => done(e, id, "reuse_check", note("nothing"))).code).toBe("BAD_EVIDENCE");
+    search(e, dir, id, cto, "format");
+    const qid = (e.db.prepare("SELECT id FROM code_queries WHERE task_id = ?").get(id) as { id: number }).id;
+    const v = done(e, id, "reuse_check", note("nothing"));
+    expect(v.evidence.at(-1)?.payload).toEqual({ text: "nothing", queries: [qid] });
+  });
+
+  test("start_task's automatic context doesn't count", () => {
+    const { dir, e, id } = mapSetup();
+    runCodeQuery(e, { tool: "context_for", arg: "src", actor: cto, cwd: dir, task_id: id, auto: true });
+    expect(code(() => done(e, id, "reuse_check")).code).toBe("BAD_EVIDENCE");
+  });
+
+  test("another agent's search doesn't count", () => {
+    const { dir, e, id } = mapSetup();
+    search(e, dir, id, worker);
+    expect(code(() => done(e, id, "reuse_check")).code).toBe("BAD_EVIDENCE");
+  });
+
+  test("a failed search doesn't count", () => {
+    const { dir, e, id } = mapSetup();
+    rmSync(join(dir, "graphify-out"), { recursive: true });
+    expect(code(() => search(e, dir, id, cto)).code).toBe("MAP_BROKEN");
+    expect((e.db.prepare("SELECT ok FROM code_queries").get() as { ok: number }).ok).toBe(0);
+    expect(code(() => done(e, id, "reuse_check")).code).toBe("BAD_EVIDENCE");
+  });
+
+  test("the reuse_check refusal names the task it checked", () => {
+    const { e, id } = mapSetup();
+    const err = code(() => done(e, id, "reuse_check", note("nothing")));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toContain(`task #${id}`);
+  });
+
+  test("a search with no task_id counts for the session's task still on reuse_check, else its newest", () => {
+    const { dir, e, id } = mapSetup();
+    const newer = start(e, dir).task.id;
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name IN ('plan', 'reuse_check')").run(newer);
+    const lastTask = () => (e.db.prepare("SELECT task_id FROM code_queries ORDER BY id DESC LIMIT 1").get() as { task_id: number | null }).task_id;
+    runCodeQuery(e, { tool: "find_existing", arg: "fmt", actor: cto, cwd: dir });
+    expect(lastTask()).toBe(id);
+    expect(done(e, id, "reuse_check", note("found fmt")).steps.find((s) => s.name === "reuse_check")!.status).toBe("done");
+    runCodeQuery(e, { tool: "find_existing", arg: "fmt", actor: cto, cwd: dir });
+    expect(lastTask()).toBe(newer);
+  });
+
+  test("with the map off, reuse_check takes a plain note", () => {
+    const { e, id } = mapSetup(false);
+    const v = done(e, id, "reuse_check", note("nothing"));
+    expect(v.evidence.at(-1)?.payload).toEqual({ text: "nothing" });
   });
 });

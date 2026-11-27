@@ -4003,10 +4003,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep: sep2, value } = collItem;
+        const { start, key, sep: sep4, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep2?.[0],
+          next: key ?? sep4?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4020,7 +4020,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep2) {
+          if (!keyProps.anchor && !keyProps.tag && !sep4) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map2.comment)
@@ -4044,7 +4044,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map2.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
+        const valueProps = resolveProps.resolveProps(sep4 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4060,7 +4060,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep4, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4151,7 +4151,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep2 = "";
+        let sep4 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4165,13 +4165,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep2 + cb;
-              sep2 = "";
+                comment += sep4 + cb;
+              sep4 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep2 += source;
+                sep4 += source;
               hasSpace = true;
               break;
             default:
@@ -4214,18 +4214,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep: sep2, value } = collItem;
+        const { start, key, sep: sep4, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep2?.[0],
+          next: key ?? sep4?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep2 && !value) {
+          if (!props.anchor && !props.tag && !sep4 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4279,8 +4279,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep2 && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
+        if (!isMap && !sep4 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep4, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4292,7 +4292,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
+          const valueProps = resolveProps.resolveProps(sep4 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4303,8 +4303,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep2)
-                for (const st of sep2) {
+              if (sep4)
+                for (const st of sep4) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4321,7 +4321,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep4, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4501,7 +4501,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep2 = "";
+      let sep4 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines2[i][0].slice(trimIndent) + "\n";
@@ -4518,24 +4518,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep2 + indent.slice(trimIndent) + content;
-          sep2 = "\n";
+          value += sep4 + indent.slice(trimIndent) + content;
+          sep4 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep2 === " ")
-            sep2 = "\n";
-          else if (!prevMoreIndented && sep2 === "\n")
-            sep2 = "\n\n";
-          value += sep2 + indent.slice(trimIndent) + content;
-          sep2 = "\n";
+          if (sep4 === " ")
+            sep4 = "\n";
+          else if (!prevMoreIndented && sep4 === "\n")
+            sep4 = "\n\n";
+          value += sep4 + indent.slice(trimIndent) + content;
+          sep4 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep2 === "\n")
+          if (sep4 === "\n")
             value += "\n";
           else
-            sep2 = "\n";
+            sep4 = "\n";
         } else {
-          value += sep2 + content;
-          sep2 = " ";
+          value += sep4 + content;
+          sep4 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4718,25 +4718,25 @@ var require_resolve_flow_scalar = __commonJS({
         trimBoth = /^[ \t]+|[ \t]+$/g;
       }
       let res = match[1].replace(trimEnd, "");
-      let sep2 = " ";
+      let sep4 = " ";
       let pos = line.lastIndex;
       while (match = line.exec(source)) {
         const lm = match[1].replace(trimBoth, "");
         if (lm === "") {
-          if (sep2 === "\n")
-            res += sep2;
+          if (sep4 === "\n")
+            res += sep4;
           else
-            sep2 = "\n";
+            sep4 = "\n";
         } else {
-          res += sep2 + lm;
-          sep2 = " ";
+          res += sep4 + lm;
+          sep4 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep2 + (match?.[1] ?? "");
+      return res + sep4 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5546,14 +5546,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep: sep2, value }) {
+    function stringifyItem({ start, key, sep: sep4, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep2)
-        for (const st of sep2)
+      if (sep4)
+        for (const st of sep4)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6720,18 +6720,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep2;
+          let sep4;
           if (scalar.end) {
-            sep2 = scalar.end;
-            sep2.push(this.sourceToken);
+            sep4 = scalar.end;
+            sep4.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep2 = [this.sourceToken];
+            sep4 = [this.sourceToken];
           const map2 = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep: sep2 }]
+            items: [{ start, key: scalar, sep: sep4 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map2;
@@ -6884,15 +6884,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep2 = it.sep;
-                  sep2.push(this.sourceToken);
+                  const sep4 = it.sep;
+                  sep4.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep: sep2 }]
+                    items: [{ start: start2, key, sep: sep4 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7086,13 +7086,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep2 = fc.end.splice(1, fc.end.length);
-            sep2.push(this.sourceToken);
+            const sep4 = fc.end.splice(1, fc.end.length);
+            sep4.push(this.sourceToken);
             const map2 = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep: sep2 }]
+              items: [{ start, key: fc, sep: sep4 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map2;
@@ -10131,11 +10131,11 @@ var require_validate = __commonJS({
         jsonPointer = $data;
         data = names_1.default.rootData;
       } else {
-        const matches = RELATIVE_JSON_POINTER.exec($data);
-        if (!matches)
+        const matches2 = RELATIVE_JSON_POINTER.exec($data);
+        if (!matches2)
           throw new Error(`Invalid JSON-pointer: ${$data}`);
-        const up = +matches[1];
-        jsonPointer = matches[2];
+        const up = +matches2[1];
+        jsonPointer = matches2[2];
         if (jsonPointer === "#") {
           if (up >= dataLevel)
             throw new Error(errorMsg("property/index", up));
@@ -10321,7 +10321,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve4.call(this, root, ref);
+      let _sch = resolve5.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -10348,7 +10348,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve4(root, ref) {
+    function resolve5(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -11054,11 +11054,11 @@ var require_schemes = __commonJS({
         urnComponent.error = "URN can not be parsed";
         return urnComponent;
       }
-      const matches = urnComponent.path.match(URN_REG);
-      if (matches && matches[0] === urnComponent.path) {
+      const matches2 = urnComponent.path.match(URN_REG);
+      if (matches2 && matches2[0] === urnComponent.path) {
         const scheme = options.scheme || urnComponent.scheme || "urn";
-        urnComponent.nid = matches[1].toLowerCase();
-        urnComponent.nss = matches[2];
+        urnComponent.nid = matches2[1].toLowerCase();
+        urnComponent.nss = matches2[2];
         const urnScheme = `${scheme}:${options.nid || urnComponent.nid}`;
         const schemeHandler = getSchemeHandler(urnScheme);
         urnComponent.path = void 0;
@@ -11212,7 +11212,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve4(baseURI, relativeURI, options) {
+    function resolve5(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -11248,50 +11248,50 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
-    function resolveComponent(base, relative2, options, skipNormalization) {
+    function resolveComponent(base, relative4, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
         base = parse5(serialize(base, options), options);
-        relative2 = parse5(serialize(relative2, options), options);
+        relative4 = parse5(serialize(relative4, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative2.scheme) {
-        target.scheme = relative2.scheme;
-        target.userinfo = relative2.userinfo;
-        target.host = relative2.host;
-        target.port = relative2.port;
-        target.path = removeDotSegments(relative2.path || "");
-        target.query = relative2.query;
+      if (!options.tolerant && relative4.scheme) {
+        target.scheme = relative4.scheme;
+        target.userinfo = relative4.userinfo;
+        target.host = relative4.host;
+        target.port = relative4.port;
+        target.path = removeDotSegments(relative4.path || "");
+        target.query = relative4.query;
       } else {
-        if (relative2.userinfo !== void 0 || relative2.host !== void 0 || relative2.port !== void 0) {
-          target.userinfo = relative2.userinfo;
-          target.host = relative2.host;
-          target.port = relative2.port;
-          target.path = removeDotSegments(relative2.path || "");
-          target.query = relative2.query;
+        if (relative4.userinfo !== void 0 || relative4.host !== void 0 || relative4.port !== void 0) {
+          target.userinfo = relative4.userinfo;
+          target.host = relative4.host;
+          target.port = relative4.port;
+          target.path = removeDotSegments(relative4.path || "");
+          target.query = relative4.query;
         } else {
-          if (!relative2.path) {
+          if (!relative4.path) {
             target.path = base.path;
-            if (relative2.query !== void 0) {
-              target.query = relative2.query;
+            if (relative4.query !== void 0) {
+              target.query = relative4.query;
             } else {
               target.query = base.query;
             }
           } else {
-            if (relative2.path[0] === "/") {
-              target.path = removeDotSegments(relative2.path);
+            if (relative4.path[0] === "/") {
+              target.path = removeDotSegments(relative4.path);
             } else {
               const baseHasAuthority = base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0;
               if (baseHasAuthority && !base.path) {
-                target.path = "/" + relative2.path;
+                target.path = "/" + relative4.path;
               } else if (!base.path) {
-                target.path = relative2.path;
+                target.path = relative4.path;
               } else {
-                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative2.path;
+                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative4.path;
               }
               target.path = base.scheme === void 0 && !baseHasAuthority && target.path[0] !== "/" ? removeDotSegmentsRelative(target.path) : removeDotSegments(target.path);
             }
-            target.query = relative2.query;
+            target.query = relative4.query;
           }
           target.userinfo = base.userinfo;
           target.host = base.host;
@@ -11299,7 +11299,7 @@ var require_fast_uri = __commonJS({
         }
         target.scheme = base.scheme;
       }
-      target.fragment = relative2.fragment;
+      target.fragment = relative4.fragment;
       return target;
     }
     function equal(uriA, uriB, options) {
@@ -11379,8 +11379,8 @@ var require_fast_uri = __commonJS({
     var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
     var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
     var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
-    function getParseError(parsed, matches) {
-      if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
+    function getParseError(parsed, matches2) {
+      if (matches2[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
         return 'URI path must start with "/" when authority is present.';
       }
       if (typeof parsed.port === "number" && (parsed.port < 0 || parsed.port > 65535)) {
@@ -11402,9 +11402,9 @@ var require_fast_uri = __commonJS({
     function isIPLiteral(host) {
       return host[0] === "[" && host[host.length - 1] === "]";
     }
-    function hasMalformedComponentPercentEncoding(matches) {
-      const host = matches[4];
-      return hasMalformedPercentEncoding(matches[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches[6]) || hasMalformedPercentEncoding(matches[7]) || hasMalformedPercentEncoding(matches[8]);
+    function hasMalformedComponentPercentEncoding(matches2) {
+      const host = matches2[4];
+      return hasMalformedPercentEncoding(matches2[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches2[6]) || hasMalformedPercentEncoding(matches2[7]) || hasMalformedPercentEncoding(matches2[8]);
     }
     function canonicalizeHost(parsed, options, schemeHandler, isIP) {
       if (hasForbiddenDomainHost(parsed, options, schemeHandler, isIP)) {
@@ -11479,15 +11479,15 @@ var require_fast_uri = __commonJS({
           }
         }
       }
-      const matches = uri.match(URI_PARSE);
-      if (matches) {
-        parsed.scheme = matches[1];
-        parsed.userinfo = matches[3];
-        parsed.host = matches[4];
-        parsed.port = parseInt(matches[5], 10);
-        parsed.path = matches[6] || "";
-        parsed.query = matches[7];
-        parsed.fragment = matches[8];
+      const matches2 = uri.match(URI_PARSE);
+      if (matches2) {
+        parsed.scheme = matches2[1];
+        parsed.userinfo = matches2[3];
+        parsed.host = matches2[4];
+        parsed.port = parseInt(matches2[5], 10);
+        parsed.path = matches2[6] || "";
+        parsed.query = matches2[7];
+        parsed.fragment = matches2[8];
         if (parsed.scheme !== void 0) {
           if (VALID_SCHEME.test(parsed.scheme)) {
             parsed.scheme = parsed.scheme.toLowerCase();
@@ -11496,14 +11496,14 @@ var require_fast_uri = __commonJS({
             malformedScheme = true;
           }
         }
-        malformedPercentEncoding = hasMalformedComponentPercentEncoding(matches);
+        malformedPercentEncoding = hasMalformedComponentPercentEncoding(matches2);
         if (malformedPercentEncoding) {
           parsed.error = parsed.error || "URI contains malformed percent-encoding.";
         }
         if (isNaN(parsed.port)) {
-          parsed.port = matches[5];
+          parsed.port = matches2[5];
         }
-        const parseError = getParseError(parsed, matches);
+        const parseError = getParseError(parsed, matches2);
         if (parseError !== void 0) {
           parsed.error = parsed.error || parseError;
           malformedAuthorityOrPort = true;
@@ -11603,7 +11603,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve4,
+      resolve: resolve5,
       resolveComponent,
       equal,
       serialize,
@@ -14353,12 +14353,12 @@ var require_formats = __commonJS({
     var DATE = /^(\d\d\d\d)-(\d\d)-(\d\d)$/;
     var DAYS = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     function date5(str) {
-      const matches = DATE.exec(str);
-      if (!matches)
+      const matches2 = DATE.exec(str);
+      if (!matches2)
         return false;
-      const year = +matches[1];
-      const month = +matches[2];
-      const day = +matches[3];
+      const year = +matches2[1];
+      const month = +matches2[2];
+      const day = +matches2[3];
       return month >= 1 && month <= 12 && day >= 1 && day <= (month === 2 && isLeapYear(year) ? 29 : DAYS[month]);
     }
     function compareDate(d1, d2) {
@@ -14373,16 +14373,16 @@ var require_formats = __commonJS({
     var TIME = /^(\d\d):(\d\d):(\d\d(?:\.\d+)?)(z|([+-])(\d\d)(?::?(\d\d))?)?$/i;
     function getTime(strictTimeZone) {
       return function time3(str) {
-        const matches = TIME.exec(str);
-        if (!matches)
+        const matches2 = TIME.exec(str);
+        if (!matches2)
           return false;
-        const hr = +matches[1];
-        const min = +matches[2];
-        const sec = +matches[3];
-        const tz = matches[4];
-        const tzSign = matches[5] === "-" ? -1 : 1;
-        const tzH = +(matches[6] || 0);
-        const tzM = +(matches[7] || 0);
+        const hr = +matches2[1];
+        const min = +matches2[2];
+        const sec = +matches2[3];
+        const tz = matches2[4];
+        const tzSign = matches2[5] === "-" ? -1 : 1;
+        const tzH = +(matches2[6] || 0);
+        const tzM = +(matches2[7] || 0);
         if (tzH > 23 || tzM > 59 || strictTimeZone && !tz)
           return false;
         if (hr <= 23 && min <= 59 && sec < 60)
@@ -14593,8 +14593,8 @@ var require_dist2 = __commonJS({
 });
 
 // engine/src/cli.ts
-import { readFileSync as readFileSync3, realpathSync as realpathSync3 } from "node:fs";
-import { resolve as resolve3 } from "node:path";
+import { readFileSync as readFileSync5, realpathSync as realpathSync4, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join8, resolve as resolve4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // engine/src/engine.ts
@@ -14638,7 +14638,23 @@ CREATE TABLE handovers (
   consumed_by TEXT, consumed_at TEXT
 );
 `;
-var MIGRATIONS = [MIGRATION_1, MIGRATION_2];
+var MIGRATION_3 = `
+CREATE TABLE code_queries (
+  id INTEGER PRIMARY KEY, task_id INTEGER REFERENCES tasks(id), tool TEXT NOT NULL,
+  input TEXT NOT NULL, result_json TEXT NOT NULL, ok INTEGER NOT NULL, auto INTEGER NOT NULL,
+  graph_version TEXT, checkout TEXT NOT NULL, recorded_by TEXT NOT NULL, at TEXT NOT NULL
+);
+CREATE TABLE duplicates (
+  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id), commit_sha TEXT NOT NULL,
+  new_symbol TEXT NOT NULL, new_file TEXT NOT NULL, new_line INTEGER NOT NULL,
+  existing_symbol TEXT NOT NULL, existing_file TEXT NOT NULL, existing_line INTEGER NOT NULL,
+  status TEXT NOT NULL, reason TEXT, closed_by TEXT, found_at TEXT NOT NULL, closed_at TEXT,
+  UNIQUE (task_id, new_file, new_symbol, existing_file, existing_symbol)
+);
+CREATE INDEX events_kind_task_actor ON events(kind, task_id, actor);
+CREATE INDEX code_queries_task_actor ON code_queries(task_id, recorded_by);
+`;
+var MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3];
 function openDb(path) {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA busy_timeout=5000");
@@ -14683,9 +14699,9 @@ function toResult(r, started) {
 var MAX_BUFFER = 64 * 1024 * 1024;
 var realExec = {
   // git/gh output is parsed (e.g. "not a git repository"), so pin the C locale. shell() runs the project's own commands and keeps the user's.
-  run(file2, args, { cwd, timeoutMs }) {
+  run(file2, args, { cwd, timeoutMs, env: extra }) {
     const t = Date.now();
-    const env = { ...process.env, LC_ALL: "C" };
+    const env = { ...process.env, LC_ALL: "C", ...extra };
     return toResult(spawnSync(file2, args, { cwd, env, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_BUFFER }), t);
   },
   shell(command, { cwd, timeoutMs }) {
@@ -18500,16 +18516,16 @@ var $ZodUnion = /* @__PURE__ */ $constructor("$ZodUnion", (inst, def) => {
   };
 });
 function handleExclusiveUnionResults(results, final, inst, ctx) {
-  const matches = [];
+  const matches2 = [];
   for (let i = 0; i < results.length; i++) {
     if (results[i].issues.length === 0)
-      matches.push(i);
+      matches2.push(i);
   }
-  if (matches.length === 1) {
-    final.value = results[matches[0]].value;
+  if (matches2.length === 1) {
+    final.value = results[matches2[0]].value;
     return final;
   }
-  if (matches.length === 0) {
+  if (matches2.length === 0) {
     final.issues.push({
       code: "invalid_union",
       input: final.value,
@@ -18523,7 +18539,7 @@ function handleExclusiveUnionResults(results, final, inst, ctx) {
       inst,
       errors: [],
       inclusive: false,
-      matches
+      matches: matches2
     });
   }
   return final;
@@ -19766,7 +19782,7 @@ var recursive = /* @__PURE__ */ new WeakMap();
 var NONE = 0;
 var ASSUMED = 1;
 var PROVEN = 2;
-function isRecursive(inst, stack, resolve4) {
+function isRecursive(inst, stack, resolve5) {
   const cached2 = recursive.get(inst);
   if (cached2 !== void 0)
     return cached2 ? PROVEN : NONE;
@@ -19776,7 +19792,7 @@ function isRecursive(inst, stack, resolve4) {
   let result = NONE;
   const check2 = (child) => {
     if (result !== PROVEN && child?._zod) {
-      const answer = isRecursive(child, stack, resolve4);
+      const answer = isRecursive(child, stack, resolve5);
       if (answer > result)
         result = answer;
     }
@@ -19787,7 +19803,7 @@ function isRecursive(inst, stack, resolve4) {
       const desc = Object.getOwnPropertyDescriptor(sh, key);
       if (spread && !desc.enumerable)
         continue;
-      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve4) : NONE;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve5) : NONE;
       if (child > answer)
         answer = child;
     }
@@ -19851,7 +19867,7 @@ function isRecursive(inst, stack, resolve4) {
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
-      const inner = def._cachedInner ?? (resolve4 ? inst._zod.innerType : void 0);
+      const inner = def._cachedInner ?? (resolve5 ? inst._zod.innerType : void 0);
       merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
     }
@@ -33732,20 +33748,20 @@ function checkArrayGuards(arraySchema, guards) {
     if (guards.containsSchema) {
       const minContains = guards.minContains ?? 1;
       const ceiling = guards.maxContains !== void 0 ? guards.maxContains + 1 : Number.POSITIVE_INFINITY;
-      let matches = 0;
+      let matches2 = 0;
       for (const item of items) {
-        if (guards.containsSchema.safeParse(item).success && ++matches >= ceiling)
+        if (guards.containsSchema.safeParse(item).success && ++matches2 >= ceiling)
           break;
       }
-      if (matches < minContains) {
+      if (matches2 < minContains) {
         payload.issues.push({
           code: "custom",
-          message: `Array must contain at least ${minContains} matching ${plural(minContains)}; found ${matches}`,
+          message: `Array must contain at least ${minContains} matching ${plural(minContains)}; found ${matches2}`,
           input: items,
           continue: true
         });
       }
-      if (guards.maxContains !== void 0 && matches > guards.maxContains) {
+      if (guards.maxContains !== void 0 && matches2 > guards.maxContains) {
         payload.issues.push({
           code: "custom",
           message: `Array must contain at most ${guards.maxContains} matching ${plural(guards.maxContains)}`,
@@ -34478,7 +34494,8 @@ var PolicySchema = external_exports.object({
   handover: external_exports.object({
     threshold: external_exports.number().gt(0).max(1).default(0.5),
     window_tokens: external_exports.number().int().positive().default(2e5)
-  }).default({ threshold: 0.5, window_tokens: 2e5 })
+  }).default({ threshold: 0.5, window_tokens: 2e5 }),
+  code_map: external_exports.object({ enabled: external_exports.boolean().default(false), exclude: strings.default([]) }).default({ enabled: false, exclude: [] })
 });
 function parsePolicy(yamlText) {
   let raw;
@@ -34498,7 +34515,8 @@ function loadPolicy(repo) {
   if (!repo.optedIn) throw new EngineError("NOT_OPTED_IN", "not an estack repository: run /estack:setup");
   return parsePolicy(readFileSync(join2(repo.estackDir, "policy.yaml"), "utf8"));
 }
-var DEFAULT_POLICY_YAML = `
+function defaultPolicyYaml(opts) {
+  return `
 # .estack/policy.yaml
 actions:
   auto:  [read, edit_in_task_worktree, run_tests, lint, commit, open_draft_pr]
@@ -34520,10 +34538,15 @@ exempt_paths: ["**/*.md", ".estack/brief.md", "docs/**"]   # editable with no ta
 commands:                 # the engine runs these itself for test and verify (section 7, Evidence)
   test:   "npm test"
   verify: "npm run build && npm run test:e2e"
+code_map:                 # Graphify code map (section 9 of the design)
+  enabled: ${opts.codeMap}   # false when Graphify is missing or finds no supported language
+  exclude: ${JSON.stringify(opts.exclude)}      # generated or copied code, kept out of the map
 # handover:               # when to suggest handing the session over (all optional)
 #   threshold: 0.5        # fraction of the context window in use
 #   window_tokens: 200000 # size of the context window
 `.trimStart();
+}
+var DEFAULT_POLICY_YAML = defaultPolicyYaml({ codeMap: false, exclude: [] });
 var DEFAULT_BRIEF_MD = `# Project brief
 
 ## Goals
@@ -34542,12 +34565,12 @@ Naming, testing and review habits agents should follow.
 
 Things agents must not change or build.
 `;
-function initRepo(cwd) {
+function initRepo(cwd, opts = {}) {
   const repo = findRepo(cwd);
   mkdirSync(repo.estackDir, { recursive: true });
   const created = [];
   const files = [
-    ["policy.yaml", DEFAULT_POLICY_YAML],
+    ["policy.yaml", defaultPolicyYaml({ codeMap: opts.codeMap ?? false, exclude: opts.exclude ?? [] })],
     ["brief.md", DEFAULT_BRIEF_MD],
     [".gitignore", "state.db*\n"]
   ];
@@ -34570,8 +34593,8 @@ function openEngine(cwd, deps = {}) {
 }
 
 // engine/src/hooks.ts
-import { existsSync as existsSync3, realpathSync as realpathSync2 } from "node:fs";
-import { dirname as dirname2, isAbsolute, join as join4, relative, resolve, sep } from "node:path";
+import { existsSync as existsSync5, realpathSync as realpathSync2 } from "node:fs";
+import { dirname as dirname2, isAbsolute, join as join5, relative as relative2, resolve, sep as sep2 } from "node:path";
 
 // engine/src/context.ts
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
@@ -34723,6 +34746,15 @@ function checkEvidence(e, v, step, ev, actor) {
   switch (ev.kind) {
     case "note":
       if (!ev.text || !ev.text.trim()) bad("a note must not be blank");
+      if (step === "reuse_check" && e.policy.code_map.enabled) {
+        const rows = e.db.prepare(
+          "SELECT id FROM code_queries WHERE task_id = ? AND recorded_by = ? AND ok = 1 AND auto = 0 AND tool IN ('find_existing','context_for') ORDER BY id"
+        ).all(v.task.id, actorId(actor));
+        if (rows.length === 0) {
+          bad(`reuse_check needs a find_existing or context_for search you ran yourself for task #${v.task.id}; the automatic context from start_task and other agents' searches don't count`);
+        }
+        return { payload: { text: ev.text, queries: rows.map((r) => r.id) } };
+      }
       return { payload: { text: ev.text } };
     case "commit": {
       if (!/^[0-9a-fA-F]{4,64}$/.test(ev.sha ?? "")) bad(`not a valid commit sha: ${ev.sha}`);
@@ -35022,6 +35054,269 @@ function consumeHandover(e, actor, sel = {}) {
   return result;
 }
 
+// engine/src/mapfirst.ts
+import { existsSync as existsSync4, statSync as statSync2 } from "node:fs";
+import { relative, sep } from "node:path";
+
+// engine/src/graph.ts
+import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { basename, join as join4 } from "node:path";
+var GRAPHIFY_ENV = { GRAPHIFY_BACKEND: "none", GRAPHIFY_QUERY_LOG_DISABLE: "1" };
+var GRAPH_SCHEMA = 1;
+var BUILD_TIMEOUT_MS = 3e5;
+var START_TASK_BUILD_TIMEOUT_MS = 6e4;
+var INSTALL_HINT = 'uv tool install "graphifyy>=0.9.121,<0.10"';
+var MAP_ACTOR = { session_id: "map" };
+var OUT_DIR = "graphify-out";
+function graphifyVersion(e) {
+  try {
+    const r = e.exec.run("graphify", ["--version"], { cwd: e.cwd, timeoutMs: 1e4 });
+    if (r.code !== 0) return null;
+    return /\d+\.\d+\.\d+/.exec(r.stdout)?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+function versionSupported(v) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+  if (!m) return false;
+  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  return maj === 0 && (min === 9 && pat >= 121);
+}
+function checkoutOf(e, cwd) {
+  const r = e.exec.run("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 1e4 });
+  return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : cwd;
+}
+function checkoutLabel(e, checkout) {
+  if (checkout === e.repo.root) return "main";
+  const row = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' AND cwd = ? ORDER BY id DESC LIMIT 1").get(checkout);
+  return row ? `task ${row.id}'s worktree` : checkout;
+}
+function writeIgnore(e, checkout) {
+  const lines2 = [".estack/", ...e.policy.code_map.exclude];
+  writeFileSync2(join4(checkout, ".graphifyignore"), lines2.map((l) => l + "\n").join(""));
+  const r = e.exec.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: checkout, timeoutMs: 1e4 });
+  if (r.code !== 0) return;
+  const info = join4(r.stdout.trim(), "info");
+  const file2 = join4(info, "exclude");
+  mkdirSync2(info, { recursive: true });
+  const have = existsSync3(file2) ? readFileSync2(file2, "utf8") : "";
+  const present = new Set(have.split("\n"));
+  const missing = [`${OUT_DIR}/`, ".graphifyignore"].filter((l) => !present.has(l));
+  if (missing.length) appendFileSync(file2, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
+}
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+function takeLock(lock, timeoutMs) {
+  const until = Date.now() + timeoutMs;
+  for (; ; ) {
+    try {
+      writeFileSync2(lock, String(process.pid), { flag: "wx" });
+      return true;
+    } catch (x) {
+      if (x.code !== "EEXIST") throw x;
+    }
+    let age;
+    try {
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (age >= BUILD_TIMEOUT_MS) rmSync(lock, { force: true });
+    else if (Date.now() >= until) return false;
+    else sleep(200);
+  }
+}
+var readRaw = (checkout) => {
+  try {
+    return JSON.parse(readFileSync2(join4(checkout, OUT_DIR, "graph.json"), "utf8"));
+  } catch {
+    return null;
+  }
+};
+var lineOf = (loc) => Number(/(\d+)/.exec(loc ?? "")?.[1] ?? 0);
+function loadGraph(checkout) {
+  const raw = readRaw(checkout);
+  if (!raw) return null;
+  const nodes = /* @__PURE__ */ new Map();
+  for (const n of raw.nodes ?? []) {
+    if (!n.source_file) continue;
+    const label = n.label ?? n.id;
+    const line = lineOf(n.source_location);
+    const kind = label.endsWith("()") ? "function" : line === 1 && label.endsWith(basename(n.source_file)) ? "file" : "symbol";
+    nodes.set(n.id, { id: n.id, label, name: label.replace(/\(\)$/, "").replace(/^\./, ""), file: n.source_file, line, kind });
+  }
+  const edges = (raw.links ?? []).map((l) => ({
+    source: l.source,
+    target: l.target,
+    relation: l.relation ?? "",
+    confidence: l.confidence ?? "",
+    file: l.source_file ?? "",
+    line: lineOf(l.source_location)
+  }));
+  const files = /* @__PURE__ */ new Set();
+  for (const n of nodes.values()) files.add(n.file);
+  return { checkout, graphify_version: raw.graph?.graphify_version ?? "", built_at_commit: raw.built_at_commit ?? null, nodes, edges, files };
+}
+function mappedFiles(checkout) {
+  try {
+    const j = JSON.parse(readFileSync2(join4(checkout, OUT_DIR, "estack-files.json"), "utf8"));
+    return new Set(j.files ?? []);
+  } catch {
+    return null;
+  }
+}
+function folderShares(g) {
+  const total = g.nodes.size || 1;
+  const ranked = (counts) => [...counts].map(([folder, nodes]) => ({ folder, nodes, percent: Math.round(nodes / total * 100) })).sort((a, b) => b.nodes - a.nodes || a.folder.localeCompare(b.folder));
+  const top = /* @__PURE__ */ new Map();
+  const second = /* @__PURE__ */ new Map();
+  for (const n of g.nodes.values()) {
+    const parts = n.file.split("/");
+    const first = parts.length > 1 ? parts[0] : "(root)";
+    top.set(first, (top.get(first) ?? 0) + 1);
+    if (parts.length > 2) {
+      const sub = second.get(first) ?? second.set(first, /* @__PURE__ */ new Map()).get(first);
+      const folder = `${parts[0]}/${parts[1]}`;
+      sub.set(folder, (sub.get(folder) ?? 0) + 1);
+    }
+  }
+  return ranked(top).map((f, i) => ({ ...f, sub: i < 3 ? ranked(second.get(f.folder) ?? /* @__PURE__ */ new Map()).slice(0, 3) : [] }));
+}
+function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
+  const started = Date.now();
+  const finish = (r) => {
+    const res = { checkout, duration_ms: Date.now() - started, ...r };
+    logEvent(e, MAP_ACTOR, "map_built", null, {
+      checkout,
+      ok: res.ok,
+      duration_ms: res.duration_ms,
+      nodes: res.nodes,
+      ...res.error ? { error: res.error } : {}
+    });
+    return res;
+  };
+  const fail = (error62) => finish({ ok: false, nodes: 0, files: 0, error: error62 });
+  const v = graphifyVersion(e);
+  if (v === null || !versionSupported(v)) {
+    return fail(`Graphify ${v === null ? "is not installed" : `${v} is not supported`}; install it with: ${INSTALL_HINT}`);
+  }
+  const lock = join4(checkout, OUT_DIR, ".estack-build.lock");
+  let locked;
+  try {
+    mkdirSync2(join4(checkout, OUT_DIR), { recursive: true });
+    locked = takeLock(lock, timeoutMs);
+  } catch (x) {
+    return fail(`could not take the map build lock: ${x instanceof Error ? x.message : String(x)}`);
+  }
+  if (!locked) return fail("another map build is still running");
+  try {
+    writeIgnore(e, checkout);
+    const r = e.exec.run("graphify", ["extract", checkout, "--code-only"], { cwd: checkout, timeoutMs, env: GRAPHIFY_ENV });
+    if (r.timedOut) return fail(`graphify timed out after ${timeoutMs}ms`);
+    if (r.code !== 0) return fail(`graphify exited ${r.code}: ${(r.stderr || r.stdout).trim().slice(-500)}`);
+    const raw = readRaw(checkout);
+    if (!raw) return fail("graphify wrote no readable graph.json");
+    const found = raw.graph?.graphify_version ?? "unknown";
+    if (raw.graph?.schema_version !== GRAPH_SCHEMA || !versionSupported(found)) {
+      return fail(`expected schema ${GRAPH_SCHEMA} and Graphify >=0.9.121,<0.10, found schema ${raw.graph?.schema_version ?? "none"} and Graphify ${found}`);
+    }
+    const g = loadGraph(checkout);
+    const files = [...g.files].sort();
+    const out = join4(checkout, OUT_DIR, "estack-files.json");
+    writeFileSync2(out + ".tmp", JSON.stringify({ built_at_commit: g.built_at_commit, graphify_version: g.graphify_version, files }));
+    renameSync(out + ".tmp", out);
+    return finish({ ok: true, nodes: g.nodes.size, files: files.length });
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
+var EXCLUDE_DIRS = /* @__PURE__ */ new Set(["dist", "build", "out", "vendor", "third_party", "generated"]);
+var CODE_EXT = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|cs|cpp|cc|c|h|hpp|swift|scala|dart|proto)$/;
+var GENERATED_HEADER = /@generated|Code generated|DO NOT EDIT/;
+function suggestExcludes(e, root) {
+  const found = /* @__PURE__ */ new Map();
+  const add = (glob, reason) => {
+    if (!found.has(glob)) found.set(glob, reason);
+  };
+  const ls = e.exec.run("git", ["ls-files", "-z"], { cwd: root, timeoutMs: 3e4 });
+  const files = ls.code === 0 ? ls.stdout.split("\0").filter(Boolean) : [];
+  for (const f of files) {
+    const dirs = f.split("/").slice(0, -1);
+    for (let i = 0; i < Math.min(dirs.length, 3); i++) {
+      if (EXCLUDE_DIRS.has(dirs[i])) add(dirs.slice(0, i + 1).join("/") + "/**", `named ${dirs[i]}`);
+    }
+  }
+  try {
+    for (const line of readFileSync2(join4(root, ".gitattributes"), "utf8").split("\n")) {
+      const [pattern, ...attrs] = line.trim().split(/\s+/);
+      if (!pattern || pattern.startsWith("#")) continue;
+      for (const a of attrs) {
+        const m = /^(linguist-generated|linguist-vendored)(?:=(.*))?$/.exec(a);
+        if (m && m[2] !== "false") add(pattern, `marked ${m[1]}`);
+      }
+    }
+  } catch {
+  }
+  const byDir = /* @__PURE__ */ new Map();
+  for (const f of files) {
+    if (!CODE_EXT.test(f)) continue;
+    let head;
+    try {
+      head = readFileSync2(join4(root, f), "utf8").slice(0, 4096).split("\n").slice(0, 5).join("\n");
+    } catch {
+      continue;
+    }
+    const i = f.lastIndexOf("/");
+    const dir = i < 0 ? "" : f.slice(0, i);
+    byDir.set(dir, [...byDir.get(dir) ?? [], { file: f, marked: GENERATED_HEADER.test(head) }]);
+  }
+  for (const [dir, list] of byDir) {
+    if (dir !== "" && list.every((x) => x.marked)) add(dir + "/**", "header says generated");
+    else for (const x of list) if (x.marked) add(x.file, "header says generated");
+  }
+  return [...found].map(([glob, reason]) => ({ glob, reason })).sort((a, b) => a.glob.localeCompare(b.glob, "en"));
+}
+
+// engine/src/mapfirst.ts
+var READ_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep"]);
+function preRead(e, ev) {
+  try {
+    if (!e.policy.code_map.enabled) return null;
+    const input2 = ev.tool_input ?? {};
+    const isRead = ev.tool_name === "Read";
+    const raw = isRead ? input2.file_path : input2.path ?? ev.cwd;
+    if (typeof raw !== "string" || raw === "") return null;
+    const abs = resolveReal(ev.cwd, raw);
+    const top = runBounded(e, existsSync4(abs) && statSync2(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
+    if (top.code !== 0) return null;
+    const checkout = top.stdout.trim();
+    const task = e.db.prepare(
+      `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+       WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?
+         AND EXISTS (SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.name = 'reuse_check' AND s.status IN ('pending', 'in_progress'))
+       ORDER BY t.id DESC LIMIT 1`
+    ).get(checkout, ev.session_id);
+    if (!task) return null;
+    const mapped = mappedFiles(checkout);
+    if (!mapped) return null;
+    const rel = relative(checkout, abs).split(sep).join("/") || ".";
+    if (isRead && !mapped.has(rel)) return null;
+    const by = actorId(actorOf(ev));
+    const searched = e.db.prepare(
+      "SELECT 1 FROM code_queries WHERE task_id = ? AND recorded_by = ? AND ok = 1 AND auto = 0 LIMIT 1"
+    ).get(task.id, by);
+    if (searched) return null;
+    const told = e.db.prepare("SELECT 1 FROM events WHERE kind = 'map_first_denied' AND task_id = ? AND actor = ? LIMIT 1").get(task.id, by);
+    if (told) return null;
+    logEvent(e, actorOf(ev), "map_first_denied", task.id, { tool: ev.tool_name, path: rel });
+    return deny(`estack: look at the code map before reading code for task #${task.id}. Call context_for with the area you are working in, or find_existing with what you need, then read ${rel}. This happens once per task; the next read goes through either way.`);
+  } catch {
+    return null;
+  }
+}
+
 // engine/src/match.ts
 var escapeRe = (c) => c.replace(/[.+^${}()|[\]\\\/-]/g, "\\$&");
 function globToRegExp(glob, mode, ignoreCase = false) {
@@ -35142,17 +35437,17 @@ function resolveReal(cwd, p) {
   const abs = resolve(cwd, p);
   let d = abs;
   const rest = [];
-  while (!existsSync3(d)) {
+  while (!existsSync5(d)) {
     const up = dirname2(d);
     if (up === d) return abs;
     rest.unshift(d.slice(up.length + 1));
     d = up;
   }
-  return join4(realpathSync2(d), ...rest);
+  return join5(realpathSync2(d), ...rest);
 }
 function nearestDir(p) {
   let d = dirname2(p);
-  while (!existsSync3(d)) {
+  while (!existsSync5(d)) {
     const up = dirname2(d);
     if (up === d) break;
     d = up;
@@ -35181,13 +35476,13 @@ function preEdit(e, ev) {
   const top = runBounded(e, dir, "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
   if (top.code !== 0) {
     if (top.code === 128 && /work ?tree/i.test(top.stderr)) {
-      const inGit = abs === commonReal || abs.startsWith(commonReal + sep);
-      return inGit ? deny(`${relative(e.repo.root, abs).split(sep).join("/")} is protected (git directory)`) : null;
+      const inGit = abs === commonReal || abs.startsWith(commonReal + sep2);
+      return inGit ? deny(`${relative2(e.repo.root, abs).split(sep2).join("/")} is protected (git directory)`) : null;
     }
     throw new EngineError("NOT_A_REPO", `git failed while checking ${raw}: ${top.stderr.trim() || `exit ${top.code}`}`);
   }
   const worktree = top.stdout.trim();
-  const rel = relative(worktree, abs).split(sep).join("/");
+  const rel = relative2(worktree, abs).split(sep2).join("/");
   if (rel.startsWith("..") || isAbsolute(rel)) return null;
   if (rel === ".git" || rel.startsWith(".git/")) return deny(`${rel} is protected (git directory)`);
   if (isProtected(rel, e.policy)) return deny(`${rel} is protected by .estack/policy.yaml`);
@@ -35226,12 +35521,14 @@ function preBash(e, ev) {
   recordAsk(e, ev, t.id, v.action, command);
   return pre("ask", `${v.action} (pattern ${v.pattern}) for task #${t.id} "${t.title}": verify is settled, the owner must confirm`);
 }
+var STAMP_CWD = /* @__PURE__ */ new Set(["start_task", "context_for", "find_existing", "who_uses"]);
 function preToolUse(e, ev) {
   const tool = ev.tool_name ?? "";
   if (EDIT_TOOLS.has(tool)) return preEdit(e, ev);
   if (tool === "Bash") return preBash(e, ev);
+  if (READ_TOOLS.has(tool)) return preRead(e, ev);
   if (tool.startsWith(MCP_PREFIX)) {
-    const cwd = tool === `${MCP_PREFIX}start_task` ? { cwd: ev.cwd } : {};
+    const cwd = STAMP_CWD.has(tool.slice(MCP_PREFIX.length)) ? { cwd: ev.cwd } : {};
     return pre("allow", "estack tool call", { ...ev.tool_input ?? {}, ...cwd, actor: actorOf(ev) });
   }
   return null;
@@ -35384,7 +35681,7 @@ function stop(e, ev) {
   return reasons.length ? { decision: "block", reason: reasons.join("\n") } : null;
 }
 function runHook(name, ev, deps = {}) {
-  const gate = name === "pre-tool-use";
+  const gate = name === "pre-tool-use" && !READ_TOOLS.has(ev.tool_name ?? "");
   let e;
   try {
     try {
@@ -35423,6 +35720,158 @@ function runHook(name, ev, deps = {}) {
   }
 }
 
+// engine/src/duplicates.ts
+import { readFileSync as readFileSync3 } from "node:fs";
+import { join as join6 } from "node:path";
+var NAME_PREFIXES = ["get", "make", "build", "create", "compute", "calculate", "calc", "do"];
+var MAP_ACTOR2 = { session_id: "map" };
+var TEST_PATTERNS = ["**/*.test.*", "**/*.spec.*", "**/test/**", "**/tests/**", "**/__tests__/**"];
+function normaliseName(name) {
+  const n = name.toLowerCase().replace(/[_-]/g, "");
+  const p = NAME_PREFIXES.find((x) => n.startsWith(x) && n.length - x.length >= 3);
+  return p ? n.slice(p.length) : n;
+}
+function paramCount(checkout, file2, line) {
+  let src;
+  try {
+    src = readFileSync3(join6(checkout, file2), "utf8").split("\n").slice(Math.max(0, line - 1), line + 4).join("\n");
+  } catch {
+    return null;
+  }
+  const start = src.indexOf("(");
+  if (start < 0) return null;
+  let depth = 0;
+  let commas = 0;
+  let body = "";
+  for (let i = start; i < src.length; i++) {
+    const c = src[i];
+    if (c === "(" || c === "[" || c === "{" || c === "<") depth++;
+    else if (c === ")" || c === "]" || c === "}" || c === ">" && src[i - 1] !== "=") depth--;
+    if (depth === 0) return body.trim() === "" ? 0 : commas + 1;
+    if (i > start) {
+      if (c === "," && depth === 1) commas++;
+      body += c;
+    }
+  }
+  return null;
+}
+function isTestFile(file2) {
+  return TEST_PATTERNS.some((p) => pathMatches(file2, p));
+}
+function topLevelFunctions(g) {
+  const out = /* @__PURE__ */ new Map();
+  for (const ed of g.edges) {
+    if (ed.relation !== "contains" || g.nodes.get(ed.source)?.kind !== "file") continue;
+    const n = g.nodes.get(ed.target);
+    if (n?.kind === "function" && !isTestFile(n.file)) out.set(n.id, n);
+  }
+  return [...out.values()];
+}
+function newFunctions(e, g, task) {
+  const r = runBounded(e, task.cwd, "git", ["diff", "-U0", "--no-color", `${task.base_sha}..refs/heads/${task.branch}`]);
+  if (r.code !== 0) return [];
+  const added = /* @__PURE__ */ new Map();
+  let file2 = null;
+  for (const l of r.stdout.split("\n")) {
+    if (l.startsWith("+++ ")) file2 = l.startsWith("+++ b/") ? l.slice(6) : null;
+    else if (file2) {
+      const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(l);
+      if (!m) continue;
+      const start = Number(m[1]);
+      const count = m[2] === void 0 ? 1 : Number(m[2]);
+      if (count > 0) (added.get(file2) ?? added.set(file2, []).get(file2)).push([start, start + count - 1]);
+    }
+  }
+  return topLevelFunctions(g).filter((n) => (added.get(n.file) ?? []).some(([a, b]) => n.line >= a && n.line <= b));
+}
+var matches = (checkout, f, x) => {
+  if (normaliseName(f.name) !== normaliseName(x.name)) return false;
+  const a = paramCount(checkout, f.file, f.line);
+  const b = paramCount(checkout, x.file, x.line);
+  return a === null || b === null || a === b;
+};
+function openDuplicates(e, task_id) {
+  return e.db.prepare("SELECT * FROM duplicates WHERE task_id = ? AND status = 'open' ORDER BY id").all(task_id);
+}
+var branchHead = (e, task) => runBounded(e, task.cwd, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${task.branch}`]).stdout.trim();
+function checkDuplicates(e, task_id) {
+  const task = getTask(e, task_id).task;
+  const g = loadGraph(task.cwd);
+  if (!g) return [];
+  const top = topLevelFunctions(g);
+  const fresh = newFunctions(e, g, task);
+  const head = branchHead(e, task);
+  const byKey = (file2, name) => top.find((n) => n.file === file2 && n.name === name);
+  const freshIds = new Set(fresh.map((n) => n.id));
+  return tx(e, () => {
+    const now = e.now().toISOString();
+    for (const d of openDuplicates(e, task_id)) {
+      const f = fresh.find((n) => n.file === d.new_file && n.name === d.new_symbol);
+      const x = byKey(d.existing_file, d.existing_symbol);
+      if (f && x && matches(task.cwd, f, x)) continue;
+      e.db.prepare("UPDATE duplicates SET status = 'resolved', closed_at = ? WHERE id = ?").run(now, d.id);
+    }
+    for (const f of fresh) {
+      for (const x of top) {
+        if (x.id === f.id) continue;
+        if (freshIds.has(x.id) && x.id < f.id) continue;
+        if (!matches(task.cwd, f, x)) continue;
+        const prior = e.db.prepare(
+          "SELECT id, status FROM duplicates WHERE task_id = ? AND new_file = ? AND new_symbol = ? AND existing_file = ? AND existing_symbol = ?"
+        ).get(task_id, f.file, f.name, x.file, x.name);
+        if (prior?.status === "open" || prior?.status === "dismissed") continue;
+        if (prior) {
+          e.db.prepare(
+            "UPDATE duplicates SET status = 'open', commit_sha = ?, new_line = ?, existing_line = ?, closed_by = NULL, closed_at = NULL, found_at = ? WHERE id = ?"
+          ).run(head, f.line, x.line, now, prior.id);
+        } else {
+          const r = e.db.prepare(
+            `INSERT INTO duplicates (task_id, commit_sha, new_symbol, new_file, new_line, existing_symbol, existing_file, existing_line, status, found_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?) ON CONFLICT DO NOTHING`
+          ).run(task_id, head, f.name, f.file, f.line, x.name, x.file, x.line, now);
+          if (Number(r.changes) === 0) continue;
+        }
+        logEvent(e, MAP_ACTOR2, "possible_duplicate", task_id, { new: `${f.file}:${f.line}`, existing: `${x.file}:${x.line}`, symbol: f.name });
+      }
+    }
+    logEvent(e, MAP_ACTOR2, "duplicate_check_done", task_id, { head });
+    return openDuplicates(e, task_id);
+  });
+}
+function ensureDuplicateCheck(e, task_id) {
+  if (!e.policy.code_map.enabled) return;
+  const task = getTask(e, task_id).task;
+  const head = branchHead(e, task);
+  const last = e.db.prepare("SELECT payload_json FROM events WHERE task_id = ? AND kind = 'duplicate_check_done' ORDER BY id DESC LIMIT 1").get(task_id);
+  if (last && JSON.parse(last.payload_json).head === head) return;
+  const b = buildGraph(e, task.cwd);
+  if (!b.ok) throw new EngineError("MAP_BROKEN", `the duplicate check could not run: ${b.error}`);
+  checkDuplicates(e, task_id);
+}
+function afterCommit(e, checkout) {
+  const branch = runBounded(e, checkout, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  if (!branch) return;
+  const row = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' AND cwd = ? AND branch = ? ORDER BY id DESC LIMIT 1").get(checkout, branch);
+  if (row) checkDuplicates(e, row.id);
+}
+function dismissDuplicate(e, input2) {
+  const d = e.db.prepare("SELECT * FROM duplicates WHERE id = ?").get(input2.id);
+  if (!d) throw new EngineError("NO_TASK", `no possible duplicate with id ${input2.id}`);
+  if (d.status !== "open") throw new EngineError("BAD_EVIDENCE", `possible duplicate #${d.id} is already ${d.status}`);
+  if (!input2.reason.trim()) throw new EngineError("BAD_EVIDENCE", "a reason is required to dismiss a possible duplicate");
+  if (input2.actor.session_id === "unknown" && !input2.actor.agent_id) {
+    throw new EngineError("BAD_EVIDENCE", "an unidentified caller can't dismiss a possible duplicate; pass your actor");
+  }
+  const v = getTask(e, d.task_id);
+  const commit = [...v.evidence].reverse().find((x) => x.kind === "commit" && x.ok);
+  const author = commit ? commit.recorded_by : v.task.created_by;
+  const by = actorId(input2.actor);
+  if (by === author) throw new EngineError("BAD_EVIDENCE", "the task's author can't dismiss its own possible duplicate; ask a reviewer");
+  e.db.prepare("UPDATE duplicates SET status = 'dismissed', reason = ?, closed_by = ?, closed_at = ? WHERE id = ?").run(input2.reason, by, e.now().toISOString(), d.id);
+  logEvent(e, input2.actor, "duplicate_dismissed", d.task_id, { id: d.id, reason: input2.reason });
+  return e.db.prepare("SELECT * FROM duplicates WHERE id = ?").get(d.id);
+}
+
 // engine/src/checks.ts
 var DEFAULT_CHECK_TIMEOUT_MS = 6e5;
 function runCheck(e, input2) {
@@ -35439,6 +35888,17 @@ function runCheck(e, input2) {
   const on = runBounded(e, v.task.cwd, "git", ["branch", "--show-current"]).stdout.trim();
   if (on !== v.task.branch) {
     throw new EngineError("BAD_EVIDENCE", `worktree ${v.task.cwd} is on ${on || "no branch"}, task is on ${v.task.branch}`);
+  }
+  if (input2.step === "verify") {
+    ensureDuplicateCheck(e, v.task.id);
+    const open2 = openDuplicates(e, v.task.id);
+    if (open2.length > 0) {
+      const list = open2.map((d) => `${d.new_symbol} (${d.new_file}:${d.new_line}) matches ${d.existing_symbol} (${d.existing_file}:${d.existing_line}) [#${d.id}]`).join(", ");
+      throw new EngineError(
+        "BAD_EVIDENCE",
+        `task #${v.task.id} has possible duplicates: ${list}; remove the copy and commit, or have an agent other than the author call dismiss_duplicate with a reason`
+      );
+    }
   }
   const head = runBounded(e, v.task.cwd, "git", ["rev-parse", "HEAD"]);
   const head_sha = head.code === 0 ? head.stdout.trim() : null;
@@ -42971,7 +43431,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
+        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error62) {
@@ -42988,7 +43448,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const earlyReject = (error62) => {
         reject(error62);
       };
@@ -43066,7 +43526,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve4(parseResult.data);
+            resolve5(parseResult.data);
           }
         } catch (error62) {
           reject(error62);
@@ -43328,12 +43788,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve4, interval);
+      const timeoutId = setTimeout(resolve5, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -44473,7 +44933,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
+      await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -45137,16 +45597,203 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve4) => {
+    return new Promise((resolve5) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve4();
+        resolve5();
       } else {
-        this._stdout.once("drain", resolve4);
+        this._stdout.once("drain", resolve5);
       }
     });
   }
 };
+
+// engine/src/codemap.ts
+import { existsSync as existsSync6, realpathSync as realpathSync3 } from "node:fs";
+import { isAbsolute as isAbsolute2, relative as relative3, resolve as resolve2, sep as sep3 } from "node:path";
+var MAX_LIST = 40;
+var MAX_MATCHES = 15;
+var USES = /* @__PURE__ */ new Set(["calls", "indirect_call", "imports", "imports_from", "inherits", "references"]);
+var USED_BY = /* @__PURE__ */ new Set(["calls", "indirect_call", "imports", "inherits", "references"]);
+var CALLERS = /* @__PURE__ */ new Set(["calls", "indirect_call", "imports", "references", "inherits"]);
+var FILLER = new Set("the and for with from into this that some any are its function helper method code thing way something".split(" "));
+var hitOf = (n) => ({ symbol: n.name, file: n.file, line: n.line });
+function capped(hits, key, more) {
+  if (hits.length > MAX_LIST) more[key] = hits.length - MAX_LIST;
+  return hits.slice(0, MAX_LIST);
+}
+var real = (p) => existsSync6(p) ? realpathSync3(p) : p;
+function mapPath(g, path) {
+  const root = real(g.checkout);
+  const rel = relative3(root, real(resolve2(root, path))).split(sep3).join("/");
+  if (rel === ".." || rel.startsWith("../") || isAbsolute2(rel)) {
+    throw new EngineError("BAD_EVIDENCE", `${path} is outside the checkout ${g.checkout} that this map is for; give a path inside it`);
+  }
+  return rel;
+}
+function contextFor(g, label, area) {
+  const a = mapPath(g, area);
+  const inArea = (n) => a === "" || n.file === a || n.file.startsWith(a + "/");
+  const defines = [...g.nodes.values()].filter((n) => inArea(n) && n.kind !== "file").map(hitOf);
+  const uses = /* @__PURE__ */ new Map();
+  const usedBy = /* @__PURE__ */ new Map();
+  for (const ed of g.edges) {
+    const s = g.nodes.get(ed.source);
+    const t = g.nodes.get(ed.target);
+    if (!s || !t) continue;
+    if (inArea(s) && !inArea(t) && USES.has(ed.relation)) {
+      uses.set(`${t.name}\0${t.file}`, { ...hitOf(t), relation: ed.relation, confidence: ed.confidence });
+    } else if (!inArea(s) && inArea(t) && USED_BY.has(ed.relation)) {
+      usedBy.set(`${s.name}\0${s.file}`, { symbol: s.name, file: ed.file, line: ed.line, relation: ed.relation, confidence: ed.confidence });
+    }
+  }
+  const more = {};
+  const seen = /* @__PURE__ */ new Set();
+  const uniqueDefines = defines.filter((h) => !seen.has(`${h.symbol}\0${h.file}`) && seen.add(`${h.symbol}\0${h.file}`));
+  const result = {
+    graph: label,
+    area: a || ".",
+    defines: capped(uniqueDefines, "defines", more),
+    uses: capped([...uses.values()], "uses", more),
+    used_by: capped([...usedBy.values()], "used_by", more),
+    more
+  };
+  if (![...g.nodes.values()].some(inArea)) result.note = `nothing in the map under ${a || "."}; check the path, or use find_existing`;
+  return result;
+}
+function whoUses(g, label, symbol2) {
+  const at = symbol2.lastIndexOf("::");
+  const path = at >= 0 ? mapPath(g, symbol2.slice(0, at)) : null;
+  const name = at >= 0 ? symbol2.slice(at + 2) : symbol2;
+  const found = [...g.nodes.values()].filter((n) => n.name === name && (path === null || n.file === path));
+  const defined_at = found.map(hitOf);
+  const result = { graph: label, symbol: symbol2, defined_at, callers: [] };
+  if (path === null && new Set(found.map((n) => n.file)).size > 1) {
+    result.ambiguous = defined_at;
+    return result;
+  }
+  const ids = new Set(found.map((n) => n.id));
+  const callers = g.edges.filter((ed) => ids.has(ed.target) && CALLERS.has(ed.relation) && g.nodes.has(ed.source)).map((ed) => ({ symbol: g.nodes.get(ed.source).name, file: ed.file, line: ed.line, relation: ed.relation, confidence: ed.confidence }));
+  result.callers = callers.slice(0, MAX_LIST);
+  if (callers.length > MAX_LIST) result.more = { callers: callers.length - MAX_LIST };
+  return result;
+}
+function descriptionWords(description) {
+  const out = [];
+  for (const w of description.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    if (w.length >= 3 && !FILLER.has(w) && !out.includes(w)) out.push(w);
+  }
+  return out;
+}
+function textHits(e, g, words) {
+  let stdout = "";
+  try {
+    const r = runBounded(e, g.checkout, "git", ["grep", "--untracked", "-n", "-i", "-F", ...words.flatMap((w) => ["-e", w])], HOOK_GIT_TIMEOUT_MS);
+    if (r.code !== 0) return [];
+    stdout = r.stdout;
+  } catch {
+    return [];
+  }
+  const hits = [];
+  for (const raw of stdout.split("\n")) {
+    const m = /^(.*?):(\d+):(.*)$/.exec(raw);
+    if (m && g.files.has(m[1])) hits.push({ file: m[1], line: Number(m[2]), text: m[3] });
+  }
+  return hits;
+}
+function findExisting(e, g, label, description) {
+  const words = descriptionWords(description);
+  const result = { graph: label, description, words, matches: [] };
+  if (words.length === 0) return result;
+  const byFile = /* @__PURE__ */ new Map();
+  const candidates = [...g.nodes.values()].filter((n) => n.kind !== "file");
+  for (const n of candidates) {
+    if (n.kind === "function") byFile.set(n.file, [...byFile.get(n.file) ?? [], n]);
+  }
+  const score = /* @__PURE__ */ new Map();
+  const entry2 = (n) => {
+    let s = score.get(n.id);
+    if (!s) score.set(n.id, s = { node: n, name: /* @__PURE__ */ new Set(), text: /* @__PURE__ */ new Set() });
+    return s;
+  };
+  for (const n of candidates) {
+    const lower = n.name.toLowerCase();
+    for (const w of words) if (lower.includes(w)) entry2(n).name.add(w);
+  }
+  for (const h of textHits(e, g, words)) {
+    const fns = byFile.get(h.file) ?? [];
+    let best;
+    for (const f of fns) if (f.line <= h.line && (!best || f.line > best.line)) best = f;
+    if (!best) {
+      for (const f of fns) if (f.line > h.line && f.line - h.line <= 3 && (!best || f.line < best.line)) best = f;
+    }
+    if (!best) continue;
+    const lower = h.text.toLowerCase();
+    const s = entry2(best);
+    for (const w of words) if (lower.includes(w)) s.text.add(w);
+  }
+  const ranked = [...score.values()].map((s) => ({ s, total: (/* @__PURE__ */ new Set([...s.name, ...s.text])).size })).filter((r) => r.total > 0).sort((x, y) => y.total - x.total || y.s.name.size - x.s.name.size || x.s.node.file.localeCompare(y.s.node.file) || x.s.node.line - y.s.node.line);
+  result.matches = ranked.slice(0, MAX_MATCHES).map(({ s }) => ({
+    ...hitOf(s.node),
+    why: [...s.name.size ? ["name"] : [], ...s.text.size ? ["text"] : []]
+  }));
+  return result;
+}
+var RESULT_CAP = 2e4;
+function runCodeQuery(e, input2) {
+  if (!e.policy.code_map.enabled) {
+    throw new EngineError("MAP_OFF", "the code map is off for this repository (code_map.enabled is false in .estack/policy.yaml); search with Read and Grep instead");
+  }
+  const checkout = checkoutOf(e, input2.cwd ?? e.cwd);
+  const by = actorId(input2.actor);
+  let taskId = null;
+  let version2 = null;
+  const log = (ok, result) => {
+    e.db.prepare(
+      "INSERT INTO code_queries (task_id, tool, input, result_json, ok, auto, graph_version, checkout, recorded_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(taskId, input2.tool, input2.arg, result.slice(0, RESULT_CAP), ok ? 1 : 0, input2.auto ? 1 : 0, version2, checkout, by, e.now().toISOString());
+  };
+  try {
+    if (input2.task_id !== void 0) {
+      const t = e.db.prepare("SELECT id, status FROM tasks WHERE id = ?").get(input2.task_id);
+      if (!t) throw new EngineError("NO_TASK", `no task with id ${input2.task_id}`);
+      if (t.status !== "open") throw new EngineError("TASK_CLOSED", `task ${t.id} is ${t.status}`);
+      taskId = t.id;
+    } else {
+      const t = e.db.prepare(
+        `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?
+         ORDER BY EXISTS (SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.name = 'reuse_check' AND s.status IN ('pending', 'in_progress')) DESC,
+           t.id DESC LIMIT 1`
+      ).get(checkout, input2.actor.session_id);
+      taskId = t?.id ?? null;
+    }
+    const label = checkoutLabel(e, checkout);
+    const g = loadGraph(checkout);
+    if (!g) throw new EngineError("MAP_BROKEN", `no code map for ${label} yet: run "estack map update" there, or start a task in it`);
+    version2 = `${g.graphify_version}@${g.built_at_commit}`;
+    const result = input2.tool === "context_for" ? contextFor(g, label, input2.arg) : input2.tool === "who_uses" ? whoUses(g, label, input2.arg) : findExisting(e, g, label, input2.arg);
+    log(true, JSON.stringify(result));
+    return result;
+  } catch (x) {
+    log(false, x instanceof EngineError ? `${x.code}: ${x.message}` : String(x instanceof Error ? x.message : x));
+    throw x;
+  }
+}
+function taskContext(e, v, area, actor) {
+  if (!e.policy.code_map.enabled) return {};
+  const cwd = v.task.cwd;
+  if (!loadGraph(cwd)) {
+    const b = buildGraph(e, cwd, START_TASK_BUILD_TIMEOUT_MS);
+    if (!b.ok) return { map_note: `code map unavailable: ${b.error}` };
+  }
+  if (area === void 0) return { map_note: "call context_for with the area you will change before writing code" };
+  try {
+    return { context: runCodeQuery(e, { tool: "context_for", arg: area, actor, cwd, task_id: v.task.id, auto: true }) };
+  } catch (x) {
+    return { map_note: `code map unavailable: ${x instanceof Error ? x.message : String(x)}` };
+  }
+}
 
 // engine/src/mcp.ts
 var actorSchema = external_exports.object({ session_id: external_exports.string(), agent_id: external_exports.string().optional() }).optional().describe('who is calling; defaults to {session_id: "unknown"}');
@@ -45184,10 +45831,30 @@ function createServer(cwd, deps = {}) {
       goal: external_exports.string(),
       done_check: external_exports.string(),
       branch: external_exports.string().optional(),
+      area: external_exports.string().optional().describe("the folder or file you will change; with the code map on, its context is returned"),
       cwd: external_exports.string().optional().describe("the caller's working directory; its worktree becomes the task's (stamped by the hook)"),
       actor: actorSchema
     }
-  }, tool((e, a, actor) => startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor })));
+  }, tool((e, a, actor) => {
+    const v = startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor });
+    return { ...v, ...taskContext(e, v, a.area, actor) };
+  }));
+  const codeTool = (name, argName, description, argHelp) => server.registerTool(name, {
+    description,
+    inputSchema: {
+      [argName]: external_exports.string().describe(argHelp),
+      task_id: external_exports.number().int().optional(),
+      cwd: external_exports.string().optional().describe("the caller's working directory (stamped by the hook)"),
+      actor: actorSchema
+    }
+  }, tool((e, a, actor) => runCodeQuery(e, { tool: name, arg: String(a[argName]), actor, cwd: a.cwd, task_id: a.task_id })));
+  codeTool("context_for", "area", "Code map: what an area (folder or file) defines, what it uses and what uses it. Call it before writing code.", "folder or file path, relative to the checkout root or absolute");
+  codeTool("find_existing", "description", "Code map: find existing functions that already do what you describe, before you write a new one.", "what you are about to write, in plain words");
+  codeTool("who_uses", "symbol", "Code map: who calls or imports a symbol (name, or path::name).", "symbol name, or path::name");
+  server.registerTool("dismiss_duplicate", {
+    description: "Dismiss a possible duplicate the post-commit check found, with a reason. Not callable by the task's author.",
+    inputSchema: { duplicate_id: external_exports.number().int(), reason: external_exports.string(), actor: actorSchema }
+  }, tool((e, a, actor) => dismissDuplicate(e, { id: a.duplicate_id, reason: a.reason, actor })));
   server.registerTool("status", {
     description: "Show one task (with task_id) or all open tasks.",
     inputSchema: { task_id: external_exports.number().int().optional(), actor: actorSchema }
@@ -45300,20 +45967,14 @@ function recordOverride(e, input2, env) {
 
 // engine/src/githooks.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { chmodSync, existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join5, resolve as resolve2 } from "node:path";
+import { chmodSync, existsSync as existsSync7, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join7, resolve as resolve3 } from "node:path";
 var MANAGED_MARK = "# estack-managed-hook";
-var HOOKS = ["pre-commit", "pre-push"];
+var MAP_HOOKS = ["post-commit", "post-checkout", "post-merge", "post-rewrite"];
+var HOOKS = ["pre-commit", "pre-push", ...MAP_HOOKS];
 var shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
-function script(name, enginePath) {
-  const push = name === "pre-push";
-  const lines2 = [
-    "#!/bin/sh",
-    MANAGED_MARK,
-    `dir="$(dirname "$0")"`,
-    ...push ? ["input=$(cat)"] : [],
-    push ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || exit $?; done` : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || exit $?; done`,
-    `[ "$CLAUDECODE" = "1" ] || exit 0`,
+function resolveEngine(enginePath) {
+  return [
     `engine=${shq(enginePath)}`,
     // The recorded path sits in a versioned plugin cache folder that a plugin update replaces: fall back to the newest copy.
     `if [ ! -f "$engine" ]; then`,
@@ -45323,7 +45984,36 @@ function script(name, enginePath) {
     `  [ -n "$latest" ] || latest="$(printf '%s
 ' "$cands" | sort | tail -n 1)"`,
     `  if [ -n "$latest" ] && [ -f "$latest" ]; then engine="$latest"; fi`,
-    `fi`,
+    `fi`
+  ];
+}
+var isMapHook = (name) => MAP_HOOKS.includes(name);
+function mapScript(name, enginePath) {
+  const rewrite = name === "post-rewrite";
+  const lines2 = [
+    "#!/bin/sh",
+    MANAGED_MARK,
+    `dir="$(dirname "$0")"`,
+    ...rewrite ? ["input=$(cat)"] : [],
+    rewrite ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || true; done` : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || true; done`,
+    ...resolveEngine(enginePath),
+    `[ -f "$engine" ] || exit 0`,
+    `nohup node --no-warnings "$engine" map-hook ${name} </dev/null >/dev/null 2>&1 &`,
+    `exit 0`
+  ];
+  return lines2.join("\n") + "\n";
+}
+function script(name, enginePath) {
+  if (isMapHook(name)) return mapScript(name, enginePath);
+  const push = name === "pre-push";
+  const lines2 = [
+    "#!/bin/sh",
+    MANAGED_MARK,
+    `dir="$(dirname "$0")"`,
+    ...push ? ["input=$(cat)"] : [],
+    push ? `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; printf '%s\\n' "$input" | "$prev" "$@" || exit $?; done` : `for prev in "$dir/${name}.estack-prev" "$dir/${name}.estack-prev".[0-9]*; do [ -x "$prev" ] || continue; "$prev" "$@" || exit $?; done`,
+    `[ "$CLAUDECODE" = "1" ] || exit 0`,
+    ...resolveEngine(enginePath),
     `if [ ! -f "$engine" ]; then echo "estack: engine not found at $engine; re-run /estack:setup" >&2; exit 1; fi`,
     push ? `printf '%s\\n' "$input" | node --no-warnings "$engine" git-hook ${name} "$@"
 exit $?` : `exec node --no-warnings "$engine" git-hook ${name} "$@"`
@@ -45335,18 +46025,18 @@ function installGitHooks(repoRoot, enginePath) {
   const hp = cfg.status === 0 ? cfg.stdout.trim() : "";
   if (hp) return { installed: [], chained: [], skipped: `core.hooksPath is set (${hp})` };
   const r = runGit(repoRoot, ["rev-parse", "--git-path", "hooks"]);
-  const dir = resolve2(repoRoot, r);
-  mkdirSync2(dir, { recursive: true });
+  const dir = resolve3(repoRoot, r);
+  mkdirSync3(dir, { recursive: true });
   const installed = [], chained = [];
   for (const name of HOOKS) {
-    const p = join5(dir, name);
-    if (existsSync4(p) && !readFileSync2(p, "utf8").includes(MANAGED_MARK)) {
+    const p = join7(dir, name);
+    if (existsSync7(p) && !readFileSync4(p, "utf8").includes(MANAGED_MARK)) {
       let dest = `${p}.estack-prev`;
-      for (let n = 2; existsSync4(dest); n++) dest = `${p}.estack-prev.${n}`;
-      renameSync(p, dest);
+      for (let n = 2; existsSync7(dest); n++) dest = `${p}.estack-prev.${n}`;
+      renameSync2(p, dest);
       chained.push(name);
     }
-    writeFileSync2(p, script(name, enginePath));
+    writeFileSync3(p, script(name, enginePath));
     chmodSync(p, 493);
     installed.push(name);
   }
@@ -45386,14 +46076,16 @@ function prePush(e, cwd, stdin) {
 
 // engine/src/cli.ts
 var USAGE = `usage: estack <command>
-  init [--engine <path>]
+  init [--engine <path>] [--code-map <on|off>] [--exclude <globs>]   (first setup only)
   git-hook <pre-commit|pre-push>                     (called by the installed git hooks)
+  map-hook <post-commit|post-checkout|post-merge|post-rewrite>   (called by the installed git hooks)
   status [--json]
   handovers [--json]                                 (pending handovers)
   run --task <id> --step <test|verify> [--timeout <sec>]
   skip --task <id> --step <name> --reason <text>     (owner only)
   cancel --task <id> --reason <text>                 (owner only)
   override <action> --reason <text> [--task <id>]    (owner only)
+  map <update|status|suggest> [--json]                     (the Graphify code map)
   hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
 var Usage = class extends Error {
@@ -45448,14 +46140,77 @@ function handovers(e, json2, out) {
 `);
   }
 }
+var shareLines = (folders) => folders.map((f) => `  ${f.folder} ${f.percent}%
+` + f.sub.map((s) => `    ${s.folder} ${s.percent}%
+`).join("")).join("");
+var MAP_OFF = "the code map is off (code_map.enabled is false in .estack/policy.yaml)\n";
+var NOT_FOUND = `code map off: Graphify not found. Install it with ${INSTALL_HINT}, then add a code_map block to .estack/policy.yaml yourself (see /estack:setup) and run "estack map update".
+`;
+var NOT_APPLIED = "policy.yaml already exists, so --code-map and --exclude were not applied; to change the code map, edit the code_map block in .estack/policy.yaml yourself.\n";
+function mapEnabled(cwd) {
+  try {
+    return loadPolicy(findRepo(cwd)).code_map.enabled;
+  } catch {
+    return false;
+  }
+}
+function mapStatus(e, json2, out) {
+  const version2 = graphifyVersion(e);
+  const supported = version2 !== null && versionSupported(version2);
+  const cwds = [e.repo.root, ...listOpen(e).map((t) => t.task.cwd)].filter((c, i, a) => a.indexOf(c) === i);
+  const checkouts = cwds.map((cwd) => {
+    const g = loadGraph(cwd);
+    return {
+      checkout: cwd,
+      label: checkoutLabel(e, cwd),
+      built_at_commit: g?.built_at_commit ?? null,
+      entries: g?.nodes.size ?? 0,
+      files: g?.files.size ?? 0,
+      built: g !== null,
+      folders: g ? folderShares(g).slice(0, 10) : []
+    };
+  });
+  const events = e.db.prepare("SELECT at, payload_json FROM events WHERE kind = 'map_built' ORDER BY id DESC").all();
+  let last_failure = null;
+  for (const ev of events) {
+    const p = JSON.parse(ev.payload_json);
+    if (p.ok) break;
+    last_failure ??= { at: ev.at, checkout: p.checkout, error: p.error ?? "unknown error" };
+  }
+  if (json2) return out(JSON.stringify({ enabled: e.policy.code_map.enabled, graphify_version: version2, supported, checkouts, last_failure }, null, 2) + "\n");
+  out(`code map: ${e.policy.code_map.enabled ? "on" : "off"}
+`);
+  out(`graphify: ${version2 === null ? "not installed" : `${version2} (${supported ? "supported" : "not supported"})`}
+`);
+  for (const c of checkouts) {
+    if (!c.built) {
+      out(`${c.label}: not built
+`);
+      continue;
+    }
+    out(`${c.label}: built at ${c.built_at_commit ?? "unknown commit"}, ${c.entries} entries, ${c.files} files
+`);
+    out(shareLines(c.folders));
+  }
+  if (last_failure) out(`last build failure (${last_failure.at}): ${last_failure.error}
+`);
+}
 function dispatch(cmd, rest, io) {
   switch (cmd) {
     case "init": {
-      const { opt } = parse4(rest, ["engine"]);
-      const { created } = initRepo(io.cwd);
+      const { opt } = parse4(rest, ["engine", "code-map", "exclude"]);
+      if (opt["code-map"] !== void 0 && opt["code-map"] !== "on" && opt["code-map"] !== "off") throw new Usage("--code-map needs on or off");
+      const exec = io.exec ?? realExec;
+      const v = opt["code-map"] === "off" ? null : graphifyVersion({ exec, cwd: io.cwd });
+      const supported = v !== null && versionSupported(v);
+      const mapOn = opt["code-map"] === "on" || opt["code-map"] === void 0 && supported;
+      const exclude = (opt.exclude ?? "").split(",").map((g) => g.trim()).filter(Boolean);
+      const { created } = initRepo(io.cwd, { codeMap: mapOn, exclude });
+      const fresh = created.includes(".estack/policy.yaml");
       io.out(created.length ? created.map((f) => `created ${f}`).join("\n") + "\n" : "already initialised\n");
+      if (!fresh && (opt["code-map"] !== void 0 || opt.exclude !== void 0)) io.out(NOT_APPLIED);
       const entry2 = process.argv[1];
-      const enginePath = opt.engine !== void 0 ? resolve3(io.cwd, opt.engine) : entry2 && /estack\.mjs$/.test(entry2) ? realpathSync3(entry2) : null;
+      const enginePath = opt.engine !== void 0 ? resolve4(io.cwd, opt.engine) : entry2 && /estack\.mjs$/.test(entry2) ? realpathSync4(entry2) : null;
       if (enginePath === null) io.out("git hooks not installed: engine path unknown\n");
       else {
         const h = installGitHooks(findRepo(io.cwd).root, enginePath);
@@ -45465,6 +46220,29 @@ function dispatch(cmd, rest, io) {
 `);
         if (h.chained.length) io.out(`chained existing hooks: ${h.chained.join(", ")}
 `);
+      }
+      if (opt["code-map"] === void 0 && !supported && (fresh || !mapEnabled(io.cwd))) io.out(NOT_FOUND);
+      if (mapOn) {
+        const e = openEngine(io.cwd, { exec });
+        try {
+          if (e.policy.code_map.enabled) {
+            const checkout = e.repo.root;
+            const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
+            if (fresh && (!r.ok || r.files === 0)) {
+              writeFileSync4(join8(e.repo.estackDir, "policy.yaml"), defaultPolicyYaml({ codeMap: false, exclude }));
+              io.out(`code map off: ${r.ok ? "Graphify mapped no files" : r.error}; nothing to map yet. Turn it on later by editing the code_map block in .estack/policy.yaml.
+`);
+            } else {
+              io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms
+` : `map build failed: ${r.error}
+`);
+              const g = r.ok ? loadGraph(checkout) : null;
+              if (g) io.out("folder shares:\n" + shareLines(folderShares(g).slice(0, 10)));
+            }
+          }
+        } finally {
+          e.db.close();
+        }
       }
       return 0;
     }
@@ -45479,7 +46257,7 @@ function dispatch(cmd, rest, io) {
         throw x;
       }
       try {
-        const msg = name === "pre-commit" ? preCommit(e, io.cwd) : prePush(e, io.cwd, io.stdin ?? readFileSync3(0, "utf8"));
+        const msg = name === "pre-commit" ? preCommit(e, io.cwd) : prePush(e, io.cwd, io.stdin ?? readFileSync5(0, "utf8"));
         if (msg === null) return 0;
         io.err(`estack: ${msg}
 `);
@@ -45487,6 +46265,21 @@ function dispatch(cmd, rest, io) {
       } finally {
         e.db.close();
       }
+    }
+    case "map-hook": {
+      const name = rest[0] ?? "";
+      try {
+        const e = openEngine(io.cwd);
+        try {
+          if (!e.policy.code_map.enabled) return 0;
+          const checkout = checkoutOf(e, io.cwd);
+          if (buildGraph(e, checkout).ok && (name === "post-commit" || name === "post-rewrite")) afterCommit(e, checkout);
+        } finally {
+          e.db.close();
+        }
+      } catch {
+      }
+      return 0;
     }
     case "status": {
       const { bool } = parse4(rest, [], ["json"]);
@@ -45542,12 +46335,43 @@ function dispatch(cmd, rest, io) {
 `);
       return 0;
     }
+    case "map": {
+      const sub = rest[0] ?? "";
+      if (sub !== "update" && sub !== "status" && sub !== "suggest") throw new Usage("map needs update, status or suggest");
+      const { bool } = parse4(rest.slice(1), [], ["json"]);
+      const e = openEngine(io.cwd, { exec: io.exec });
+      try {
+        if (sub === "suggest") {
+          const s = suggestExcludes(e, e.repo.root);
+          io.out(s.length ? s.map((x) => `${x.glob}  (${x.reason})
+`).join("") : "no exclude suggestions\n");
+          return 0;
+        }
+        if (sub === "status") {
+          mapStatus(e, bool.has("json"), io.out);
+          return 0;
+        }
+        if (!e.policy.code_map.enabled) {
+          io.out(bool.has("json") ? JSON.stringify({ enabled: false }) + "\n" : MAP_OFF);
+          return 0;
+        }
+        const checkout = checkoutOf(e, io.cwd);
+        const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
+        if (bool.has("json")) io.out(JSON.stringify(r) + "\n");
+        else io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms
+` : `map build failed: ${r.error}
+`);
+        return r.ok ? 0 : 1;
+      } finally {
+        e.db.close();
+      }
+    }
     case "hook": {
       const name = rest[0] ?? "";
       const gate = name === "pre-tool-use";
       let ev;
       try {
-        ev = JSON.parse(io.stdin ?? readFileSync3(0, "utf8"));
+        ev = JSON.parse(io.stdin ?? readFileSync5(0, "utf8"));
         if (ev === null || typeof ev !== "object") throw new Error("not an object");
       } catch {
         if (gate) io.out(JSON.stringify(runHookDeny("invalid hook event on stdin")));
@@ -45588,7 +46412,7 @@ ${USAGE}`);
   }
 }
 var entry = process.argv[1];
-if (entry && realpathSync3(entry) === realpathSync3(fileURLToPath(import.meta.url))) {
+if (entry && realpathSync4(entry) === realpathSync4(fileURLToPath(import.meta.url))) {
   process.exitCode = main(process.argv.slice(2), {
     cwd: process.cwd(),
     env: process.env,

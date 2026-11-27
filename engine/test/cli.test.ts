@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -5,11 +6,13 @@ import { main } from "../src/cli";
 import { openEngine } from "../src/engine";
 import { saveSessionHandover, saveTaskHandover } from "../src/handover";
 import { getTask, startTask } from "../src/tasks";
-import { makeRepo } from "./helpers";
+import { HAS_GRAPHIFY, fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { realExec, type Exec } from "../src/exec";
 
-function run(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}) {
+// Graphify scripted as missing unless a test opts in, so init leaves the map off on any machine.
+function run(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, exec: Exec = fakeExec({ graphify: { code: 127 } })) {
   let out = "", err = "";
-  const status = main(args, { cwd, env, out: (s) => (out += s), err: (s) => (err += s) });
+  const status = main(args, { cwd, env, out: (s) => (out += s), err: (s) => (err += s), exec });
   return { status, out, err };
 }
 function setup() {
@@ -26,6 +29,24 @@ describe("cli", () => {
     const r = run(dir, ["status"]);
     expect(r.status).toBe(1);
     expect(r.err).toBe("estack: not an estack repository: run /estack:setup\n");
+  });
+
+  test("map-hook with the map off does nothing and exits 0", () => {
+    const { dir } = setup();
+    for (const name of ["post-commit", "post-checkout", "post-merge", "post-rewrite"]) {
+      const r = run(dir, ["map-hook", name]);
+      expect(r.status).toBe(0);
+      expect(r.out + r.err).toBe("");
+    }
+    const e = openEngine(dir);
+    expect(e.db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind = 'map_built'").get()).toEqual({ n: 0 });
+  });
+
+  test("map-hook outside an opted-in repo exits 0", () => {
+    const dir = makeRepo();
+    const r = run(dir, ["map-hook", "post-commit"]);
+    expect(r.status).toBe(0);
+    expect(r.err).toBe("");
   });
 
   test("init then status shows no open tasks", () => {
@@ -141,5 +162,157 @@ describe("cli hook", () => {
     const j = JSON.parse(run(dir, ["handovers", "--json"]).out);
     expect(j).toHaveLength(1);
     expect(j[0].kind).toBe("session");
+  });
+
+  test("map update with the map off says so and exits 0", () => {
+    const { dir } = setup();
+    const r = run(dir, ["map", "update"]);
+    expect(r.status).toBe(0);
+    expect(r.out).toBe("the code map is off (code_map.enabled is false in .estack/policy.yaml)\n");
+  });
+
+  test("map status lists folder shares", () => {
+    const { dir } = setup();
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, readFileSync(p, "utf8").replace("enabled: false", "enabled: true"));
+    const n = (id: string, f: string) => ({ id, label: `${id}()`, source_file: f, source_location: "L2" });
+    writeFakeGraph(dir, [n("a", "src/a.ts"), n("b", "src/orders/b.ts"), n("c", "src/orders/c.ts"), n("d", "dist/d.js")], []);
+    const r = run(dir, ["map", "status"]);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("main: built at abc1234, 4 entries, 4 files\n  src 75%\n    src/orders 50%\n  dist 25%\n");
+    expect(JSON.parse(run(dir, ["map", "status", "--json"]).out).checkouts[0].entries).toBe(4);
+  });
+});
+
+describe("cli init and the code map", () => {
+  const policyOf = (dir: string) => readFileSync(join(dir, ".estack", "policy.yaml"), "utf8");
+
+  test("init with --code-map off writes enabled false", () => {
+    const dir = makeRepo();
+    const r = run(dir, ["init", "--code-map", "off"], {}, fakeExec({ graphify: { code: 0, stdout: "graphify 0.9.121\n" } }));
+    expect(r.status).toBe(0);
+    expect(policyOf(dir)).toMatch(/enabled: false/);
+    expect(r.out).not.toContain("Graphify not found");
+  });
+
+  test("init with --exclude writes the list", () => {
+    const dir = makeRepo();
+    const r = run(dir, ["init", "--exclude", "dist/**,vendor/**"]);
+    expect(r.status).toBe(0);
+    const e = openEngine(dir);
+    expect(e.policy.code_map.exclude).toEqual(["dist/**", "vendor/**"]);
+  });
+
+  const NOT_FOUND = 'code map off: Graphify not found. Install it with uv tool install "graphifyy>=0.9.121,<0.10", then add a code_map block to .estack/policy.yaml yourself (see /estack:setup) and run "estack map update".\n';
+  const NOT_APPLIED = "policy.yaml already exists, so --code-map and --exclude were not applied; to change the code map, edit the code_map block in .estack/policy.yaml yourself.\n";
+  const supportedGraphify = () => fakeExec({ graphify: { code: 0, stdout: "graphify 0.9.121\n" } });
+
+  test("init without Graphify turns the map off and says how to turn it on later", () => {
+    const dir = makeRepo();
+    const r = run(dir, ["init"]);
+    expect(r.status).toBe(0);
+    expect(openEngine(dir).policy.code_map.enabled).toBe(false);
+    expect(r.out).toContain(NOT_FOUND);
+    expect(r.out).not.toContain("re-run setup");
+  });
+
+  test("re-running init on a policy with no code_map, without Graphify, says how to turn the map on", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, policyOf(dir).replace(/^code_map:.*\n(?:  .*\n)+/m, ""));
+    const r = run(dir, ["init"]);
+    expect(r.out).toContain("already initialised\n");
+    expect(r.out).toContain(NOT_FOUND);
+  });
+
+  test("init on an existing policy applies neither --code-map nor --exclude, and says so", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    const before = policyOf(dir);
+    for (const flags of [["--code-map", "on"], ["--exclude", "dist/**"], ["--code-map", "off", "--exclude", "x/**"]]) {
+      const r = run(dir, ["init", ...flags], {}, supportedGraphify());
+      expect(r.status).toBe(0);
+      expect(r.out).toContain(NOT_APPLIED);
+      expect(policyOf(dir)).toBe(before);
+    }
+    expect(run(dir, ["init"]).out).not.toContain(NOT_APPLIED);
+  });
+
+  test("init on an existing policy with the map on does not call the map off", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, policyOf(dir).replace("enabled: false", "enabled: true"));
+    expect(run(dir, ["init"]).out).not.toContain("code map off");
+  });
+
+  test("init with a supported Graphify turns the map on, builds it and prints folder shares", () => {
+    const dir = makeRepo();
+    const n = (id: string, f: string) => ({ id, label: `${id}()`, source_file: f, source_location: "L2" });
+    writeFakeGraph(dir, [n("a", "src/a.ts"), n("b", "src/orders/b.ts"), n("c", "lib/c.ts")], []);
+    const r = run(dir, ["init"], {}, supportedGraphify());
+    expect(r.status).toBe(0);
+    expect(openEngine(dir).policy.code_map.enabled).toBe(true);
+    expect(r.out).toMatch(/^map built for main: 3 entries, 3 files, \d+ms$/m);
+    expect(r.out).toContain("folder shares:\n  src 67%\n    src/orders 33%\n  lib 33%\n");
+  });
+
+  const OFF_LATER = "; nothing to map yet. Turn it on later by editing the code_map block in .estack/policy.yaml.\n";
+
+  test("init turns its own new policy's map off when the first build fails", () => {
+    const dir = makeRepo();
+    const exec = fakeExec({ "graphify --version": { code: 0, stdout: "graphify 0.9.121\n" }, graphify: { code: 1, stderr: "boom" } });
+    const r = run(dir, ["init"], {}, exec);
+    expect(r.status).toBe(0);
+    expect(openEngine(dir).policy.code_map.enabled).toBe(false);
+    expect(r.out).toContain(`code map off: graphify exited 1: boom${OFF_LATER}`);
+    expect(r.out).not.toContain("map build failed");
+  });
+
+  test("init turns its own new policy's map off when the first build maps no files", () => {
+    const dir = makeRepo();
+    writeFakeGraph(dir, [], []);
+    const r = run(dir, ["init", "--exclude", "dist/**"], {}, supportedGraphify());
+    expect(r.status).toBe(0);
+    expect(openEngine(dir).policy.code_map).toEqual({ enabled: false, exclude: ["dist/**"] });
+    expect(r.out).toContain(`code map off: Graphify mapped no files${OFF_LATER}`);
+  });
+
+  test("init never rewrites an existing policy when its build fails", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, policyOf(dir).replace("enabled: false", "enabled: true"));
+    const before = policyOf(dir);
+    const exec = fakeExec({ "graphify --version": { code: 0, stdout: "graphify 0.9.121\n" }, graphify: { code: 1, stderr: "boom" } });
+    const r = run(dir, ["init"], {}, exec);
+    expect(policyOf(dir)).toBe(before);
+    expect(r.out).toContain("map build failed: graphify exited 1: boom\n");
+    expect(r.out).not.toContain("code map off");
+  });
+
+  test.skipIf(!HAS_GRAPHIFY)("init on a repository with no supported language turns the map off (real Graphify)", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "README.md"), "# readme\n");
+    writeFileSync(join(dir, "notes.md"), "notes\n");
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-m", "docs"], { cwd: dir, stdio: "ignore" });
+    const r = run(dir, ["init"], {}, realExec);
+    expect(r.status).toBe(0);
+    expect(openEngine(dir).policy.code_map.enabled).toBe(false);
+    expect(r.out).toMatch(/^code map off: graphify exited 1: /m);
+    expect(r.out).toContain(OFF_LATER);
+    expect(r.out).not.toContain("map build failed");
+  });
+
+  test("map suggest lists suggestions, or says there are none", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    expect(run(dir, ["map", "suggest"]).out).toBe("no exclude suggestions\n");
+    mkdirSync(join(dir, "dist"));
+    writeFileSync(join(dir, "dist", "a.js"), "x\n");
+    execFileSync("git", ["add", "."], { cwd: dir });
+    expect(run(dir, ["map", "suggest"]).out).toBe("dist/**  (named dist)\n");
   });
 });

@@ -148,6 +148,15 @@ function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, 
   switch (ev.kind) {
     case "note":
       if (!ev.text || !ev.text.trim()) bad("a note must not be blank");
+      if (step === "reuse_check" && e.policy.code_map.enabled) {
+        const rows = e.db.prepare(
+          "SELECT id FROM code_queries WHERE task_id = ? AND recorded_by = ? AND ok = 1 AND auto = 0 AND tool IN ('find_existing','context_for') ORDER BY id",
+        ).all(v.task.id, actorId(actor)) as { id: number }[];
+        if (rows.length === 0) {
+          bad(`reuse_check needs a find_existing or context_for search you ran yourself for task #${v.task.id}; the automatic context from start_task and other agents' searches don't count`);
+        }
+        return { payload: { text: ev.text, queries: rows.map((r) => r.id) } };
+      }
       return { payload: { text: ev.text } };
     case "commit": {
       if (!/^[0-9a-fA-F]{4,64}$/.test(ev.sha ?? "")) bad(`not a valid commit sha: ${ev.sha}`);

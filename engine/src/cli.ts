@@ -1,5 +1,5 @@
-import { readFileSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Engine } from "./engine";
 import { openEngine } from "./engine";
@@ -8,23 +8,31 @@ import { runCheck } from "./checks";
 import { serveStdio } from "./mcp";
 import { assertOwner, cancelTask, recordOverride, skipStep } from "./owner";
 import { preCommit, prePush, installGitHooks } from "./githooks";
-import { initRepo } from "./policy";
+import { afterCommit } from "./duplicates";
+import { defaultPolicyYaml, initRepo, loadPolicy } from "./policy";
+import { realExec, type Exec } from "./exec";
 import { findRepo } from "./repo";
 import { pendingHandovers, type SessionHandoverBody } from "./handover";
+import {
+  BUILD_TIMEOUT_MS, INSTALL_HINT, buildGraph, checkoutLabel, checkoutOf, folderShares, graphifyVersion, loadGraph, suggestExcludes, versionSupported,
+  type FolderShare,
+} from "./graph";
 import { listOpen } from "./tasks";
 import { EngineError } from "./types";
 
-export interface Io { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => void; err: (s: string) => void; stdin?: string }
+export interface Io { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => void; err: (s: string) => void; stdin?: string; exec?: Exec }
 
 const USAGE = `usage: estack <command>
-  init [--engine <path>]
+  init [--engine <path>] [--code-map <on|off>] [--exclude <globs>]   (first setup only)
   git-hook <pre-commit|pre-push>                     (called by the installed git hooks)
+  map-hook <post-commit|post-checkout|post-merge|post-rewrite>   (called by the installed git hooks)
   status [--json]
   handovers [--json]                                 (pending handovers)
   run --task <id> --step <test|verify> [--timeout <sec>]
   skip --task <id> --step <name> --reason <text>     (owner only)
   cancel --task <id> --reason <text>                 (owner only)
   override <action> --reason <text> [--task <id>]    (owner only)
+  map <update|status|suggest> [--json]                     (the Graphify code map)
   hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
 
@@ -81,12 +89,68 @@ function handovers(e: Engine, json: boolean, out: (s: string) => void): void {
   }
 }
 
+/** One line per top-level folder, with its listed subfolders indented below it. */
+const shareLines = (folders: (FolderShare & { sub: FolderShare[] })[]): string =>
+  folders.map((f) => `  ${f.folder} ${f.percent}%\n` + f.sub.map((s) => `    ${s.folder} ${s.percent}%\n`).join("")).join("");
+
+const MAP_OFF = "the code map is off (code_map.enabled is false in .estack/policy.yaml)\n";
+const NOT_FOUND = `code map off: Graphify not found. Install it with ${INSTALL_HINT}, then add a code_map block to .estack/policy.yaml yourself (see /estack:setup) and run "estack map update".\n`;
+const NOT_APPLIED = "policy.yaml already exists, so --code-map and --exclude were not applied; to change the code map, edit the code_map block in .estack/policy.yaml yourself.\n";
+
+/** Whether the policy on disk turns the map on; false when it can't be read. */
+function mapEnabled(cwd: string): boolean {
+  try {
+    return loadPolicy(findRepo(cwd)).code_map.enabled;
+  } catch {
+    return false;
+  }
+}
+
+function mapStatus(e: Engine, json: boolean, out: (s: string) => void): void {
+  const version = graphifyVersion(e);
+  const supported = version !== null && versionSupported(version);
+  const cwds = [e.repo.root, ...listOpen(e).map((t) => t.task.cwd)].filter((c, i, a) => a.indexOf(c) === i);
+  const checkouts = cwds.map((cwd) => {
+    const g = loadGraph(cwd);
+    return {
+      checkout: cwd, label: checkoutLabel(e, cwd), built_at_commit: g?.built_at_commit ?? null,
+      entries: g?.nodes.size ?? 0, files: g?.files.size ?? 0, built: g !== null,
+      folders: g ? folderShares(g).slice(0, 10) : [],
+    };
+  });
+  const events = e.db.prepare("SELECT at, payload_json FROM events WHERE kind = 'map_built' ORDER BY id DESC").all() as { at: string; payload_json: string }[];
+  let last_failure: { at: string; checkout: string; error: string } | null = null;
+  for (const ev of events) {
+    const p = JSON.parse(ev.payload_json) as { checkout: string; ok: boolean; error?: string };
+    if (p.ok) break;
+    last_failure ??= { at: ev.at, checkout: p.checkout, error: p.error ?? "unknown error" };
+  }
+  if (json) return out(JSON.stringify({ enabled: e.policy.code_map.enabled, graphify_version: version, supported, checkouts, last_failure }, null, 2) + "\n");
+  out(`code map: ${e.policy.code_map.enabled ? "on" : "off"}\n`);
+  out(`graphify: ${version === null ? "not installed" : `${version} (${supported ? "supported" : "not supported"})`}\n`);
+  for (const c of checkouts) {
+    if (!c.built) { out(`${c.label}: not built\n`); continue; }
+    out(`${c.label}: built at ${c.built_at_commit ?? "unknown commit"}, ${c.entries} entries, ${c.files} files\n`);
+    out(shareLines(c.folders));
+  }
+  if (last_failure) out(`last build failure (${last_failure.at}): ${last_failure.error}\n`);
+}
+
 function dispatch(cmd: string, rest: string[], io: Io): number {
   switch (cmd) {
     case "init": {
-      const { opt } = parse(rest, ["engine"]);
-      const { created } = initRepo(io.cwd);
+      const { opt } = parse(rest, ["engine", "code-map", "exclude"]);
+      if (opt["code-map"] !== undefined && opt["code-map"] !== "on" && opt["code-map"] !== "off") throw new Usage("--code-map needs on or off");
+      const exec = io.exec ?? realExec;
+      const v = opt["code-map"] === "off" ? null : graphifyVersion({ exec, cwd: io.cwd });
+      const supported = v !== null && versionSupported(v);
+      const mapOn = opt["code-map"] === "on" || (opt["code-map"] === undefined && supported);
+      const exclude = (opt.exclude ?? "").split(",").map((g) => g.trim()).filter(Boolean);
+      const { created } = initRepo(io.cwd, { codeMap: mapOn, exclude });
+      // Init never rewrites an existing policy: it is protected, so changing it is the owner's edit.
+      const fresh = created.includes(".estack/policy.yaml");
       io.out(created.length ? created.map((f) => `created ${f}`).join("\n") + "\n" : "already initialised\n");
+      if (!fresh && (opt["code-map"] !== undefined || opt.exclude !== undefined)) io.out(NOT_APPLIED);
       const entry = process.argv[1];
       const enginePath = opt.engine !== undefined ? resolve(io.cwd, opt.engine)
         : entry && /estack\.mjs$/.test(entry) ? realpathSync(entry) : null;
@@ -96,6 +160,27 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
         if (h.skipped) io.out(`git hooks not installed: ${h.skipped}\n`);
         else io.out(`installed git hooks: ${h.installed.join(", ")}\n`);
         if (h.chained.length) io.out(`chained existing hooks: ${h.chained.join(", ")}\n`);
+      }
+      if (opt["code-map"] === undefined && !supported && (fresh || !mapEnabled(io.cwd))) io.out(NOT_FOUND);
+      if (mapOn) {
+        const e = openEngine(io.cwd, { exec });
+        try {
+          if (e.policy.code_map.enabled) {
+            const checkout = e.repo.root;
+            const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
+            if (fresh && (!r.ok || r.files === 0)) {
+              // A map that can't build would make every query MAP_BROKEN; init may rewrite only the policy it just created.
+              writeFileSync(join(e.repo.estackDir, "policy.yaml"), defaultPolicyYaml({ codeMap: false, exclude }));
+              io.out(`code map off: ${r.ok ? "Graphify mapped no files" : r.error}; nothing to map yet. Turn it on later by editing the code_map block in .estack/policy.yaml.\n`);
+            } else {
+              io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms\n` : `map build failed: ${r.error}\n`);
+              const g = r.ok ? loadGraph(checkout) : null;
+              if (g) io.out("folder shares:\n" + shareLines(folderShares(g).slice(0, 10)));
+            }
+          }
+        } finally {
+          e.db.close();
+        }
       }
       return 0;
     }
@@ -117,6 +202,21 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       } finally {
         e.db.close();
       }
+    }
+    case "map-hook": {
+      const name = rest[0] ?? "";
+      // Runs detached for every git command the owner types: it must never fail, so every error is swallowed.
+      try {
+        const e = openEngine(io.cwd);
+        try {
+          if (!e.policy.code_map.enabled) return 0;
+          const checkout = checkoutOf(e, io.cwd);
+          if (buildGraph(e, checkout).ok && (name === "post-commit" || name === "post-rewrite")) afterCommit(e, checkout);
+        } finally {
+          e.db.close();
+        }
+      } catch { /* the map_built event records build failures */ }
+      return 0;
     }
     case "status": {
       const { bool } = parse(rest, [], ["json"]);
@@ -163,6 +263,31 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       recordOverride(openEngine(io.cwd), a, io.env);
       io.out(`recorded override for ${a.action}\n`);
       return 0;
+    }
+    case "map": {
+      const sub = rest[0] ?? "";
+      if (sub !== "update" && sub !== "status" && sub !== "suggest") throw new Usage("map needs update, status or suggest");
+      const { bool } = parse(rest.slice(1), [], ["json"]);
+      const e = openEngine(io.cwd, { exec: io.exec });
+      try {
+        if (sub === "suggest") {
+          const s = suggestExcludes(e, e.repo.root);
+          io.out(s.length ? s.map((x) => `${x.glob}  (${x.reason})\n`).join("") : "no exclude suggestions\n");
+          return 0;
+        }
+        if (sub === "status") { mapStatus(e, bool.has("json"), io.out); return 0; }
+        if (!e.policy.code_map.enabled) {
+          io.out(bool.has("json") ? JSON.stringify({ enabled: false }) + "\n" : MAP_OFF);
+          return 0;
+        }
+        const checkout = checkoutOf(e, io.cwd);
+        const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
+        if (bool.has("json")) io.out(JSON.stringify(r) + "\n");
+        else io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms\n` : `map build failed: ${r.error}\n`);
+        return r.ok ? 0 : 1;
+      } finally {
+        e.db.close();
+      }
     }
     case "hook": {
       const name = rest[0] ?? "";

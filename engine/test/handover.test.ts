@@ -54,7 +54,7 @@ describe("handover storage", () => {
     old.close();
     const db = openDb(path);
     expect((db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }).value).toBe(String(SCHEMA_VERSION));
-    expect(SCHEMA_VERSION).toBe(2);
+    expect(SCHEMA_VERSION).toBe(3);
     expect((db.prepare("SELECT COUNT(*) c FROM events").get() as { c: number }).c).toBe(1);
     expect((db.prepare("SELECT COUNT(*) c FROM handovers").get() as { c: number }).c).toBe(0);
     expect((db.prepare("SELECT COUNT(*) c FROM tasks").get() as { c: number }).c).toBe(1);

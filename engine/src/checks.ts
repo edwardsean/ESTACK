@@ -1,3 +1,4 @@
+import { ensureDuplicateCheck, openDuplicates } from "./duplicates";
 import type { Engine } from "./engine";
 import { finishStep, getTask, insertEvidence, logEvent, runBounded, tx } from "./tasks";
 import { EngineError, STEP_EVIDENCE, type Actor } from "./types";
@@ -22,6 +23,16 @@ export function runCheck(e: Engine, input: { task_id: number; step: string; acto
   const on = runBounded(e, v.task.cwd, "git", ["branch", "--show-current"]).stdout.trim();
   if (on !== v.task.branch) {
     throw new EngineError("BAD_EVIDENCE", `worktree ${v.task.cwd} is on ${on || "no branch"}, task is on ${v.task.branch}`);
+  }
+  if (input.step === "verify") {
+    ensureDuplicateCheck(e, v.task.id);
+    const open = openDuplicates(e, v.task.id);
+    if (open.length > 0) {
+      const list = open.map((d) =>
+        `${d.new_symbol} (${d.new_file}:${d.new_line}) matches ${d.existing_symbol} (${d.existing_file}:${d.existing_line}) [#${d.id}]`).join(", ");
+      throw new EngineError("BAD_EVIDENCE",
+        `task #${v.task.id} has possible duplicates: ${list}; remove the copy and commit, or have an agent other than the author call dismiss_duplicate with a reason`);
+    }
   }
   const head = runBounded(e, v.task.cwd, "git", ["rev-parse", "HEAD"]);
   const head_sha = head.code === 0 ? head.stdout.trim() : null;

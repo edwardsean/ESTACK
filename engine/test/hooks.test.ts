@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -630,5 +630,68 @@ describe("hooks", () => {
       skipThrough(dir, id, "test", ["implement"]);
       expect(hook("subagent-stop", dir, { hook_event_name: "SubagentStop", agent_id: "A" })).toBeNull();
     });
+  });
+});
+
+describe("hooks: read tools and code-map tools", () => {
+  test("code-map tools get the real cwd stamped", () => {
+    const dir = repo();
+    for (const t of ["context_for", "find_existing", "who_uses"]) {
+      const r = pre(dir, { tool_name: `mcp__plugin_estack_estack__${t}`, agent_id: "w1", tool_input: { area: "x" } });
+      expect(r.hookSpecificOutput.updatedInput.cwd).toBe(dir);
+      expect(r.hookSpecificOutput.updatedInput.actor).toEqual({ session_id: S, agent_id: "w1" });
+    }
+  });
+
+  test("read tools fail open when the engine errors", () => {
+    const dir = repo();
+    writeFileSync(join(dir, ".estack", "policy.yaml"), "not: [valid");
+    expect(pre(dir, { tool_name: "Read", tool_input: { file_path: join(dir, "a.ts") } })).toBeNull();
+    expect(pre(dir, { tool_name: "Grep", tool_input: { pattern: "x" } })).toBeNull();
+    expect(decision(edit(dir, "a.ts"))).toBe("deny");
+  });
+
+  const script = join(__dirname, "../../core/hooks/scripts/estack-hook.sh");
+  const runScript = (dir: string, tool: string, path: string) => {
+    const input = JSON.stringify({ hook_event_name: "PreToolUse", session_id: S, cwd: dir, tool_name: tool, tool_input: { file_path: join(dir, "a.ts") } });
+    return spawnSync("/bin/sh", [script, "pre-tool-use"], { input, encoding: "utf8", env: { PATH: path, CLAUDE_PROJECT_DIR: dir } });
+  };
+  const mapOn = (dir: string) => {
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, readFileSync(p, "utf8").replace("enabled: false", "enabled: true"));
+  };
+
+  test("the hook script lets Read through without node", () => {
+    const dir = repo();
+    mapOn(dir);
+    for (const t of ["Read", "Grep"]) {
+      const r = runScript(dir, t, "/usr/bin:/bin");
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("");
+    }
+    const r = runScript(dir, "Edit", "/usr/bin:/bin");
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  test("with the map off the hook script lets Read and Grep through without starting node", () => {
+    const dir = repo();
+    const bin = realpathSync(mkdtempSync(join(tmpdir(), "estack-bin-")));
+    const marker = join(bin, "node-started");
+    writeFileSync(join(bin, "node"), `#!/bin/sh\ncat >/dev/null\ntouch "${marker}"\nexit 0\n`, { mode: 0o755 });
+    const path = `${bin}:/usr/bin:/bin`;
+    for (const t of ["Read", "Grep"]) {
+      const r = runScript(dir, t, path);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("");
+    }
+    expect(existsSync(marker)).toBe(false);
+    runScript(dir, "Edit", path);
+    expect(existsSync(marker)).toBe(true);
+    // With the map on (the line init writes, comment and all) a Read starts node again.
+    rmSync(marker);
+    mapOn(dir);
+    runScript(dir, "Read", path);
+    expect(existsSync(marker)).toBe(true);
   });
 });
