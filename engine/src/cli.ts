@@ -10,16 +10,17 @@ import { assertOwner, cancelTask, recordOverride, skipStep } from "./owner";
 import { preCommit, prePush, installGitHooks } from "./githooks";
 import { afterCommit } from "./duplicates";
 import { initRepo } from "./policy";
+import { realExec, type Exec } from "./exec";
 import { findRepo } from "./repo";
 import { pendingHandovers, type SessionHandoverBody } from "./handover";
-import { BUILD_TIMEOUT_MS, buildGraph, checkoutLabel, checkoutOf, folderShares, graphifyVersion, loadGraph, versionSupported } from "./graph";
+import { BUILD_TIMEOUT_MS, INSTALL_HINT, buildGraph, checkoutLabel, checkoutOf, folderShares, graphifyVersion, loadGraph, suggestExcludes, versionSupported } from "./graph";
 import { listOpen } from "./tasks";
 import { EngineError } from "./types";
 
-export interface Io { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => void; err: (s: string) => void; stdin?: string }
+export interface Io { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => void; err: (s: string) => void; stdin?: string; exec?: Exec }
 
 const USAGE = `usage: estack <command>
-  init [--engine <path>]
+  init [--engine <path>] [--code-map <on|off>] [--exclude <globs>]   (first setup only)
   git-hook <pre-commit|pre-push>                     (called by the installed git hooks)
   map-hook <post-commit|post-checkout|post-merge|post-rewrite>   (called by the installed git hooks)
   status [--json]
@@ -28,7 +29,7 @@ const USAGE = `usage: estack <command>
   skip --task <id> --step <name> --reason <text>     (owner only)
   cancel --task <id> --reason <text>                 (owner only)
   override <action> --reason <text> [--task <id>]    (owner only)
-  map <update|status> [--json]                       (the Graphify code map)
+  map <update|status|suggest> [--json]                     (the Graphify code map)
   hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
 
@@ -120,8 +121,14 @@ function mapStatus(e: Engine, json: boolean, out: (s: string) => void): void {
 function dispatch(cmd: string, rest: string[], io: Io): number {
   switch (cmd) {
     case "init": {
-      const { opt } = parse(rest, ["engine"]);
-      const { created } = initRepo(io.cwd);
+      const { opt } = parse(rest, ["engine", "code-map", "exclude"]);
+      if (opt["code-map"] !== undefined && opt["code-map"] !== "on" && opt["code-map"] !== "off") throw new Usage("--code-map needs on or off");
+      const exec = io.exec ?? realExec;
+      const v = opt["code-map"] === "off" ? null : graphifyVersion({ exec, cwd: io.cwd });
+      const supported = v !== null && versionSupported(v);
+      const mapOn = opt["code-map"] === "on" || (opt["code-map"] === undefined && supported);
+      const exclude = (opt.exclude ?? "").split(",").map((g) => g.trim()).filter(Boolean);
+      const { created } = initRepo(io.cwd, { codeMap: mapOn, exclude });
       io.out(created.length ? created.map((f) => `created ${f}`).join("\n") + "\n" : "already initialised\n");
       const entry = process.argv[1];
       const enginePath = opt.engine !== undefined ? resolve(io.cwd, opt.engine)
@@ -132,6 +139,23 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
         if (h.skipped) io.out(`git hooks not installed: ${h.skipped}\n`);
         else io.out(`installed git hooks: ${h.installed.join(", ")}\n`);
         if (h.chained.length) io.out(`chained existing hooks: ${h.chained.join(", ")}\n`);
+      }
+      if (opt["code-map"] === undefined && !supported) {
+        io.out(`code map off: Graphify not found (install with ${INSTALL_HINT}, then re-run setup)\n`);
+      }
+      if (mapOn) {
+        const e = openEngine(io.cwd, { exec });
+        try {
+          if (e.policy.code_map.enabled) {
+            const checkout = e.repo.root;
+            const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
+            io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms\n` : `map build failed: ${r.error}\n`);
+            const g = r.ok ? loadGraph(checkout) : null;
+            if (g) io.out("folder shares: " + folderShares(g).slice(0, 10).map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+          }
+        } finally {
+          e.db.close();
+        }
       }
       return 0;
     }
@@ -217,10 +241,15 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
     }
     case "map": {
       const sub = rest[0] ?? "";
-      if (sub !== "update" && sub !== "status") throw new Usage("map needs update or status");
+      if (sub !== "update" && sub !== "status" && sub !== "suggest") throw new Usage("map needs update, status or suggest");
       const { bool } = parse(rest.slice(1), [], ["json"]);
-      const e = openEngine(io.cwd);
+      const e = openEngine(io.cwd, { exec: io.exec });
       try {
+        if (sub === "suggest") {
+          const s = suggestExcludes(e, e.repo.root);
+          io.out(s.length ? s.map((x) => `${x.glob}  (${x.reason})\n`).join("") : "no exclude suggestions\n");
+          return 0;
+        }
         if (sub === "status") { mapStatus(e, bool.has("json"), io.out); return 0; }
         if (!e.policy.code_map.enabled) {
           io.out(bool.has("json") ? JSON.stringify({ enabled: false }) + "\n" : MAP_OFF);

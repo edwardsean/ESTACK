@@ -17,6 +17,9 @@ A repository is opted in when `.estack/policy.yaml` exists. `/{{estack:ns}}:setu
 | `git push`, `gh pr create` | Needs verify evidence on the task for the branch, then the owner's approval | A push is outward-facing and hard to take back |
 | Merge, deploy, database migration | The owner's approval, every time | Same reason, with a bigger blast radius |
 | Force push to a protected branch | Denied | Not recoverable |
+| Reading code before `reuse_check` | The first Read or Grep is denied once. Call `context_for` or `find_existing` first | Existing code is found by searching the map, not by wandering |
+| `reuse_check` | Needs your own `find_existing` or `context_for` search, plus a one-line conclusion as the note | A reuse check with no search proves nothing |
+| `verify` with an open possible duplicate | Held back until the copy is removed, or a reviewer calls `dismiss_duplicate` | You do not dismiss your own duplicate |
 | Anything that touches `.estack/state.db`, runs `estack skip`, `cancel` or `override`, uses `--no-verify` or `git commit -n`, changes `core.hooksPath` or git hooks config, or mentions `CLAUDECODE` | Always denied, and not configurable | These would switch the gates off |
 
 Markdown, `docs/` and the project brief are exempt from the task rule. Read-only commands are not gated.

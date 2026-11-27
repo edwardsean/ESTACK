@@ -27,7 +27,7 @@ function gitTry(cwd: string, agent: boolean, ...a: string[]) {
 function setup() {
   const dir = makeRepo();
   const io = { cwd: dir, env: {}, out: () => {}, err: () => {} };
-  expect(main(["init", "--engine", shim], io)).toBe(0);
+  expect(main(["init", "--engine", shim, "--code-map", "off"], io)).toBe(0);
   const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-bare-")));
   git(bare, "init", "--bare", "-b", "main");
   git(dir, "remote", "add", "origin", bare);
@@ -193,7 +193,7 @@ describe("git hooks", { timeout: 60_000 }, () => {
     mkdirSync(join(dir, ".githooks"));
     let out = "";
     const io = { cwd: dir, env: {}, out: (s: string) => (out += s), err: () => {} };
-    expect(main(["init", "--engine", shim], io)).toBe(0);
+    expect(main(["init", "--engine", shim, "--code-map", "off"], io)).toBe(0);
     expect(out).toContain("git hooks not installed: core.hooksPath is set (.githooks)");
     expect(readdirSync(join(dir, ".githooks"))).toEqual([]);
   });
@@ -254,7 +254,7 @@ describe("git hooks", { timeout: 60_000 }, () => {
     const dir = makeRepo();
     const gone = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-gone-"))), "estack.mjs");
     copyFileSync(shim, gone);
-    expect(main(["init", "--engine", gone], { cwd: dir, env: {}, out: () => {}, err: () => {} })).toBe(0);
+    expect(main(["init", "--engine", gone, "--code-map", "off"], { cwd: dir, env: {}, out: () => {}, err: () => {} })).toBe(0);
     rmSync(gone);
     const home = realpathSync(mkdtempSync(join(tmpdir(), "estack-home-")));
     const commit = () => spawnSync("git", ["commit", "-m", "a"], { cwd: dir, env: { ...process.env, CLAUDECODE: "1", HOME: home }, encoding: "utf8" });

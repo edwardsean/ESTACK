@@ -15,7 +15,7 @@ The estack plugin ships an enterprise layer that stays dormant until a repositor
 
 Only the first is enforcement. The engine runs in hooks, which sit outside the model, so no amount of reasoning inside a turn talks one out of firing. The other two shape what a run reads and what it plans, and a run that ignores them is not stopped by anything. Say which is which whenever you report on this file, because "configured" reads as "enforced" and here it usually is not.
 
-Sections 1 to 6 set up the gates. Sections 7 and 8 seed the knowledge index and the governance policy, and a repository that only wants gates can stop after section 6.
+Sections 1 to 7 set up the gates. Sections 8 and 9 seed the knowledge index and the governance policy, and a repository that only wants gates can stop after section 7.
 
 ## 1. Check the runtime first
 
@@ -24,7 +24,7 @@ Do this before writing anything. The edit and shell-command hooks fail closed wh
 - Confirm `node` is on PATH and is version 22.5 or newer, since the engine uses `node:sqlite`. If it is not, stop and say so. In an opted-in repository every edit and shell command would be refused, and the fix is to install Node or not to opt in.
 - Confirm the repository is a git repository. The engine keeps its state in the main checkout and binds tasks to branches.
 - Confirm the estack plugin is installed, since the hooks are registered from its manifest. Without it there is no hook to fire and the policy file does nothing.
-- Say plainly that hook firing cannot be proven from here. Section 6 is the check that proves it.
+- Say plainly that hook firing cannot be proven from here. Section 7 is the check that proves it.
 
 ## 2. Decide what the policy should say
 
@@ -60,7 +60,16 @@ The policy is project level, `.estack/policy.yaml`, and should be committed so e
 
 `.estack/state.db` is per-machine task state. Make sure it is gitignored, and say so.
 
-## 4. Run init
+## 4. Set up the code map
+
+The code map is a Graphify index of the repository that lets agents see existing code before they write new code. It is optional and can be off. Do this before running init, since the choices go into the policy.
+
+- Run `graphify --version`. If it is missing, or the version is outside `>=0.9.121,<0.10`, show the owner the install command (`uv tool install "graphifyy>=0.9.121,<0.10"`) and let them choose: install it first, or set up with the map off (`--code-map off`).
+- Run `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" map suggest`. It lists folders and files that look like build output, vendored code or generated code. Walk the owner through each suggestion, folder by folder, and keep any generated code their own code calls into, such as a generated database or API client, since agents need to see it. Pass the confirmed list to init as `--exclude "<glob>,<glob>"`.
+
+These choices apply on first setup only. Init never overwrites an existing policy, and `.estack/policy.yaml` is protected, so any later change to `code_map` is the owner's to make.
+
+## 5. Run init
 
 Run the engine's init in the project root:
 
@@ -68,9 +77,13 @@ Run the engine's init in the project root:
 node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" init --engine "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs"
 ```
 
+Add `--code-map off` if the owner chose no map, and `--exclude "<globs>"` with the confirmed list. Without `--code-map`, the map turns on when a supported Graphify is found and stays off otherwise, and init says so.
+
 Report each line it prints. It creates `.estack/policy.yaml` and `.estack/brief.md`, and it installs the git hooks `pre-commit` and `pre-push`, which run the same engine so a commit or push made by an agent through git itself is checked too. They act only when an agent runs git (`CLAUDECODE=1`), and the owner's own terminal is never checked. If it prints `git hooks not installed: core.hooksPath is set`, the repository routes hooks through its own directory. Say so, and tell the user that git-level enforcement is off until they call `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" git-hook pre-commit` and `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" git-hook pre-push` from their own hooks (with `CLAUDE_PLUGIN_ROOT` replaced by the plugin's real path, and the pre-push hook's stdin passed through). The Claude Code hooks still apply either way. If it chained an existing hook, say so.
 
 `.estack/brief.md` is for the owner to fill in: it is where the project's goals and constraints go, and the engine does not write them for you. Init is safe to re-run and never overwrites an existing file. The repository is opted in once `.estack/policy.yaml` exists.
+
+With the map on, init builds it and prints the folder shares, the biggest folders by share of the map. Show them and ask whether any big folder is a copy of other code, such as a vendored library or a mirrored package. If one is, give the owner the exact line to add under `code_map.exclude` in `.estack/policy.yaml`, for example `    - upstream/**`, and let them add it themselves. The agent cannot edit that file.
 
 Then tell the owner to commit `.estack/` themselves. Report that they should run, in their own terminal:
 
@@ -82,11 +95,11 @@ The agent must not try to commit it: the git pre-commit hook refuses any agent c
 
 When the owner edits the policy later, the change takes effect on the next hook with no restart.
 
-## 5. Retire the old policy
+## 6. Retire the old policy
 
 If `.claude/enterprise/gates.json` exists, it is superseded. Nothing reads it any more, and an old `approvals.jsonl` next to it is history only. Tell the owner, and offer to delete both. Do not delete them unasked, and do not port the old patterns silently: show the old patterns and offer to merge any the owner added by hand into `.estack/policy.yaml` under `patterns`.
 
-## 6. Prove it works
+## 7. Prove it works
 
 Do not report success on the strength of a written file. A policy file that nothing reads is indistinguishable from one that works.
 
@@ -103,9 +116,11 @@ That matches the `git_push` action. In the main session it should prompt the own
 3. Is `node` on PATH inside the environment Claude Code runs hooks in, which can differ from an interactive shell?
 4. Did the hook error? Errors land in Claude Code's debug output rather than in the chat. Run `claude --debug`, or open `/hooks` to confirm the estack hooks are registered.
 
+With the code map on, also check two things. Start a task with `start_task` and an `area` (a folder), and it should return context for that area. Then, in a fresh task, a Read or Grep before `reuse_check` should be denied once, until a `find_existing` or `context_for` search has run.
+
 Report which of these it was, or say that it is unresolved, rather than claiming the gates are active.
 
-## 7. Seed the knowledge index
+## 8. Seed the knowledge index
 
 The orchestrator retrieves knowledge by deriving a query from the task class plus the touched services, then reading only the entries that match. That only works if something says where each kind of knowledge lives. Without an index a run either reads nothing or bulk-loads the repository, and bulk loading fills a delegate's context with material it will not use while crowding out the material it will.
 
@@ -138,7 +153,7 @@ The `# schema: 1` line marks the format. Entries are kebab-case kinds so a query
 
 Two limits to state plainly. This indexes; it does not import. A company wiki, a Confluence space, and a Notion database stay where they are, and an entry pointing at one is a URL the run may or may not be able to fetch. And an index full of `not indexed` is not a failure, it is an honest picture of a repository that keeps its knowledge in someone's head. Report it as the second one.
 
-## 8. Seed the governance policy
+## 9. Seed the governance policy
 
 The governance policy says which change types need which review, and the orchestrator resolves it into named steps on the plan before it delegates anything. A review discovered after the work is done is a review that gets skipped.
 
@@ -201,13 +216,13 @@ Read `enforcedBy` carefully before describing any of this as a gate. `plan` mean
 
 `schema` must be `1`. Change types are open-vocabulary, so a team can rename them, add their own, and drop any of the six above. The orchestrator matches on the class it assigned in step 2 of its loop, and an unrecognized class gets the strictest treatment the file defines rather than the loosest.
 
-## 9. Say what this plugin cannot enforce
+## 10. Say what this plugin cannot enforce
 
 Some of what an enterprise architecture calls a gate lives on the platform and is out of reach here. Branch protection, required reviewers, CODEOWNERS enforcement, and CI quality gates are all configured in the forge and the pipeline, and nothing in this plugin writes or reads them. A hook can stop a command inside a session. It cannot make a branch protected.
 
 Say so whenever this skill writes a governance policy that names a review, so nobody reads `required` here and assumes the platform is checking it too. The honest split is that this plugin plans and prompts, and the platform enforces.
 
-## 10. Report
+## 11. Report
 
 Tell the user what was written and what each file does, keeping enforcement and intention visibly separate.
 

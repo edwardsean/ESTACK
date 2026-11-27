@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -5,11 +6,13 @@ import { main } from "../src/cli";
 import { openEngine } from "../src/engine";
 import { saveSessionHandover, saveTaskHandover } from "../src/handover";
 import { getTask, startTask } from "../src/tasks";
-import { makeRepo, writeFakeGraph } from "./helpers";
+import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import type { Exec } from "../src/exec";
 
-function run(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}) {
+// Graphify scripted as missing unless a test opts in, so init leaves the map off on any machine.
+function run(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, exec: Exec = fakeExec({ graphify: { code: 127 } })) {
   let out = "", err = "";
-  const status = main(args, { cwd, env, out: (s) => (out += s), err: (s) => (err += s) });
+  const status = main(args, { cwd, env, out: (s) => (out += s), err: (s) => (err += s), exec });
   return { status, out, err };
 }
 function setup() {
@@ -180,5 +183,52 @@ describe("cli hook", () => {
     expect(r.out).toContain("dist 25%");
     expect(r.out).toContain("main");
     expect(JSON.parse(run(dir, ["map", "status", "--json"]).out).checkouts[0].entries).toBe(4);
+  });
+});
+
+describe("cli init and the code map", () => {
+  const policyOf = (dir: string) => readFileSync(join(dir, ".estack", "policy.yaml"), "utf8");
+
+  test("init with --code-map off writes enabled false", () => {
+    const dir = makeRepo();
+    const r = run(dir, ["init", "--code-map", "off"], {}, fakeExec({ graphify: { code: 0, stdout: "graphify 0.9.121\n" } }));
+    expect(r.status).toBe(0);
+    expect(policyOf(dir)).toMatch(/enabled: false/);
+    expect(r.out).not.toContain("Graphify not found");
+  });
+
+  test("init with --exclude writes the list", () => {
+    const dir = makeRepo();
+    const r = run(dir, ["init", "--exclude", "dist/**,vendor/**"]);
+    expect(r.status).toBe(0);
+    const e = openEngine(dir);
+    expect(e.policy.code_map.exclude).toEqual(["dist/**", "vendor/**"]);
+  });
+
+  test("init without Graphify turns the map off and says how to install", () => {
+    const dir = makeRepo();
+    const r = run(dir, ["init"]);
+    expect(r.status).toBe(0);
+    expect(openEngine(dir).policy.code_map.enabled).toBe(false);
+    expect(r.out).toContain('code map off: Graphify not found (install with uv tool install "graphifyy>=0.9.121,<0.10", then re-run setup)');
+  });
+
+  test("init with a supported Graphify turns the map on, builds it and prints folder shares", () => {
+    const dir = makeRepo();
+    const exec = fakeExec({ graphify: { code: 0, stdout: "graphify 0.9.121\n" } });
+    const r = run(dir, ["init"], {}, exec);
+    expect(r.status).toBe(0);
+    expect(openEngine(dir).policy.code_map.enabled).toBe(true);
+    expect(r.out).toMatch(/map build failed|map built for main/);
+  });
+
+  test("map suggest lists suggestions, or says there are none", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    expect(run(dir, ["map", "suggest"]).out).toBe("no exclude suggestions\n");
+    mkdirSync(join(dir, "dist"));
+    writeFileSync(join(dir, "dist", "a.js"), "x\n");
+    execFileSync("git", ["add", "."], { cwd: dir });
+    expect(run(dir, ["map", "suggest"]).out).toBe("dist/**  (named dist)\n");
   });
 });

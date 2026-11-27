@@ -35210,6 +35210,52 @@ function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
     rmSync(lock, { force: true });
   }
 }
+var EXCLUDE_DIRS = /* @__PURE__ */ new Set(["dist", "build", "out", "vendor", "third_party", "generated"]);
+var CODE_EXT = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|cs|cpp|cc|c|h|hpp|swift|scala|dart|proto)$/;
+var GENERATED_HEADER = /@generated|Code generated|DO NOT EDIT/;
+function suggestExcludes(e, root) {
+  const found = /* @__PURE__ */ new Map();
+  const add = (glob, reason) => {
+    if (!found.has(glob)) found.set(glob, reason);
+  };
+  const ls = e.exec.run("git", ["ls-files", "-z"], { cwd: root, timeoutMs: 3e4 });
+  const files = ls.code === 0 ? ls.stdout.split("\0").filter(Boolean) : [];
+  for (const f of files) {
+    const dirs = f.split("/").slice(0, -1);
+    for (let i = 0; i < Math.min(dirs.length, 3); i++) {
+      if (EXCLUDE_DIRS.has(dirs[i])) add(dirs.slice(0, i + 1).join("/") + "/**", `named ${dirs[i]}`);
+    }
+  }
+  try {
+    for (const line of readFileSync2(join4(root, ".gitattributes"), "utf8").split("\n")) {
+      const [pattern, ...attrs] = line.trim().split(/\s+/);
+      if (!pattern || pattern.startsWith("#")) continue;
+      for (const a of attrs) {
+        const m = /^(linguist-generated|linguist-vendored)(?:=(.*))?$/.exec(a);
+        if (m && m[2] !== "false") add(pattern, `marked ${m[1]}`);
+      }
+    }
+  } catch {
+  }
+  const byDir = /* @__PURE__ */ new Map();
+  for (const f of files) {
+    if (!CODE_EXT.test(f)) continue;
+    let head;
+    try {
+      head = readFileSync2(join4(root, f), "utf8").slice(0, 4096).split("\n").slice(0, 5).join("\n");
+    } catch {
+      continue;
+    }
+    const i = f.lastIndexOf("/");
+    const dir = i < 0 ? "" : f.slice(0, i);
+    byDir.set(dir, [...byDir.get(dir) ?? [], { file: f, marked: GENERATED_HEADER.test(head) }]);
+  }
+  for (const [dir, list] of byDir) {
+    if (dir !== "" && list.every((x) => x.marked)) add(dir + "/**", "header says generated");
+    else for (const x of list) if (x.marked) add(x.file, "header says generated");
+  }
+  return [...found].map(([glob, reason]) => ({ glob, reason })).sort((a, b) => a.glob.localeCompare(b.glob, "en"));
+}
 
 // engine/src/mapfirst.ts
 var READ_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep"]);
@@ -45980,7 +46026,7 @@ function prePush(e, cwd, stdin) {
 
 // engine/src/cli.ts
 var USAGE = `usage: estack <command>
-  init [--engine <path>]
+  init [--engine <path>] [--code-map <on|off>] [--exclude <globs>]   (first setup only)
   git-hook <pre-commit|pre-push>                     (called by the installed git hooks)
   map-hook <post-commit|post-checkout|post-merge|post-rewrite>   (called by the installed git hooks)
   status [--json]
@@ -45989,7 +46035,7 @@ var USAGE = `usage: estack <command>
   skip --task <id> --step <name> --reason <text>     (owner only)
   cancel --task <id> --reason <text>                 (owner only)
   override <action> --reason <text> [--task <id>]    (owner only)
-  map <update|status> [--json]                       (the Graphify code map)
+  map <update|status|suggest> [--json]                     (the Graphify code map)
   hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
 var Usage = class extends Error {
@@ -46089,8 +46135,14 @@ function mapStatus(e, json2, out) {
 function dispatch(cmd, rest, io) {
   switch (cmd) {
     case "init": {
-      const { opt } = parse4(rest, ["engine"]);
-      const { created } = initRepo(io.cwd);
+      const { opt } = parse4(rest, ["engine", "code-map", "exclude"]);
+      if (opt["code-map"] !== void 0 && opt["code-map"] !== "on" && opt["code-map"] !== "off") throw new Usage("--code-map needs on or off");
+      const exec = io.exec ?? realExec;
+      const v = opt["code-map"] === "off" ? null : graphifyVersion({ exec, cwd: io.cwd });
+      const supported = v !== null && versionSupported(v);
+      const mapOn = opt["code-map"] === "on" || opt["code-map"] === void 0 && supported;
+      const exclude = (opt.exclude ?? "").split(",").map((g) => g.trim()).filter(Boolean);
+      const { created } = initRepo(io.cwd, { codeMap: mapOn, exclude });
       io.out(created.length ? created.map((f) => `created ${f}`).join("\n") + "\n" : "already initialised\n");
       const entry2 = process.argv[1];
       const enginePath = opt.engine !== void 0 ? resolve3(io.cwd, opt.engine) : entry2 && /estack\.mjs$/.test(entry2) ? realpathSync3(entry2) : null;
@@ -46103,6 +46155,26 @@ function dispatch(cmd, rest, io) {
 `);
         if (h.chained.length) io.out(`chained existing hooks: ${h.chained.join(", ")}
 `);
+      }
+      if (opt["code-map"] === void 0 && !supported) {
+        io.out(`code map off: Graphify not found (install with ${INSTALL_HINT}, then re-run setup)
+`);
+      }
+      if (mapOn) {
+        const e = openEngine(io.cwd, { exec });
+        try {
+          if (e.policy.code_map.enabled) {
+            const checkout = e.repo.root;
+            const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
+            io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms
+` : `map build failed: ${r.error}
+`);
+            const g = r.ok ? loadGraph(checkout) : null;
+            if (g) io.out("folder shares: " + folderShares(g).slice(0, 10).map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+          }
+        } finally {
+          e.db.close();
+        }
       }
       return 0;
     }
@@ -46197,10 +46269,16 @@ function dispatch(cmd, rest, io) {
     }
     case "map": {
       const sub = rest[0] ?? "";
-      if (sub !== "update" && sub !== "status") throw new Usage("map needs update or status");
+      if (sub !== "update" && sub !== "status" && sub !== "suggest") throw new Usage("map needs update, status or suggest");
       const { bool } = parse4(rest.slice(1), [], ["json"]);
-      const e = openEngine(io.cwd);
+      const e = openEngine(io.cwd, { exec: io.exec });
       try {
+        if (sub === "suggest") {
+          const s = suggestExcludes(e, e.repo.root);
+          io.out(s.length ? s.map((x) => `${x.glob}  (${x.reason})
+`).join("") : "no exclude suggestions\n");
+          return 0;
+        }
         if (sub === "status") {
           mapStatus(e, bool.has("json"), io.out);
           return 0;

@@ -20,7 +20,7 @@ export interface BuildResult { ok: boolean; checkout: string; duration_ms: numbe
 const MAP_ACTOR = { session_id: "map" };
 const OUT_DIR = "graphify-out";
 
-export function graphifyVersion(e: Engine): string | null {
+export function graphifyVersion(e: Pick<Engine, "exec" | "cwd">): string | null {
   try {
     const r = e.exec.run("graphify", ["--version"], { cwd: e.cwd, timeoutMs: 10_000 });
     if (r.code !== 0) return null;
@@ -181,4 +181,52 @@ export function buildGraph(e: Engine, checkout: string, timeoutMs: number = BUIL
   } finally {
     rmSync(lock, { force: true });
   }
+}
+
+const EXCLUDE_DIRS = new Set(["dist", "build", "out", "vendor", "third_party", "generated"]);
+const CODE_EXT = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|cs|cpp|cc|c|h|hpp|swift|scala|dart|proto)$/;
+const GENERATED_HEADER = /@generated|Code generated|DO NOT EDIT/;
+
+/** Folders and files that look like build output, vendored or generated code, from the tracked files. */
+export function suggestExcludes(e: Engine, root: string): { glob: string; reason: string }[] {
+  const found = new Map<string, string>();
+  const add = (glob: string, reason: string) => { if (!found.has(glob)) found.set(glob, reason); };
+  const ls = e.exec.run("git", ["ls-files", "-z"], { cwd: root, timeoutMs: 30_000 });
+  const files = ls.code === 0 ? ls.stdout.split("\0").filter(Boolean) : [];
+
+  for (const f of files) {
+    const dirs = f.split("/").slice(0, -1);
+    for (let i = 0; i < Math.min(dirs.length, 3); i++) {
+      if (EXCLUDE_DIRS.has(dirs[i])) add(dirs.slice(0, i + 1).join("/") + "/**", `named ${dirs[i]}`);
+    }
+  }
+
+  try {
+    for (const line of readFileSync(join(root, ".gitattributes"), "utf8").split("\n")) {
+      const [pattern, ...attrs] = line.trim().split(/\s+/);
+      if (!pattern || pattern.startsWith("#")) continue;
+      for (const a of attrs) {
+        const m = /^(linguist-generated|linguist-vendored)(?:=(.*))?$/.exec(a);
+        if (m && m[2] !== "false") add(pattern, `marked ${m[1]}`);
+      }
+    }
+  } catch { /* no .gitattributes */ }
+
+  const byDir = new Map<string, { file: string; marked: boolean }[]>();
+  for (const f of files) {
+    if (!CODE_EXT.test(f)) continue;
+    let head: string;
+    try {
+      head = readFileSync(join(root, f), "utf8").slice(0, 4096).split("\n").slice(0, 5).join("\n");
+    } catch { continue; }
+    const i = f.lastIndexOf("/");
+    const dir = i < 0 ? "" : f.slice(0, i);
+    byDir.set(dir, [...(byDir.get(dir) ?? []), { file: f, marked: GENERATED_HEADER.test(head) }]);
+  }
+  for (const [dir, list] of byDir) {
+    if (dir !== "" && list.every((x) => x.marked)) add(dir + "/**", "header says generated");
+    else for (const x of list) if (x.marked) add(x.file, "header says generated");
+  }
+
+  return [...found].map(([glob, reason]) => ({ glob, reason })).sort((a, b) => a.glob.localeCompare(b.glob, "en"));
 }

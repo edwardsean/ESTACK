@@ -27,7 +27,9 @@ Inside a Claude Code session:
 /estack:setup-models          # pick a model and effort for each seat, once
 ```
 
-You need Node 22.5 or newer (the engine uses `node:sqlite`).
+You need Node 22.5 or newer (the engine uses `node:sqlite`). The code map
+needs [Graphify](https://github.com/Graphify-Labs/graphify), which is optional:
+`uv tool install "graphifyy>=0.9.121,<0.10"`.
 
 In a repository where you want the engine and its guards (plus the knowledge
 index and governance policy), run once:
@@ -109,6 +111,16 @@ edit, risky command, agent commit, push and end of turn: no task means no code
 edit, no verify evidence means no push, and pushes, merges, deploys and
 migrations wait for your approval. Workers never push. In a repo that didn't opt
 in, the hooks do nothing. See [Engine](#engine) and [Hooks](#hooks).
+
+**The code map.** If Graphify is installed, `/estack:setup` builds a map of
+your code's files, functions and who calls what. An agent that starts a task
+with an `area` gets that part of the map, and `find_existing`, `context_for` and
+`who_uses` search it, so a reuse check rests on a real search. A copy of existing
+code that slips in holds back verify until it is removed or a reviewer dismisses
+it. The map leaves out `.estack/` and anything in `code_map.exclude` in the
+policy (setup suggests build output, vendored and generated code). To turn it
+off, set up with `--code-map off` or set `code_map.enabled: false` in
+`.estack/policy.yaml`.
 
 **24 principles.** Short rules the agent cites when they change a decision: fix
 root causes, prove it works, subtract before you add, make illegal states
@@ -244,7 +256,7 @@ estack is being built in phases, each one usable on its own
 | 2 | The engine: tasks, required steps, evidence, MCP tools, CLI | Done |
 | 3 | Hooks and git hooks that enforce the engine | Done |
 | 4 | Handover: continue a task in a fresh session from recorded state | Done |
-| 5 | Code map on [Graphify](https://github.com/Graphify-Labs/graphify): agents see existing code before writing new code, and reuse searches count as evidence | Next |
+| 5 | Code map on [Graphify](https://github.com/Graphify-Labs/graphify): agents see existing code before writing new code, and reuse searches count as evidence | Done |
 | 6 | Parallel workers in their own worktrees, with claims so two never build the same thing | Planned |
 | 7 | A second coding agent (Cursor or OpenCode) from the same `core/` | Planned |
 
