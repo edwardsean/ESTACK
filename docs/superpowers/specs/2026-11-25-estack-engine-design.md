@@ -450,10 +450,11 @@ engine knows (agent ids, tasks, `code_queries`):
 
 - **Off.** If Graphify isn't installed, or the repository has no language it supports,
   `/estack:setup` says so and writes `code_map: { enabled: false }` into `policy.yaml`
-  (protected, so only the owner turns it back on by re-running setup). Then the
-  code-map tools answer "the code map is off", the "map first" rule does nothing, there
-  is no duplicate check, and `reuse_check` takes a `note` saying what was searched and
-  found. Everything else works as before.
+  (protected, so only the owner turns it back on, by adding the code_map block to
+  policy.yaml and running estack map update). Then the code-map tools answer "the code
+  map is off", the "map first" rule does nothing, there is no duplicate check, and
+  `reuse_check` takes a `note` saying what was searched and found. Everything else
+  works as before.
 - **Broken.** With the map on, a build or query that fails or times out returns the error
   to the agent, is logged in `code_queries` with `ok` false, and does not count as
   `reuse_check` evidence. The agent tells the owner, who fixes it (`estack map update`

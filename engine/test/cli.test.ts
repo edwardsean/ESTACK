@@ -205,12 +205,48 @@ describe("cli init and the code map", () => {
     expect(e.policy.code_map.exclude).toEqual(["dist/**", "vendor/**"]);
   });
 
-  test("init without Graphify turns the map off and says how to install", () => {
+  const NOT_FOUND = 'code map off: Graphify not found. Install it with uv tool install "graphifyy>=0.9.121,<0.10", then add a code_map block to .estack/policy.yaml yourself (see /estack:setup) and run "estack map update".\n';
+  const NOT_APPLIED = "policy.yaml already exists, so --code-map and --exclude were not applied; to change the code map, edit the code_map block in .estack/policy.yaml yourself.\n";
+  const supportedGraphify = () => fakeExec({ graphify: { code: 0, stdout: "graphify 0.9.121\n" } });
+
+  test("init without Graphify turns the map off and says how to turn it on later", () => {
     const dir = makeRepo();
     const r = run(dir, ["init"]);
     expect(r.status).toBe(0);
     expect(openEngine(dir).policy.code_map.enabled).toBe(false);
-    expect(r.out).toContain('code map off: Graphify not found (install with uv tool install "graphifyy>=0.9.121,<0.10", then re-run setup)');
+    expect(r.out).toContain(NOT_FOUND);
+    expect(r.out).not.toContain("re-run setup");
+  });
+
+  test("re-running init on a policy with no code_map, without Graphify, says how to turn the map on", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, policyOf(dir).replace(/^code_map:.*\n(?:  .*\n)+/m, ""));
+    const r = run(dir, ["init"]);
+    expect(r.out).toContain("already initialised\n");
+    expect(r.out).toContain(NOT_FOUND);
+  });
+
+  test("init on an existing policy applies neither --code-map nor --exclude, and says so", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    const before = policyOf(dir);
+    for (const flags of [["--code-map", "on"], ["--exclude", "dist/**"], ["--code-map", "off", "--exclude", "x/**"]]) {
+      const r = run(dir, ["init", ...flags], {}, supportedGraphify());
+      expect(r.status).toBe(0);
+      expect(r.out).toContain(NOT_APPLIED);
+      expect(policyOf(dir)).toBe(before);
+    }
+    expect(run(dir, ["init"]).out).not.toContain(NOT_APPLIED);
+  });
+
+  test("init on an existing policy with the map on does not call the map off", () => {
+    const dir = makeRepo();
+    run(dir, ["init"]);
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, policyOf(dir).replace("enabled: false", "enabled: true"));
+    expect(run(dir, ["init"]).out).not.toContain("code map off");
   });
 
   test("init with a supported Graphify turns the map on, builds it and prints folder shares", () => {

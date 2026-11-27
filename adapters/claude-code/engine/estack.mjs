@@ -46101,6 +46101,16 @@ function handovers(e, json2, out) {
   }
 }
 var MAP_OFF = "the code map is off (code_map.enabled is false in .estack/policy.yaml)\n";
+var NOT_FOUND = `code map off: Graphify not found. Install it with ${INSTALL_HINT}, then add a code_map block to .estack/policy.yaml yourself (see /estack:setup) and run "estack map update".
+`;
+var NOT_APPLIED = "policy.yaml already exists, so --code-map and --exclude were not applied; to change the code map, edit the code_map block in .estack/policy.yaml yourself.\n";
+function mapEnabled(cwd) {
+  try {
+    return loadPolicy(findRepo(cwd)).code_map.enabled;
+  } catch {
+    return false;
+  }
+}
 function mapStatus(e, json2, out) {
   const version2 = graphifyVersion(e);
   const supported = version2 !== null && versionSupported(version2);
@@ -46153,7 +46163,9 @@ function dispatch(cmd, rest, io) {
       const mapOn = opt["code-map"] === "on" || opt["code-map"] === void 0 && supported;
       const exclude = (opt.exclude ?? "").split(",").map((g) => g.trim()).filter(Boolean);
       const { created } = initRepo(io.cwd, { codeMap: mapOn, exclude });
+      const fresh = created.includes(".estack/policy.yaml");
       io.out(created.length ? created.map((f) => `created ${f}`).join("\n") + "\n" : "already initialised\n");
+      if (!fresh && (opt["code-map"] !== void 0 || opt.exclude !== void 0)) io.out(NOT_APPLIED);
       const entry2 = process.argv[1];
       const enginePath = opt.engine !== void 0 ? resolve3(io.cwd, opt.engine) : entry2 && /estack\.mjs$/.test(entry2) ? realpathSync3(entry2) : null;
       if (enginePath === null) io.out("git hooks not installed: engine path unknown\n");
@@ -46166,10 +46178,7 @@ function dispatch(cmd, rest, io) {
         if (h.chained.length) io.out(`chained existing hooks: ${h.chained.join(", ")}
 `);
       }
-      if (opt["code-map"] === void 0 && !supported) {
-        io.out(`code map off: Graphify not found (install with ${INSTALL_HINT}, then re-run setup)
-`);
-      }
+      if (opt["code-map"] === void 0 && !supported && (fresh || !mapEnabled(io.cwd))) io.out(NOT_FOUND);
       if (mapOn) {
         const e = openEngine(io.cwd, { exec });
         try {

@@ -9,7 +9,7 @@ import { serveStdio } from "./mcp";
 import { assertOwner, cancelTask, recordOverride, skipStep } from "./owner";
 import { preCommit, prePush, installGitHooks } from "./githooks";
 import { afterCommit } from "./duplicates";
-import { initRepo } from "./policy";
+import { initRepo, loadPolicy } from "./policy";
 import { realExec, type Exec } from "./exec";
 import { findRepo } from "./repo";
 import { pendingHandovers, type SessionHandoverBody } from "./handover";
@@ -87,6 +87,17 @@ function handovers(e: Engine, json: boolean, out: (s: string) => void): void {
 }
 
 const MAP_OFF = "the code map is off (code_map.enabled is false in .estack/policy.yaml)\n";
+const NOT_FOUND = `code map off: Graphify not found. Install it with ${INSTALL_HINT}, then add a code_map block to .estack/policy.yaml yourself (see /estack:setup) and run "estack map update".\n`;
+const NOT_APPLIED = "policy.yaml already exists, so --code-map and --exclude were not applied; to change the code map, edit the code_map block in .estack/policy.yaml yourself.\n";
+
+/** Whether the policy on disk turns the map on; false when it can't be read. */
+function mapEnabled(cwd: string): boolean {
+  try {
+    return loadPolicy(findRepo(cwd)).code_map.enabled;
+  } catch {
+    return false;
+  }
+}
 
 function mapStatus(e: Engine, json: boolean, out: (s: string) => void): void {
   const version = graphifyVersion(e);
@@ -129,7 +140,10 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       const mapOn = opt["code-map"] === "on" || (opt["code-map"] === undefined && supported);
       const exclude = (opt.exclude ?? "").split(",").map((g) => g.trim()).filter(Boolean);
       const { created } = initRepo(io.cwd, { codeMap: mapOn, exclude });
+      // Init never rewrites an existing policy: it is protected, so changing it is the owner's edit.
+      const fresh = created.includes(".estack/policy.yaml");
       io.out(created.length ? created.map((f) => `created ${f}`).join("\n") + "\n" : "already initialised\n");
+      if (!fresh && (opt["code-map"] !== undefined || opt.exclude !== undefined)) io.out(NOT_APPLIED);
       const entry = process.argv[1];
       const enginePath = opt.engine !== undefined ? resolve(io.cwd, opt.engine)
         : entry && /estack\.mjs$/.test(entry) ? realpathSync(entry) : null;
@@ -140,9 +154,7 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
         else io.out(`installed git hooks: ${h.installed.join(", ")}\n`);
         if (h.chained.length) io.out(`chained existing hooks: ${h.chained.join(", ")}\n`);
       }
-      if (opt["code-map"] === undefined && !supported) {
-        io.out(`code map off: Graphify not found (install with ${INSTALL_HINT}, then re-run setup)\n`);
-      }
+      if (opt["code-map"] === undefined && !supported && (fresh || !mapEnabled(io.cwd))) io.out(NOT_FOUND);
       if (mapOn) {
         const e = openEngine(io.cwd, { exec });
         try {

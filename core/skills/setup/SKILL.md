@@ -67,7 +67,23 @@ The code map is a Graphify index of the repository that lets agents see existing
 - Run `graphify --version`. If it is missing, or the version is outside `>=0.9.121,<0.10`, show the owner the install command (`uv tool install "graphifyy>=0.9.121,<0.10"`) and let them choose: install it first, or set up with the map off (`--code-map off`).
 - Run `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" map suggest`. It lists folders and files that look like build output, vendored code or generated code. Walk the owner through each suggestion, folder by folder, and keep any generated code their own code calls into, such as a generated database or API client, since agents need to see it. Pass the confirmed list to init as `--exclude "<glob>,<glob>"`.
 
-These choices apply on first setup only. Init never overwrites an existing policy, and `.estack/policy.yaml` is protected, so any later change to `code_map` is the owner's to make.
+These choices apply on first setup only. Init never overwrites an existing policy, and `.estack/policy.yaml` is protected, so any later change to `code_map` is the owner's to make. On an existing policy, init ignores `--code-map` and `--exclude` and says so.
+
+### Turning the map on in an existing repository
+
+A repository set up before the code map existed, or set up while Graphify was missing, has the map off, and re-running init does not change that. To turn it on:
+
+1. If `graphify --version` is missing or outside `>=0.9.121,<0.10`, have the owner install it: `uv tool install "graphifyy>=0.9.121,<0.10"`.
+2. Run `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" map suggest` and confirm the exclude list with the owner, folder by folder, as above.
+3. Give the owner this block to paste into `.estack/policy.yaml`, replacing any `code_map:` block already there, with the confirmed globs in the `exclude` list (`[]` for none):
+
+   ```yaml
+   code_map:
+     enabled: true
+     exclude: ["dist/**", "vendor/**"]
+   ```
+
+4. Once the owner has saved it, run `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" map update` to build the map, and report the line it prints. Then the owner commits the policy, as in section 5.
 
 ## 5. Run init
 
