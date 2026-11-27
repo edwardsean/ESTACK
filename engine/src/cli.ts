@@ -10,6 +10,7 @@ import { assertOwner, cancelTask, recordOverride, skipStep } from "./owner";
 import { preCommit, prePush, installGitHooks } from "./githooks";
 import { initRepo } from "./policy";
 import { findRepo } from "./repo";
+import { pendingHandovers, type SessionHandoverBody } from "./handover";
 import { listOpen } from "./tasks";
 import { EngineError } from "./types";
 
@@ -19,6 +20,7 @@ const USAGE = `usage: estack <command>
   init [--engine <path>]
   git-hook <pre-commit|pre-push>                     (called by the installed git hooks)
   status [--json]
+  handovers [--json]                                 (pending handovers)
   run --task <id> --step <test|verify> [--timeout <sec>]
   skip --task <id> --step <name> --reason <text>     (owner only)
   cancel --task <id> --reason <text>                 (owner only)
@@ -68,6 +70,17 @@ function status(e: Engine, json: boolean, out: (s: string) => void): void {
   }
 }
 
+function handovers(e: Engine, json: boolean, out: (s: string) => void): void {
+  const all = pendingHandovers(e);
+  if (json) return out(JSON.stringify(all, null, 2) + "\n");
+  if (all.length === 0) return out("no pending handovers\n");
+  for (const h of all) {
+    const bodies = h.body.kind === "session" ? (h.body as SessionHandoverBody).tasks : [h.body];
+    const next = bodies.map((t) => `#${t.task.id} ${t.next_step ?? "done"}`).join(", ");
+    out(`${h.kind === "session" ? "session" : `#${h.task_id}`} ${h.created_at} from ${h.from_session} ${h.auto ? "auto" : "manual"} next: ${next}\n`);
+  }
+}
+
 function dispatch(cmd: string, rest: string[], io: Io): number {
   switch (cmd) {
     case "init": {
@@ -108,6 +121,12 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
     case "status": {
       const { bool } = parse(rest, [], ["json"]);
       status(openEngine(io.cwd), bool.has("json"), io.out);
+      return 0;
+    }
+    case "handovers": {
+      const { bool } = parse(rest, [], ["json"]);
+      const e = openEngine(io.cwd);
+      try { handovers(e, bool.has("json"), io.out); } finally { e.db.close(); }
       return 0;
     }
     case "run": {

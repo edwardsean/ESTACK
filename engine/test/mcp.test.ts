@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, test } from "vitest";
+import { runHook } from "../src/hooks";
 import { createServer } from "../src/mcp";
 import { initRepo } from "../src/policy";
 import { fakeExec, makeRepo } from "./helpers";
@@ -34,10 +35,10 @@ function initedRepo(): string {
 }
 
 describe("mcp server", () => {
-  test("lists exactly the four tools", async () => {
+  test("lists exactly the six tools", async () => {
     const { client } = await connect(initedRepo());
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(["complete_step", "run_check", "start_task", "status"]);
+    expect(names).toEqual(["complete_step", "handover", "resume", "run_check", "start_task", "status"]);
   });
 
   test("not opted in returns isError with NOT_OPTED_IN text, server keeps working", async () => {
@@ -93,5 +94,63 @@ describe("mcp server", () => {
     const r = await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", actor: A, cwd: wt });
     expect(r.isError, r.text).toBe(false);
     expect(JSON.parse(r.text).task).toMatchObject({ cwd: wt, branch: "feat" });
+  });
+  test("CTO handover in session s1, resume in s2: s2 gets goal and plan and can edit every task of s1", async () => {
+    const dir = initedRepo();
+    const { call } = await connect(dir);
+    const s1 = { session_id: "s1" };
+    const wts: string[] = [];
+    const ids: number[] = [];
+    for (const n of ["one", "two"]) {
+      const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+      execFileSync("git", ["worktree", "add", "-b", `feat-${n}`, wt], { cwd: dir, stdio: "ignore" });
+      const r = await call("start_task", { title: n, type: "feature", goal: `goal ${n}`, done_check: "d", actor: s1, cwd: wt });
+      expect(r.isError, r.text).toBe(false);
+      wts.push(wt);
+      ids.push(JSON.parse(r.text).task.id);
+    }
+    expect((await call("complete_step", { task_id: ids[0], step: "plan", evidence: { kind: "note", text: "p" }, actor: s1 })).isError).toBe(false);
+    const h = await call("handover", {
+      goal: "ship it", plan: ["UI later"], decisions: [{ what: "sqlite", why: "simple" }], actor: s1,
+    });
+    expect(h.isError, h.text).toBe(false);
+    const saved = JSON.parse(h.text);
+    expect(saved.kind).toBe("session");
+    expect(saved.next).toBe("Handover saved. Tell the owner: run /clear; the new session will load this automatically.");
+
+    const s2 = { session_id: "s2" };
+    const r = await call("resume", { actor: s2 });
+    expect(r.isError, r.text).toBe(false);
+    const out = JSON.parse(r.text);
+    expect(out.handover.body.goal).toBe("ship it");
+    expect(out.handover.body.plan).toEqual(["UI later"]);
+    expect(out.views.map((v: { task: { id: number } }) => v.task.id).sort()).toEqual([...ids].sort());
+    expect(out.instructions).toBe(
+      `Re-read every file listed in the handover before changing anything; do not trust a summary of code. Goal: ship it. Next: #${ids[0]} reuse_check, #${ids[1]} plan.`);
+
+    for (const wt of wts) {
+      const ev = (sid: string) => ({
+        hook_event_name: "PreToolUse", session_id: sid, cwd: wt, tool_name: "Write", tool_input: { file_path: join(wt, "x.txt") },
+      });
+      expect(runHook("pre-tool-use", ev("s2"), { exec: fakeExec({}) })).toBeNull();
+      const denied = runHook("pre-tool-use", ev("s3"), { exec: fakeExec({}) }) as any;
+      expect(denied?.hookSpecificOutput?.permissionDecision).toBe("deny");
+    }
+  });
+
+  test("handover refuses while a worker is mid-task and names it", async () => {
+    const { call } = await connect(initedRepo());
+    const t = JSON.parse((await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", actor: A })).text);
+    const r = await call("handover", { goal: "g", actor: { session_id: "s1" } });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/^BAD_EVIDENCE: /);
+    expect(r.text).toContain(`#${t.task.id}`);
+  });
+
+  test("resume with nothing waiting is a NO_TASK tool error", async () => {
+    const { call } = await connect(initedRepo());
+    const r = await call("resume", { actor: { session_id: "s2" } });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/^NO_TASK: /);
   });
 });

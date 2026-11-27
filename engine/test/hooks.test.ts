@@ -217,6 +217,13 @@ describe("hooks", () => {
     expect("agent_id" in m.hookSpecificOutput.updatedInput.actor).toBe(false);
   });
 
+  test("resume calls get the real actor stamped", () => {
+    const dir = repo();
+    const r = pre(dir, { tool_name: "mcp__plugin_estack_estack__resume", agent_id: "A", tool_input: { actor: { session_id: "fake" } } });
+    expect(decision(r)).toBe("allow");
+    expect(r.hookSpecificOutput.updatedInput.actor).toEqual({ session_id: S, agent_id: "A" });
+  });
+
   test("C6 start_task gets the caller's cwd stamped over a typed one", () => {
     const dir = repo();
     const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
