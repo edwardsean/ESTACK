@@ -11,6 +11,7 @@ import { preCommit, prePush, installGitHooks } from "./githooks";
 import { initRepo } from "./policy";
 import { findRepo } from "./repo";
 import { pendingHandovers, type SessionHandoverBody } from "./handover";
+import { BUILD_TIMEOUT_MS, buildGraph, checkoutLabel, checkoutOf, folderShares, graphifyVersion, loadGraph, versionSupported } from "./graph";
 import { listOpen } from "./tasks";
 import { EngineError } from "./types";
 
@@ -25,6 +26,7 @@ const USAGE = `usage: estack <command>
   skip --task <id> --step <name> --reason <text>     (owner only)
   cancel --task <id> --reason <text>                 (owner only)
   override <action> --reason <text> [--task <id>]    (owner only)
+  map <update|status> [--json]                       (the Graphify code map)
   hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
 
@@ -79,6 +81,38 @@ function handovers(e: Engine, json: boolean, out: (s: string) => void): void {
     const next = bodies.map((t) => `#${t.task.id} ${t.next_step ?? "done"}`).join(", ");
     out(`#${h.id} ${h.kind === "session" ? "session" : `task #${h.task_id}`} ${h.created_at} from ${h.from_session} ${h.auto ? "auto" : "manual"} next: ${next}\n`);
   }
+}
+
+const MAP_OFF = "the code map is off (code_map.enabled is false in .estack/policy.yaml)\n";
+
+function mapStatus(e: Engine, json: boolean, out: (s: string) => void): void {
+  const version = graphifyVersion(e);
+  const supported = version !== null && versionSupported(version);
+  const cwds = [e.repo.root, ...listOpen(e).map((t) => t.task.cwd)].filter((c, i, a) => a.indexOf(c) === i);
+  const checkouts = cwds.map((cwd) => {
+    const g = loadGraph(cwd);
+    return {
+      checkout: cwd, label: checkoutLabel(e, cwd), built_at_commit: g?.built_at_commit ?? null,
+      entries: g?.nodes.size ?? 0, files: g?.files.size ?? 0, built: g !== null,
+      folders: g ? folderShares(g).slice(0, 10) : [],
+    };
+  });
+  const events = e.db.prepare("SELECT at, payload_json FROM events WHERE kind = 'map_built' ORDER BY id DESC").all() as { at: string; payload_json: string }[];
+  let last_failure: { at: string; checkout: string; error: string } | null = null;
+  for (const ev of events) {
+    const p = JSON.parse(ev.payload_json) as { checkout: string; ok: boolean; error?: string };
+    if (p.ok) break;
+    last_failure ??= { at: ev.at, checkout: p.checkout, error: p.error ?? "unknown error" };
+  }
+  if (json) return out(JSON.stringify({ enabled: e.policy.code_map.enabled, graphify_version: version, supported, checkouts, last_failure }, null, 2) + "\n");
+  out(`code map: ${e.policy.code_map.enabled ? "on" : "off"}\n`);
+  out(`graphify: ${version === null ? "not installed" : `${version} (${supported ? "supported" : "not supported"})`}\n`);
+  for (const c of checkouts) {
+    if (!c.built) { out(`${c.label}: not built\n`); continue; }
+    out(`${c.label}: built at ${c.built_at_commit ?? "unknown commit"}, ${c.entries} entries, ${c.files} files\n`);
+    out("  " + c.folders.map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+  }
+  if (last_failure) out(`last build failure (${last_failure.at}): ${last_failure.error}\n`);
 }
 
 function dispatch(cmd: string, rest: string[], io: Io): number {
@@ -163,6 +197,26 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       recordOverride(openEngine(io.cwd), a, io.env);
       io.out(`recorded override for ${a.action}\n`);
       return 0;
+    }
+    case "map": {
+      const sub = rest[0] ?? "";
+      if (sub !== "update" && sub !== "status") throw new Usage("map needs update or status");
+      const { bool } = parse(rest.slice(1), [], ["json"]);
+      const e = openEngine(io.cwd);
+      try {
+        if (sub === "status") { mapStatus(e, bool.has("json"), io.out); return 0; }
+        if (!e.policy.code_map.enabled) {
+          io.out(bool.has("json") ? JSON.stringify({ enabled: false }) + "\n" : MAP_OFF);
+          return 0;
+        }
+        const checkout = checkoutOf(e, io.cwd);
+        const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
+        if (bool.has("json")) io.out(JSON.stringify(r) + "\n");
+        else io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms\n` : `map build failed: ${r.error}\n`);
+        return r.ok ? 0 : 1;
+      } finally {
+        e.db.close();
+      }
     }
     case "hook": {
       const name = rest[0] ?? "";

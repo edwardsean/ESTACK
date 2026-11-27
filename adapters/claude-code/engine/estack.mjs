@@ -14593,7 +14593,7 @@ var require_dist2 = __commonJS({
 });
 
 // engine/src/cli.ts
-import { readFileSync as readFileSync3, realpathSync as realpathSync3 } from "node:fs";
+import { readFileSync as readFileSync4, realpathSync as realpathSync3 } from "node:fs";
 import { resolve as resolve3 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45400,6 +45400,157 @@ function prePush(e, cwd, stdin) {
   return null;
 }
 
+// engine/src/graph.ts
+import { appendFileSync, existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync2, rmSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { basename, join as join6 } from "node:path";
+var GRAPHIFY_ENV = { GRAPHIFY_BACKEND: "none", GRAPHIFY_QUERY_LOG_DISABLE: "1" };
+var GRAPH_SCHEMA = 1;
+var BUILD_TIMEOUT_MS = 3e5;
+var INSTALL_HINT = 'uv tool install "graphifyy>=0.9.121,<0.10"';
+var MAP_ACTOR = { session_id: "map" };
+var OUT_DIR = "graphify-out";
+function graphifyVersion(e) {
+  try {
+    const r = e.exec.run("graphify", ["--version"], { cwd: e.cwd, timeoutMs: 1e4 });
+    if (r.code !== 0) return null;
+    return /\d+\.\d+\.\d+/.exec(r.stdout)?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+function versionSupported(v) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+  if (!m) return false;
+  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  return maj === 0 && (min === 9 && pat >= 121);
+}
+function checkoutOf(e, cwd) {
+  const r = e.exec.run("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 1e4 });
+  return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : cwd;
+}
+function checkoutLabel(e, checkout) {
+  if (checkout === e.repo.root) return "main";
+  const row = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' AND cwd = ? ORDER BY id DESC LIMIT 1").get(checkout);
+  return row ? `task ${row.id}'s worktree` : checkout;
+}
+function writeIgnore(e, checkout) {
+  const lines2 = e.policy.code_map.exclude;
+  writeFileSync3(join6(checkout, ".graphifyignore"), lines2.map((l) => l + "\n").join(""));
+  const r = e.exec.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: checkout, timeoutMs: 1e4 });
+  if (r.code !== 0) return;
+  const info = join6(r.stdout.trim(), "info");
+  const file2 = join6(info, "exclude");
+  mkdirSync3(info, { recursive: true });
+  const have = existsSync5(file2) ? readFileSync3(file2, "utf8") : "";
+  const present = new Set(have.split("\n"));
+  const missing = [`${OUT_DIR}/`, ".graphifyignore"].filter((l) => !present.has(l));
+  if (missing.length) appendFileSync(file2, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
+}
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+function takeLock(lock, timeoutMs) {
+  for (; ; ) {
+    try {
+      writeFileSync3(lock, String(process.pid), { flag: "wx" });
+      return;
+    } catch (x) {
+      if (x.code !== "EEXIST") throw x;
+    }
+    let age;
+    try {
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (age >= timeoutMs) rmSync(lock, { force: true });
+    else sleep(200);
+  }
+}
+var readRaw = (checkout) => {
+  try {
+    return JSON.parse(readFileSync3(join6(checkout, OUT_DIR, "graph.json"), "utf8"));
+  } catch {
+    return null;
+  }
+};
+var lineOf = (loc) => Number(/(\d+)/.exec(loc ?? "")?.[1] ?? 0);
+function loadGraph(checkout) {
+  const raw = readRaw(checkout);
+  if (!raw) return null;
+  const nodes = /* @__PURE__ */ new Map();
+  for (const n of raw.nodes ?? []) {
+    if (!n.source_file) continue;
+    const label = n.label ?? n.id;
+    const line = lineOf(n.source_location);
+    const kind = label.endsWith("()") ? "function" : line === 1 && label.endsWith(basename(n.source_file)) ? "file" : "symbol";
+    nodes.set(n.id, { id: n.id, label, name: label.replace(/\(\)$/, "").replace(/^\./, ""), file: n.source_file, line, kind });
+  }
+  const edges = (raw.links ?? []).map((l) => ({
+    source: l.source,
+    target: l.target,
+    relation: l.relation ?? "",
+    confidence: l.confidence ?? "",
+    file: l.source_file ?? "",
+    line: lineOf(l.source_location)
+  }));
+  const files = /* @__PURE__ */ new Set();
+  for (const n of nodes.values()) files.add(n.file);
+  return { checkout, graphify_version: raw.graph?.graphify_version ?? "", built_at_commit: raw.built_at_commit ?? null, nodes, edges, files };
+}
+function folderShares(g) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const n of g.nodes.values()) {
+    const i = n.file.lastIndexOf("/");
+    const folder = i < 0 ? "." : n.file.slice(0, i);
+    counts.set(folder, (counts.get(folder) ?? 0) + 1);
+  }
+  const total = g.nodes.size || 1;
+  return [...counts].map(([folder, nodes]) => ({ folder, nodes, percent: Math.round(nodes / total * 100) })).sort((a, b) => b.nodes - a.nodes || a.folder.localeCompare(b.folder));
+}
+function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
+  const started = Date.now();
+  const finish = (r) => {
+    const res = { checkout, duration_ms: Date.now() - started, ...r };
+    logEvent(e, MAP_ACTOR, "map_built", null, {
+      checkout,
+      ok: res.ok,
+      duration_ms: res.duration_ms,
+      nodes: res.nodes,
+      ...res.error ? { error: res.error } : {}
+    });
+    return res;
+  };
+  const fail = (error62) => finish({ ok: false, nodes: 0, files: 0, error: error62 });
+  const v = graphifyVersion(e);
+  if (v === null || !versionSupported(v)) {
+    return fail(`Graphify ${v === null ? "is not installed" : `${v} is not supported`}; install it with: ${INSTALL_HINT}`);
+  }
+  mkdirSync3(join6(checkout, OUT_DIR), { recursive: true });
+  const lock = join6(checkout, OUT_DIR, ".estack-build.lock");
+  takeLock(lock, timeoutMs);
+  try {
+    writeIgnore(e, checkout);
+    const r = e.exec.run("graphify", ["extract", checkout, "--code-only"], { cwd: checkout, timeoutMs, env: GRAPHIFY_ENV });
+    if (r.timedOut) return fail(`graphify timed out after ${timeoutMs}ms`);
+    if (r.code !== 0) return fail(`graphify exited ${r.code}: ${(r.stderr || r.stdout).trim().slice(-500)}`);
+    const raw = readRaw(checkout);
+    if (!raw) return fail("graphify wrote no readable graph.json");
+    const found = raw.graph?.graphify_version ?? "unknown";
+    if (raw.graph?.schema_version !== GRAPH_SCHEMA || !versionSupported(found)) {
+      return fail(`expected schema ${GRAPH_SCHEMA} and Graphify >=0.9.121,<0.10, found schema ${raw.graph?.schema_version ?? "none"} and Graphify ${found}`);
+    }
+    const g = loadGraph(checkout);
+    const files = [...g.files].sort();
+    const out = join6(checkout, OUT_DIR, "estack-files.json");
+    writeFileSync3(out + ".tmp", JSON.stringify({ built_at_commit: g.built_at_commit, graphify_version: g.graphify_version, files }));
+    renameSync2(out + ".tmp", out);
+    return finish({ ok: true, nodes: g.nodes.size, files: files.length });
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
+
 // engine/src/cli.ts
 var USAGE = `usage: estack <command>
   init [--engine <path>]
@@ -45410,6 +45561,7 @@ var USAGE = `usage: estack <command>
   skip --task <id> --step <name> --reason <text>     (owner only)
   cancel --task <id> --reason <text>                 (owner only)
   override <action> --reason <text> [--task <id>]    (owner only)
+  map <update|status> [--json]                       (the Graphify code map)
   hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
 var Usage = class extends Error {
@@ -45464,6 +45616,48 @@ function handovers(e, json2, out) {
 `);
   }
 }
+var MAP_OFF = "the code map is off (code_map.enabled is false in .estack/policy.yaml)\n";
+function mapStatus(e, json2, out) {
+  const version2 = graphifyVersion(e);
+  const supported = version2 !== null && versionSupported(version2);
+  const cwds = [e.repo.root, ...listOpen(e).map((t) => t.task.cwd)].filter((c, i, a) => a.indexOf(c) === i);
+  const checkouts = cwds.map((cwd) => {
+    const g = loadGraph(cwd);
+    return {
+      checkout: cwd,
+      label: checkoutLabel(e, cwd),
+      built_at_commit: g?.built_at_commit ?? null,
+      entries: g?.nodes.size ?? 0,
+      files: g?.files.size ?? 0,
+      built: g !== null,
+      folders: g ? folderShares(g).slice(0, 10) : []
+    };
+  });
+  const events = e.db.prepare("SELECT at, payload_json FROM events WHERE kind = 'map_built' ORDER BY id DESC").all();
+  let last_failure = null;
+  for (const ev of events) {
+    const p = JSON.parse(ev.payload_json);
+    if (p.ok) break;
+    last_failure ??= { at: ev.at, checkout: p.checkout, error: p.error ?? "unknown error" };
+  }
+  if (json2) return out(JSON.stringify({ enabled: e.policy.code_map.enabled, graphify_version: version2, supported, checkouts, last_failure }, null, 2) + "\n");
+  out(`code map: ${e.policy.code_map.enabled ? "on" : "off"}
+`);
+  out(`graphify: ${version2 === null ? "not installed" : `${version2} (${supported ? "supported" : "not supported"})`}
+`);
+  for (const c of checkouts) {
+    if (!c.built) {
+      out(`${c.label}: not built
+`);
+      continue;
+    }
+    out(`${c.label}: built at ${c.built_at_commit ?? "unknown commit"}, ${c.entries} entries, ${c.files} files
+`);
+    out("  " + c.folders.map((f) => `${f.folder} ${f.percent}%`).join(", ") + "\n");
+  }
+  if (last_failure) out(`last build failure (${last_failure.at}): ${last_failure.error}
+`);
+}
 function dispatch(cmd, rest, io) {
   switch (cmd) {
     case "init": {
@@ -45495,7 +45689,7 @@ function dispatch(cmd, rest, io) {
         throw x;
       }
       try {
-        const msg = name === "pre-commit" ? preCommit(e, io.cwd) : prePush(e, io.cwd, io.stdin ?? readFileSync3(0, "utf8"));
+        const msg = name === "pre-commit" ? preCommit(e, io.cwd) : prePush(e, io.cwd, io.stdin ?? readFileSync4(0, "utf8"));
         if (msg === null) return 0;
         io.err(`estack: ${msg}
 `);
@@ -45558,12 +45752,37 @@ function dispatch(cmd, rest, io) {
 `);
       return 0;
     }
+    case "map": {
+      const sub = rest[0] ?? "";
+      if (sub !== "update" && sub !== "status") throw new Usage("map needs update or status");
+      const { bool } = parse4(rest.slice(1), [], ["json"]);
+      const e = openEngine(io.cwd);
+      try {
+        if (sub === "status") {
+          mapStatus(e, bool.has("json"), io.out);
+          return 0;
+        }
+        if (!e.policy.code_map.enabled) {
+          io.out(bool.has("json") ? JSON.stringify({ enabled: false }) + "\n" : MAP_OFF);
+          return 0;
+        }
+        const checkout = checkoutOf(e, io.cwd);
+        const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
+        if (bool.has("json")) io.out(JSON.stringify(r) + "\n");
+        else io.out(r.ok ? `map built for ${checkoutLabel(e, checkout)}: ${r.nodes} entries, ${r.files} files, ${r.duration_ms}ms
+` : `map build failed: ${r.error}
+`);
+        return r.ok ? 0 : 1;
+      } finally {
+        e.db.close();
+      }
+    }
     case "hook": {
       const name = rest[0] ?? "";
       const gate = name === "pre-tool-use";
       let ev;
       try {
-        ev = JSON.parse(io.stdin ?? readFileSync3(0, "utf8"));
+        ev = JSON.parse(io.stdin ?? readFileSync4(0, "utf8"));
         if (ev === null || typeof ev !== "object") throw new Error("not an object");
       } catch {
         if (gate) io.out(JSON.stringify(runHookDeny("invalid hook event on stdin")));

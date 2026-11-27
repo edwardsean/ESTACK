@@ -5,7 +5,7 @@ import { main } from "../src/cli";
 import { openEngine } from "../src/engine";
 import { saveSessionHandover, saveTaskHandover } from "../src/handover";
 import { getTask, startTask } from "../src/tasks";
-import { makeRepo } from "./helpers";
+import { makeRepo, writeFakeGraph } from "./helpers";
 
 function run(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}) {
   let out = "", err = "";
@@ -141,5 +141,26 @@ describe("cli hook", () => {
     const j = JSON.parse(run(dir, ["handovers", "--json"]).out);
     expect(j).toHaveLength(1);
     expect(j[0].kind).toBe("session");
+  });
+
+  test("map update with the map off says so and exits 0", () => {
+    const { dir } = setup();
+    const r = run(dir, ["map", "update"]);
+    expect(r.status).toBe(0);
+    expect(r.out).toBe("the code map is off (code_map.enabled is false in .estack/policy.yaml)\n");
+  });
+
+  test("map status lists folder shares", () => {
+    const { dir } = setup();
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, readFileSync(p, "utf8").replace("enabled: false", "enabled: true"));
+    const n = (id: string, f: string) => ({ id, label: `${id}()`, source_file: f, source_location: "L2" });
+    writeFakeGraph(dir, [n("a", "src/a.ts"), n("b", "src/b.ts"), n("c", "src/c.ts"), n("d", "dist/d.js")], []);
+    const r = run(dir, ["map", "status"]);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("src 75%");
+    expect(r.out).toContain("dist 25%");
+    expect(r.out).toContain("main");
+    expect(JSON.parse(run(dir, ["map", "status", "--json"]).out).checkouts[0].entries).toBe(4);
   });
 });
