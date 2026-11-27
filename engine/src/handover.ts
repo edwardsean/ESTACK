@@ -143,6 +143,12 @@ export function latestSessionHandover(e: Engine, session_id: string): Handover |
   return row ? toHandover(row) : null;
 }
 
+function lastConsumedBy(e: Engine, session_id: string): Handover | null {
+  const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND consumed_by LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1")
+    .get(`${session_id.replace(/[\\%_]/g, "\\$&")}/%`) as unknown as Row | undefined;
+  return row ? toHandover(row) : null;
+}
+
 export function saveSessionHandover(e: Engine, input: HandoverInput, actor: Actor, auto = false): Handover {
   if (!input.workers_done && !auto) {
     const busy = busyWorkerTasks(e, actor.session_id);
@@ -151,7 +157,7 @@ export function saveSessionHandover(e: Engine, input: HandoverInput, actor: Acto
         `workers are still mid-task: ${busy.map((v) => `#${v.task.id} next: ${v.next?.name}`).join(", ")}; wait for them or pass workers_done`);
     }
   }
-  const prev = auto ? latestSessionHandover(e, actor.session_id) : null;
+  const prev = auto ? (latestSessionHandover(e, actor.session_id) ?? lastConsumedBy(e, actor.session_id)) : null;
   const pb = prev?.body as SessionHandoverBody | undefined;
   const merged: HandoverInput = {
     ...input,
@@ -210,6 +216,13 @@ export function consumeHandover(e: Engine, actor: Actor, task_id?: number): { ha
     if (handover) {
       e.db.prepare("UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE id = ?").run(actorId(actor), iso(e), handover.id);
       handover = { ...handover, consumed_by: actorId(actor), consumed_at: iso(e) };
+      // Everything this handover supersedes is consumed with it, so stale ones never resurface.
+      const covered = handover.kind === "session" ? ids : [handover.task_id as number];
+      const marks = covered.map(() => "?").join(",");
+      e.db.prepare(
+        `UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE consumed_at IS NULL AND id < ? AND (${
+          handover.kind === "session" ? "(kind = 'session' AND from_session = ?) OR " : ""}(kind = 'task' AND task_id IN (${marks || "NULL"})))`,
+      ).run(actorId(actor), iso(e), handover.id, ...(handover.kind === "session" ? [handover.from_session] : []), ...covered);
     }
     const views: TaskView[] = [];
     for (const id of ids) {

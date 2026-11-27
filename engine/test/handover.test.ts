@@ -200,4 +200,42 @@ describe("handover assembly", () => {
     const { e } = setup();
     expect(code(() => consumeHandover(e, fresh))).toBe("NO_TASK");
   });
+
+  test("consuming a session handover consumes the older ones it supersedes", () => {
+    const { dir, e } = setup();
+    start(e, dir);
+    saveSessionHandover(e, { goal: "1" }, cto);
+    const h2 = saveSessionHandover(e, { goal: "2" }, cto);
+    expect(consumeHandover(e, fresh).handover?.id).toBe(h2.id);
+    expect(pendingHandovers(e)).toEqual([]);
+    expect(code(() => consumeHandover(e, { session_id: "s3" }))).toBe("NO_TASK");
+  });
+
+  test("a task handover covered by a consumed session handover does not reappear", () => {
+    const { dir, e } = setup();
+    const a = start(e, dir);
+    saveTaskHandover(e, a.task.id, {}, cto);
+    saveSessionHandover(e, { goal: "g" }, cto);
+    consumeHandover(e, fresh);
+    expect(pendingHandovers(e)).toEqual([]);
+  });
+
+  test("consuming a task handover consumes the older ones for the same task", () => {
+    const { dir, e } = setup();
+    const a = start(e, dir);
+    saveTaskHandover(e, a.task.id, {}, cto);
+    saveTaskHandover(e, a.task.id, {}, cto);
+    consumeHandover(e, fresh, a.task.id);
+    expect(pendingHandovers(e)).toEqual([]);
+  });
+
+  test("a resumed session's auto handover carries goal and plan from the handover it consumed", () => {
+    const { dir, e } = setup();
+    start(e, dir);
+    saveSessionHandover(e, { goal: "G", plan: ["P"] }, cto);
+    consumeHandover(e, fresh);
+    const b = saveSessionHandover(e, {}, fresh, true).body as SessionHandoverBody;
+    expect(b.goal).toBe("G");
+    expect(b.plan).toEqual(["P"]);
+  });
 });
