@@ -34941,6 +34941,7 @@ function activityAfter(e, h) {
   const row = e.db.prepare("SELECT at FROM events WHERE id > ? AND actor LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1").get(saved.id, `${h.from_session.replace(/[\\%_]/g, "\\$&")}/%`);
   return row?.at ?? null;
 }
+var STALE_PLAN_MS = 24 * 3600 * 1e3;
 function pendingHandovers(e) {
   const rows = e.db.prepare("SELECT * FROM handovers WHERE consumed_at IS NULL ORDER BY id").all().map(toHandover);
   const newestSession = /* @__PURE__ */ new Map();
@@ -34950,7 +34951,11 @@ function pendingHandovers(e) {
   const newestTask = /* @__PURE__ */ new Map();
   for (const h of rows) if (h.kind === "task" && h.task_id !== null && open2.has(h.task_id)) newestTask.set(h.task_id, h);
   const tasks = [...newestTask.values()].filter((h) => !sessions.some((s) => s.id > h.id && s.body.tasks.some((t) => t.task.id === h.task_id)));
-  const live = sessions.filter((h) => h.body.plan.length > 0 || openBoundIds(e, h.from_session).length > 0);
+  const live = sessions.filter((h) => {
+    if (openBoundIds(e, h.from_session).length > 0) return true;
+    if (h.body.plan.length === 0) return false;
+    return activityAfter(e, h) === null && e.now().getTime() - Date.parse(h.created_at) < STALE_PLAN_MS;
+  });
   return [...live, ...tasks].sort((a, b) => a.id - b.id);
 }
 function bind(e, task_id, actor) {

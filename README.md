@@ -164,8 +164,9 @@ A handover is not loaded on its own when its session logged any activity in
 the last 10 minutes after saving it: that session may still be running, for
 example a second CTO session in another terminal. The new session lists it
 with "it may still be running" and asks you first. A session handover whose
-session has no open task left and no plan left is finished work and is not
-offered at all.
+session has no open task left is not offered at all when it has no plan left,
+when its session kept working after saving it, or when it is more than 24 hours
+old: that is finished or abandoned work.
 
 Use `/compact` only when the conversation itself must be kept. The engine saves
 state before compaction and restores it afterward. A handover from the CTO

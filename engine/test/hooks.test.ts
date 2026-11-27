@@ -378,6 +378,18 @@ describe("hooks", () => {
         expect(text).toMatch(new RegExp(`estack: a handover is waiting \\(#${h.id}, session, \\d+s ago, goal: g\\)\\. Call the resume tool now, then re-read the files it lists and continue\\.`));
       });
 
+      test("after the old session finished its task, a new session gets no resume hint even with plan items left", () => {
+        const dir = repo();
+        const id = task(dir);
+        save(dir, S, { goal: "ship X", plan: ["do Y"] });
+        const e = openEngine(dir, deps);
+        e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(id);
+        logEvent(e, { session_id: S }, "step_done", id, { step: "ship", closed: true });
+        e.db.close();
+        const text = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "clear", session_id: "new" }));
+        expect(text).not.toContain("handover");
+      });
+
       test("with several waiting handovers, session start lists them and says to ask the owner", () => {
         const dir = repo();
         task(dir);

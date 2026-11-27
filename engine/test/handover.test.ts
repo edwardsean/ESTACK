@@ -11,7 +11,7 @@ import {
   type SessionHandoverBody, type TaskHandoverBody,
 } from "../src/handover";
 import { initRepo } from "../src/policy";
-import { completeStep, startTask, type EvidenceInput } from "../src/tasks";
+import { completeStep, logEvent, startTask, type EvidenceInput } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
 import { makeRepo, fakeExec } from "./helpers";
 import { mkdtempSync } from "node:fs";
@@ -269,6 +269,37 @@ describe("handover assembly", () => {
     expect(code(() => consumeHandover(e, fresh))).toBe("NO_TASK");
     // with plan items left it is still worth resuming
     saveSessionHandover(e, { goal: "ship X", plan: ["do Y"] }, cto);
+    expect(pendingHandovers(e)).toHaveLength(1);
+  });
+
+  test("a finished session's handover with plan items left is not pending once that session logged events after it", () => {
+    const { dir, e } = setup();
+    const a = start(e, dir);
+    saveSessionHandover(e, { goal: "ship X", plan: ["do Y"] }, cto);
+    expect(pendingHandovers(e)).toHaveLength(1);
+    // the old session keeps working and closes its task
+    e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(a.task.id);
+    logEvent(e, cto, "step_done", a.task.id, { step: "ship", closed: true });
+    expect(pendingHandovers(e)).toEqual([]);
+    expect(code(() => consumeHandover(e, fresh))).toBe("NO_TASK");
+  });
+
+  test("a plan-only session handover stays pending while its session is quiet, until it is 24 h old", () => {
+    const { dir } = setup();
+    const clock = { t: Date.parse("2026-11-27T00:00:00Z") };
+    const e = openEngine(dir, { exec: fakeExec({}), now: () => new Date(clock.t) });
+    saveSessionHandover(e, { goal: "ship X", plan: ["do Y"] }, cto);
+    clock.t += 23 * 3600 * 1000;
+    expect(pendingHandovers(e)).toHaveLength(1);
+    clock.t += 2 * 3600 * 1000;
+    expect(pendingHandovers(e)).toEqual([]);
+  });
+
+  test("a session handover with open tasks stays pending even when its session logged events after it", () => {
+    const { dir, e } = setup();
+    const a = start(e, dir);
+    saveSessionHandover(e, { goal: "ship X" }, cto);
+    logEvent(e, cto, "evidence", a.task.id, { step: "plan" });
     expect(pendingHandovers(e)).toHaveLength(1);
   });
 
