@@ -92,10 +92,14 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
   }));
 
   server.registerTool("resume", {
-    description: "Pick up a saved handover (the session's, or a task's with task_id) and bind its open tasks to this session.",
-    inputSchema: { task_id: z.number().int().optional(), actor: actorSchema },
-  }, tool((e, a: { task_id?: number; actor?: Actor }, actor) => {
-    const { handover, views } = consumeHandover(e, actor, a.task_id);
+    description: "Pick up a saved handover (the newest session one, a task's with task_id, or exactly one with handover_id) and bind its open tasks to this session.",
+    inputSchema: {
+      task_id: z.number().int().optional(),
+      handover_id: z.number().int().optional().describe("the handover the owner chose, from the start-of-session list"),
+      actor: actorSchema,
+    },
+  }, tool((e, a: { task_id?: number; handover_id?: number; actor?: Actor }, actor) => {
+    const { handover, views } = consumeHandover(e, actor, { task_id: a.task_id, handover_id: a.handover_id });
     const body = handover?.body;
     const goal = (body?.kind === "session" ? (body as SessionHandoverBody).goal : "") || (views.length === 1 ? views[0].task.goal : "") || "(none recorded)";
     const next = views.map((v) => (v.next ? `#${v.task.id} ${v.next.name}` : `#${v.task.id} done`)).join(", ");

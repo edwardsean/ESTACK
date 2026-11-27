@@ -45,12 +45,22 @@ describe("handover storage", () => {
     old.exec(MIGRATION_1);
     old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '1')").run();
     old.prepare("INSERT INTO events (at, actor, kind, task_id, payload_json) VALUES ('t', 'a', 'k', NULL, '{}')").run();
+    old.prepare(`INSERT INTO tasks (id, title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at)
+      VALUES (1, 't', 'feature', 'g', 'd', 'open', 'main', '/x', 'abc', 's1/main', 't')`).run();
+    for (const [i, n] of ["plan", "implement"].entries()) {
+      old.prepare("INSERT INTO steps (task_id, name, ordinal, status) VALUES (1, ?, ?, 'pending')").run(n, i);
+    }
+    old.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (1, 's1', NULL, 'cto', 't')").run();
     old.close();
     const db = openDb(path);
     expect((db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }).value).toBe(String(SCHEMA_VERSION));
     expect(SCHEMA_VERSION).toBe(2);
     expect((db.prepare("SELECT COUNT(*) c FROM events").get() as { c: number }).c).toBe(1);
     expect((db.prepare("SELECT COUNT(*) c FROM handovers").get() as { c: number }).c).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) c FROM tasks").get() as { c: number }).c).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) c FROM steps").get() as { c: number }).c).toBe(2);
+    expect((db.prepare("SELECT COUNT(*) c FROM task_bindings").get() as { c: number }).c).toBe(1);
+    expect(db.prepare("SELECT title, status FROM tasks").get()).toEqual({ title: "t", status: "open" });
   });
 });
 
@@ -195,14 +205,14 @@ describe("handover assembly", () => {
     const a = start(e, dir);
     const b = start(e, dir);
     const h = saveTaskHandover(e, a.task.id, {}, cto);
-    const r = consumeHandover(e, { session_id: "s2", agent_id: "w9" }, a.task.id);
+    const r = consumeHandover(e, { session_id: "s2", agent_id: "w9" }, { task_id: a.task.id });
     expect(r.handover?.id).toBe(h.id);
     expect(r.views.map((v) => v.task.id)).toEqual([a.task.id]);
     expect(e.db.prepare("SELECT role FROM task_bindings WHERE session_id = 's2'").all()).toEqual([{ role: "worker" }]);
     // no handover waiting for b, but it is open: still binds, handover null
-    expect(consumeHandover(e, fresh, b.task.id).handover).toBeNull();
+    expect(consumeHandover(e, fresh, { task_id: b.task.id }).handover).toBeNull();
     e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(b.task.id);
-    expect(code(() => consumeHandover(e, fresh, b.task.id))).toBe("TASK_CLOSED");
+    expect(code(() => consumeHandover(e, fresh, { task_id: b.task.id }))).toBe("TASK_CLOSED");
   });
 
   test("resuming with nothing waiting is NO_TASK", () => {
@@ -234,7 +244,7 @@ describe("handover assembly", () => {
     const a = start(e, dir);
     saveTaskHandover(e, a.task.id, {}, cto);
     saveTaskHandover(e, a.task.id, {}, cto);
-    consumeHandover(e, fresh, a.task.id);
+    consumeHandover(e, fresh, { task_id: a.task.id });
     expect(pendingHandovers(e)).toEqual([]);
   });
 
@@ -246,5 +256,67 @@ describe("handover assembly", () => {
     const b = saveSessionHandover(e, {}, fresh, true).body as SessionHandoverBody;
     expect(b.goal).toBe("G");
     expect(b.plan).toEqual(["P"]);
+  });
+
+  test("C1 a session handover is no longer pending once its session owns no open task and its plan is empty", () => {
+    const { dir, e } = setup();
+    const a = start(e, dir);
+    saveSessionHandover(e, { goal: "ship X" }, cto);
+    saveSessionHandover(e, {}, cto, true);
+    expect(pendingHandovers(e)).toHaveLength(1);
+    e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(a.task.id);
+    expect(pendingHandovers(e)).toEqual([]);
+    expect(code(() => consumeHandover(e, fresh))).toBe("NO_TASK");
+    // with plan items left it is still worth resuming
+    saveSessionHandover(e, { goal: "ship X", plan: ["do Y"] }, cto);
+    expect(pendingHandovers(e)).toHaveLength(1);
+  });
+
+  test("I1 resuming a session handover binds every open task the old session owns now, and rebuilds the task part live", () => {
+    const { dir, e } = setup();
+    const a = start(e, dir);
+    const h = saveSessionHandover(e, { goal: "G", plan: ["P"] }, cto, true);
+    const b = start(e, dir);
+    done(e, a.task.id, "plan");
+    const r = consumeHandover(e, fresh);
+    expect(r.handover?.id).toBe(h.id);
+    expect(r.views.map((v) => v.task.id)).toEqual([a.task.id, b.task.id]);
+    const body = r.handover?.body as SessionHandoverBody;
+    expect(body.goal).toBe("G");
+    expect(body.plan).toEqual(["P"]);
+    expect(body.tasks.map((t) => t.task.id)).toEqual([a.task.id, b.task.id]);
+    expect(body.tasks[0].next_step).toBe("reuse_check");
+    expect(sessionTasks(e, "s2").map((v) => v.task.id)).toEqual([a.task.id, b.task.id]);
+  });
+
+  test("I2 resume with handover_id consumes exactly that handover", () => {
+    const { dir, e } = setup();
+    start(e, dir);
+    const older = saveSessionHandover(e, { goal: "A goal" }, cto);
+    start(e, dir, { session_id: "C" });
+    const newer = saveSessionHandover(e, { goal: "C goal" }, { session_id: "C" });
+    expect(pendingHandovers(e).map((h) => h.id)).toEqual([older.id, newer.id]);
+    const r = consumeHandover(e, { session_id: "N" }, { handover_id: older.id });
+    expect(r.handover?.id).toBe(older.id);
+    expect((r.handover?.body as SessionHandoverBody).goal).toBe("A goal");
+    expect(pendingHandovers(e).map((h) => h.id)).toEqual([newer.id]);
+    expect(code(() => consumeHandover(e, { session_id: "M" }, { handover_id: older.id }))).toBe("NO_TASK");
+    expect(code(() => consumeHandover(e, { session_id: "M" }, { handover_id: 999 }))).toBe("NO_TASK");
+  });
+
+  test("I2 resume with handover_id of a task handover on a closed task is TASK_CLOSED", () => {
+    const { dir, e } = setup();
+    const a = start(e, dir);
+    const h = saveTaskHandover(e, a.task.id, {}, cto);
+    e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(a.task.id);
+    expect(code(() => consumeHandover(e, fresh, { handover_id: h.id }))).toBe("TASK_CLOSED");
+  });
+
+  test("M5 the busy-worker refusal explains that a worker task with no test step counts until it closes", () => {
+    const { dir, e } = setup();
+    const t = start(e, dir, worker, "spike");
+    const err = (() => { try { saveSessionHandover(e, { goal: "g" }, cto); } catch (x) { return x as EngineError; } throw new Error("no throw"); })();
+    expect(err.message).toContain(`#${t.task.id} next: explore`);
+    expect(err.message).toContain("(a worker-bound task with no test step counts as busy until it closes; pass workers_done if the workers are finished)");
   });
 });

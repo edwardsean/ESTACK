@@ -67,7 +67,7 @@ function git(e: Engine, cwd: string, args: string[]): string {
 }
 const lines = (s: string) => s.split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.length > 0);
 
-function buildTaskBody(e: Engine, v: TaskView, input: HandoverInput, actor: Actor, auto: boolean): TaskHandoverBody {
+export function buildTaskBody(e: Engine, v: TaskView, input: HandoverInput, actor: Actor, auto: boolean): TaskHandoverBody {
   const t = v.task;
   let commits: string[] = [];
   let files: string[] = [];
@@ -154,8 +154,10 @@ export function saveSessionHandover(e: Engine, input: HandoverInput, actor: Acto
   if (!input.workers_done && !auto) {
     const busy = busyWorkerTasks(e, actor.session_id);
     if (busy.length > 0) {
+      const noTest = busy.some((v) => !v.steps.some((s) => s.name === "test"));
       throw new EngineError("BAD_EVIDENCE",
-        `workers are still mid-task: ${busy.map((v) => `#${v.task.id} next: ${v.next?.name}`).join(", ")}; wait for them or pass workers_done`);
+        `workers are still mid-task: ${busy.map((v) => `#${v.task.id} next: ${v.next?.name}`).join(", ")}; wait for them or pass workers_done${
+          noTest ? " (a worker-bound task with no test step counts as busy until it closes; pass workers_done if the workers are finished)" : ""}`);
     }
   }
   const prev = auto ? (latestSessionHandover(e, actor.session_id) ?? lastConsumedBy(e, actor.session_id)) : null;
@@ -176,7 +178,33 @@ export function saveSessionHandover(e: Engine, input: HandoverInput, actor: Acto
   return tx(e, () => insertHandover(e, "session", null, actor, auto, body));
 }
 
-/** Unconsumed handovers worth resuming: the newest session handover per session, and the newest task handover per open task not covered by a newer one. */
+/** Ids of open tasks bound (by anyone in it) to the session. */
+function openBoundIds(e: Engine, session_id: string): number[] {
+  return (e.db.prepare(
+    `SELECT DISTINCT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+     WHERE t.status = 'open' AND b.session_id = ? ORDER BY t.id`,
+  ).all(session_id) as { id: number }[]).map((r) => r.id);
+}
+
+/**
+ * When the handover's session last logged an event after saving it (ISO time), or null when it has not.
+ * Activity after a handover means the session kept working, so it may still be running.
+ */
+export function activityAfter(e: Engine, h: Handover): string | null {
+  const saved = e.db.prepare(
+    "SELECT id FROM events WHERE kind = 'handover_saved' AND json_extract(payload_json, '$.id') = ? ORDER BY id LIMIT 1",
+  ).get(h.id) as { id: number } | undefined;
+  if (!saved) return null;
+  const row = e.db.prepare("SELECT at FROM events WHERE id > ? AND actor LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1")
+    .get(saved.id, `${h.from_session.replace(/[\\%_]/g, "\\$&")}/%`) as { at: string } | undefined;
+  return row?.at ?? null;
+}
+
+/**
+ * Unconsumed handovers worth resuming: the newest session handover per session (unless its session owns no
+ * open task and it has no plan left, so the work is finished), and the newest task handover per open task
+ * not covered by a newer one.
+ */
 export function pendingHandovers(e: Engine): Handover[] {
   const rows = (e.db.prepare("SELECT * FROM handovers WHERE consumed_at IS NULL ORDER BY id").all() as unknown as Row[]).map(toHandover);
   const newestSession = new Map<string, Handover>();
@@ -187,7 +215,8 @@ export function pendingHandovers(e: Engine): Handover[] {
   for (const h of rows) if (h.kind === "task" && h.task_id !== null && open.has(h.task_id)) newestTask.set(h.task_id, h);
   const tasks = [...newestTask.values()].filter((h) =>
     !sessions.some((s) => s.id > h.id && (s.body as SessionHandoverBody).tasks.some((t) => t.task.id === h.task_id)));
-  return [...sessions, ...tasks].sort((a, b) => a.id - b.id);
+  const live = sessions.filter((h) => (h.body as SessionHandoverBody).plan.length > 0 || openBoundIds(e, h.from_session).length > 0);
+  return [...live, ...tasks].sort((a, b) => a.id - b.id);
 }
 
 function bind(e: Engine, task_id: number, actor: Actor): void {
@@ -198,23 +227,44 @@ function bind(e: Engine, task_id: number, actor: Actor): void {
     .run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso(e));
 }
 
-export function consumeHandover(e: Engine, actor: Actor, task_id?: number): { handover: Handover | null; views: TaskView[] } {
-  return tx(e, () => {
+/** Which handover to resume: a task's (task_id), one by id (handover_id), or else the newest pending session handover. */
+export interface ResumeSelector { task_id?: number; handover_id?: number }
+
+/**
+ * Consume a handover and bind its open tasks to the caller. A session handover binds every task open now and bound
+ * to its session (plus any still-open task its body lists); the returned body's tasks are rebuilt live.
+ */
+export function consumeHandover(e: Engine, actor: Actor, sel: ResumeSelector = {}): { handover: Handover | null; views: TaskView[] } {
+  const { task_id, handover_id } = sel;
+  const result = tx(e, () => {
     let handover: Handover | null = null;
     let ids: number[];
-    if (task_id !== undefined) {
-      const v = getTask(e, task_id);
-      if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${v.task.status}`);
+    const openTask = (id: number) => {
+      const v = getTask(e, id);
+      if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${id} is ${v.task.status}`);
+    };
+    if (handover_id !== undefined) {
+      const row = e.db.prepare("SELECT * FROM handovers WHERE id = ? AND consumed_at IS NULL").get(handover_id) as unknown as Row | undefined;
+      if (!row) throw new EngineError("NO_TASK", `no handover #${handover_id} waiting`);
+      handover = toHandover(row);
+      if (handover.kind === "task") {
+        openTask(handover.task_id as number);
+        ids = [handover.task_id as number];
+      } else ids = [];
+    } else if (task_id !== undefined) {
+      openTask(task_id);
       const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'task' AND task_id = ? AND consumed_at IS NULL ORDER BY id DESC LIMIT 1")
         .get(task_id) as unknown as Row | undefined;
       handover = row ? toHandover(row) : null;
       ids = [task_id];
     } else {
-      const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND consumed_at IS NULL ORDER BY id DESC LIMIT 1")
-        .get() as unknown as Row | undefined;
-      if (!row) throw new EngineError("NO_TASK", "no session handover waiting");
-      handover = toHandover(row);
-      ids = (handover.body as SessionHandoverBody).tasks.map((t) => t.task.id);
+      handover = pendingHandovers(e).filter((h) => h.kind === "session").at(-1) ?? null;
+      if (!handover) throw new EngineError("NO_TASK", "no session handover waiting");
+      ids = [];
+    }
+    if (handover?.kind === "session") {
+      const listed = (handover.body as SessionHandoverBody).tasks.map((t) => t.task.id);
+      ids = [...new Set([...openBoundIds(e, handover.from_session), ...listed])].sort((a, b) => a - b);
     }
     if (handover) {
       e.db.prepare("UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE id = ?").run(actorId(actor), iso(e), handover.id);
@@ -234,7 +284,15 @@ export function consumeHandover(e: Engine, actor: Actor, task_id?: number): { ha
       bind(e, id, actor);
       views.push(v);
     }
-    logEvent(e, actor, "resumed", task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });
+    logEvent(e, actor, "resumed", handover?.task_id ?? task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });
     return { handover, views };
   });
+  const h = result.handover;
+  if (h?.kind === "session") {
+    // Git runs outside the transaction: the task part reflects the tasks as they are now, not at save time.
+    const from: Actor = { session_id: h.from_session };
+    const tasks = result.views.map((v) => buildTaskBody(e, v, {}, from, h.auto));
+    return { handover: { ...h, body: { ...(h.body as SessionHandoverBody), tasks } }, views: result.views };
+  }
+  return result;
 }
