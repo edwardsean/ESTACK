@@ -34905,7 +34905,8 @@ function saveSessionHandover(e, input2, actor, auto = false) {
     goal: input2.goal ?? pb?.goal,
     plan: input2.plan ?? pb?.plan,
     decisions: input2.decisions ?? pb?.decisions,
-    open_questions: input2.open_questions ?? pb?.open_questions
+    open_questions: input2.open_questions ?? pb?.open_questions,
+    files: input2.files ?? pb?.files?.filter((f) => !/^\+\d+ more$/.test(f))
   };
   const tasks = sessionTasks(e, actor.session_id).map((v) => buildTaskBody(e, v, {}, actor, auto));
   const body = {
@@ -34917,6 +34918,7 @@ function saveSessionHandover(e, input2, actor, auto = false) {
     open_questions: merged.open_questions ?? [],
     goal: merged.goal ?? "",
     plan: merged.plan ?? [],
+    files: cap([...new Set(merged.files ?? [])].sort(), MAX_FILES),
     tasks
   };
   return tx(e, () => insertHandover(e, "session", null, actor, auto, body));
@@ -35216,7 +35218,7 @@ function compactState(h) {
   for (const t of b.tasks) out.push(`#${t.task.id} next: ${t.next_step ?? "none"}`);
   if (b.decisions.length) out.push(`decisions: ${b.decisions.map((d) => `${d.what} (${d.why})`).join("; ")}`);
   if (b.open_questions.length) out.push(`open questions: ${b.open_questions.join("; ")}`);
-  const files = [...new Set(b.tasks.flatMap((t) => t.files))];
+  const files = [.../* @__PURE__ */ new Set([...b.files ?? [], ...b.tasks.flatMap((t) => t.files)])];
   if (files.length) out.push(`files: ${files.join(", ")}`);
   return out;
 }

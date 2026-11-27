@@ -120,6 +120,15 @@ describe("handover assembly", () => {
     expect(latestSessionHandover(e, "nobody")).toBeNull();
   });
 
+  test("a session handover keeps the files the agent lists, and an auto one carries them forward", () => {
+    const { dir, e } = setup();
+    start(e, dir);
+    const h = saveSessionHandover(e, { goal: "g", files: ["docs/arch.md", "a.ts", "docs/arch.md"] }, cto);
+    expect((h.body as SessionHandoverBody).files).toEqual(["a.ts", "docs/arch.md"]);
+    const auto = saveSessionHandover(e, {}, cto, true);
+    expect((auto.body as SessionHandoverBody).files).toEqual(["a.ts", "docs/arch.md"]);
+  });
+
   test("a session handover is refused while a worker is mid-task, and allowed with workers_done", () => {
     const { dir, e } = setup();
     const t = start(e, dir, worker);

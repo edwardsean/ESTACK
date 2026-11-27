@@ -21,6 +21,7 @@ export interface SessionHandoverBody extends BodyBase {
   kind: "session";
   goal: string;
   plan: string[];
+  files: string[];
   tasks: TaskHandoverBody[];
 }
 export interface Handover {
@@ -163,12 +164,14 @@ export function saveSessionHandover(e: Engine, input: HandoverInput, actor: Acto
     ...input,
     goal: input.goal ?? pb?.goal, plan: input.plan ?? pb?.plan,
     decisions: input.decisions ?? pb?.decisions, open_questions: input.open_questions ?? pb?.open_questions,
+    files: input.files ?? pb?.files?.filter((f) => !/^\+\d+ more$/.test(f)),
   };
   const tasks = sessionTasks(e, actor.session_id).map((v) => buildTaskBody(e, v, {}, actor, auto));
   const body: SessionHandoverBody = {
     kind: "session", auto, created_at: iso(e), from_session: actor.session_id,
     decisions: merged.decisions ?? [], open_questions: merged.open_questions ?? [],
-    goal: merged.goal ?? "", plan: merged.plan ?? [], tasks,
+    goal: merged.goal ?? "", plan: merged.plan ?? [],
+    files: cap([...new Set(merged.files ?? [])].sort(), MAX_FILES), tasks,
   };
   return tx(e, () => insertHandover(e, "session", null, actor, auto, body));
 }

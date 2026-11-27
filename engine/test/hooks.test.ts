@@ -356,7 +356,7 @@ describe("hooks", () => {
         const dir = repo();
         const id = task(dir);
         writeFileSync(join(dir, "new.ts"), "x");
-        save(dir, S, { goal: "ship the thing", plan: ["do later"], decisions: [{ what: "use sqlite", why: "simple" }], open_questions: ["which port?"] });
+        save(dir, S, { goal: "ship the thing", plan: ["do later"], decisions: [{ what: "use sqlite", why: "simple" }], open_questions: ["which port?"], files: ["docs/arch.md"] });
         const text = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "compact" }));
         expect(text).toContain("ship the thing");
         expect(text).toContain("do later");
@@ -364,6 +364,7 @@ describe("hooks", () => {
         expect(text).toContain("use sqlite");
         expect(text).toContain("which port?");
         expect(text).toContain("new.ts");
+        expect(text).toContain("docs/arch.md");
         expect(text).toContain("estack: context was compacted; this is the recorded state of your work. Re-read the listed files before changing anything.");
         expect(text).not.toContain("a handover is waiting");
       });

@@ -198,7 +198,7 @@ function compactState(h: Handover): string[] {
   for (const t of b.tasks) out.push(`#${t.task.id} next: ${t.next_step ?? "none"}`);
   if (b.decisions.length) out.push(`decisions: ${b.decisions.map((d) => `${d.what} (${d.why})`).join("; ")}`);
   if (b.open_questions.length) out.push(`open questions: ${b.open_questions.join("; ")}`);
-  const files = [...new Set(b.tasks.flatMap((t) => t.files))];
+  const files = [...new Set([...(b.files ?? []), ...b.tasks.flatMap((t) => t.files)])];
   if (files.length) out.push(`files: ${files.join(", ")}`);
   return out;
 }
