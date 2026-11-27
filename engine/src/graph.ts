@@ -66,12 +66,16 @@ function sleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Exclusive-create the build lock; wait for a fresh one, replace a stale one. */
-function takeLock(lock: string, timeoutMs: number): void {
+/**
+ * Exclusive-create the build lock, waiting up to `timeoutMs` for another build to finish; false when the wait runs out.
+ * Only a lock older than BUILD_TIMEOUT_MS, longer than any build may run, is stale and replaced, whatever this waiter's timeout.
+ */
+function takeLock(lock: string, timeoutMs: number): boolean {
+  const until = Date.now() + timeoutMs;
   for (;;) {
     try {
       writeFileSync(lock, String(process.pid), { flag: "wx" });
-      return;
+      return true;
     } catch (x) {
       if ((x as NodeJS.ErrnoException).code !== "EEXIST") throw x;
     }
@@ -81,7 +85,8 @@ function takeLock(lock: string, timeoutMs: number): void {
     } catch {
       continue; // released between the create and the stat
     }
-    if (age >= timeoutMs) rmSync(lock, { force: true });
+    if (age >= BUILD_TIMEOUT_MS) rmSync(lock, { force: true });
+    else if (Date.now() >= until) return false;
     else sleep(200);
   }
 }
@@ -172,9 +177,15 @@ export function buildGraph(e: Engine, checkout: string, timeoutMs: number = BUIL
   if (v === null || !versionSupported(v)) {
     return fail(`Graphify ${v === null ? "is not installed" : `${v} is not supported`}; install it with: ${INSTALL_HINT}`);
   }
-  mkdirSync(join(checkout, OUT_DIR), { recursive: true });
   const lock = join(checkout, OUT_DIR, ".estack-build.lock");
-  takeLock(lock, timeoutMs);
+  let locked: boolean;
+  try {
+    mkdirSync(join(checkout, OUT_DIR), { recursive: true });
+    locked = takeLock(lock, timeoutMs);
+  } catch (x) {
+    return fail(`could not take the map build lock: ${x instanceof Error ? x.message : String(x)}`);
+  }
+  if (!locked) return fail("another map build is still running");
   try {
     writeIgnore(e, checkout);
     const r = e.exec.run("graphify", ["extract", checkout, "--code-only"], { cwd: checkout, timeoutMs, env: GRAPHIFY_ENV });

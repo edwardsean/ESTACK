@@ -35102,10 +35102,11 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 function takeLock(lock, timeoutMs) {
+  const until = Date.now() + timeoutMs;
   for (; ; ) {
     try {
       writeFileSync2(lock, String(process.pid), { flag: "wx" });
-      return;
+      return true;
     } catch (x) {
       if (x.code !== "EEXIST") throw x;
     }
@@ -35115,7 +35116,8 @@ function takeLock(lock, timeoutMs) {
     } catch {
       continue;
     }
-    if (age >= timeoutMs) rmSync(lock, { force: true });
+    if (age >= BUILD_TIMEOUT_MS) rmSync(lock, { force: true });
+    else if (Date.now() >= until) return false;
     else sleep(200);
   }
 }
@@ -35193,9 +35195,15 @@ function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
   if (v === null || !versionSupported(v)) {
     return fail(`Graphify ${v === null ? "is not installed" : `${v} is not supported`}; install it with: ${INSTALL_HINT}`);
   }
-  mkdirSync2(join4(checkout, OUT_DIR), { recursive: true });
   const lock = join4(checkout, OUT_DIR, ".estack-build.lock");
-  takeLock(lock, timeoutMs);
+  let locked;
+  try {
+    mkdirSync2(join4(checkout, OUT_DIR), { recursive: true });
+    locked = takeLock(lock, timeoutMs);
+  } catch (x) {
+    return fail(`could not take the map build lock: ${x instanceof Error ? x.message : String(x)}`);
+  }
+  if (!locked) return fail("another map build is still running");
   try {
     writeIgnore(e, checkout);
     const r = e.exec.run("graphify", ["extract", checkout, "--code-only"], { cwd: checkout, timeoutMs, env: GRAPHIFY_ENV });

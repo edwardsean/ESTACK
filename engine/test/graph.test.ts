@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
-import { buildGraph, checkoutLabel, folderShares, INSTALL_HINT, loadGraph, mappedFiles, suggestExcludes, versionSupported, writeIgnore } from "../src/graph";
+import { BUILD_TIMEOUT_MS, buildGraph, checkoutLabel, folderShares, INSTALL_HINT, loadGraph, mappedFiles, suggestExcludes, versionSupported, writeIgnore } from "../src/graph";
 import { initRepo } from "../src/policy";
 import { startTask } from "../src/tasks";
 import { fakeExec, HAS_GRAPHIFY, makeRepo, writeFakeGraph } from "./helpers";
@@ -37,6 +37,46 @@ describe("graph adapter", () => {
     const r = buildGraph(e, dir);
     expect(r.ok).toBe(false);
     expect(r.error).toContain(INSTALL_HINT);
+  });
+
+  describe("the build lock", () => {
+    const scripted = () => fakeExec({ graphify: { code: 0, stdout: "graphify 0.9.121\n" } });
+    const lockedRepo = (ageMs: number) => {
+      const { dir, e } = engineFor([], scripted());
+      writeFakeGraph(dir, [{ id: "a", label: "a()", source_file: "src/a.ts", source_location: "L2" }], []);
+      const lock = join(dir, "graphify-out", ".estack-build.lock");
+      writeFileSync(lock, "other");
+      const at = (Date.now() - ageMs) / 1000;
+      utimesSync(lock, at, at);
+      return { dir, e, lock };
+    };
+    const lastBuilt = (e: Engine) =>
+      JSON.parse((e.db.prepare("SELECT payload_json FROM events WHERE kind = 'map_built' ORDER BY id DESC LIMIT 1").get() as { payload_json: string }).payload_json);
+
+    test("a lock older than the build timeout is stale and replaced", () => {
+      const { e, dir, lock } = lockedRepo(BUILD_TIMEOUT_MS + 60_000);
+      const r = buildGraph(e, dir, 500);
+      expect(r.error).toBeUndefined();
+      expect(r.ok).toBe(true);
+      expect(existsSync(lock)).toBe(false);
+    });
+
+    test("a younger lock is never taken over, even by a waiter with a shorter timeout", () => {
+      const { e, dir, lock } = lockedRepo(5_000);
+      const r = buildGraph(e, dir, 400);
+      expect(r).toMatchObject({ ok: false, error: "another map build is still running" });
+      expect(readFileSync(lock, "utf8")).toBe("other");
+      expect(lastBuilt(e)).toMatchObject({ ok: false, error: "another map build is still running" });
+    });
+
+    test("a filesystem error while taking the lock is a failed build, logged", () => {
+      const { dir, e } = engineFor([], scripted());
+      writeFileSync(join(dir, "graphify-out"), "not a folder");
+      const r = buildGraph(e, dir);
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/^could not take the map build lock: /);
+      expect(lastBuilt(e)).toMatchObject({ ok: false, checkout: dir });
+    });
   });
 
   test("loadGraph reads nodes, kinds and edges", () => {
