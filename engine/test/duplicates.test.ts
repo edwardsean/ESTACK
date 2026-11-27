@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { openEngine, type Engine } from "../src/engine";
 import { runCheck } from "../src/checks";
 import {
@@ -206,6 +207,30 @@ describe("duplicate check", () => {
       links: [link(fileId("src/page.ts"), pageClass, "contains"), link("p", render, "method"), link("pw", inner, "contains")],
     });
     expect(checkDuplicates(e, id)).toEqual([]);
+  });
+
+  test("a pair another process records at the same moment is no error", async () => {
+    const { dir, e, id, graph } = setup();
+    copy(dir, graph);
+    // Another connection holds the write lock with the same pair inserted, and commits while this check runs.
+    const worker = new Worker(`
+      const { DatabaseSync } = require("node:sqlite");
+      const { parentPort, workerData } = require("node:worker_threads");
+      const b = new DatabaseSync(workerData.db);
+      b.exec("PRAGMA busy_timeout=5000");
+      b.exec("BEGIN IMMEDIATE");
+      b.prepare(\`INSERT INTO duplicates (task_id, commit_sha, new_symbol, new_file, new_line, existing_symbol, existing_file, existing_line, status, found_at)
+        VALUES (?, 'x', 'formatInvoiceDate', 'src/orders/format.ts', 1, 'formatInvoiceDate', 'src/utils.ts', 1, 'open', 't')\`).run(workerData.id);
+      parentPort.postMessage("locked");
+      setTimeout(() => { b.exec("COMMIT"); b.close(); parentPort.postMessage("committed"); }, 400);
+    `, { eval: true, workerData: { db: join(dir, ".estack", "state.db"), id } });
+    const next = () => new Promise<string>((res) => worker.once("message", res));
+    expect(await next()).toBe("locked");
+    const committed = next();
+    const open = checkDuplicates(e, id);
+    expect(await committed).toBe("committed");
+    expect(open).toHaveLength(1);
+    expect(e.db.prepare("SELECT COUNT(*) c FROM duplicates").get()).toEqual({ c: 1 });
   });
 
   test("afterCommit checks the open task on the checkout's branch", () => {

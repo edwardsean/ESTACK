@@ -35791,42 +35791,45 @@ function checkDuplicates(e, task_id) {
   const task = getTask(e, task_id).task;
   const g = loadGraph(task.cwd);
   if (!g) return [];
-  const now = e.now().toISOString();
   const top = topLevelFunctions(g);
   const fresh = newFunctions(e, g, task);
-  const byKey = (file2, name) => top.find((n) => n.file === file2 && n.name === name);
-  for (const d of openDuplicates(e, task_id)) {
-    const f = fresh.find((n) => n.file === d.new_file && n.name === d.new_symbol);
-    const x = byKey(d.existing_file, d.existing_symbol);
-    if (f && x && matches(task.cwd, f, x)) continue;
-    e.db.prepare("UPDATE duplicates SET status = 'resolved', closed_at = ? WHERE id = ?").run(now, d.id);
-  }
   const head = branchHead(e, task);
+  const byKey = (file2, name) => top.find((n) => n.file === file2 && n.name === name);
   const freshIds = new Set(fresh.map((n) => n.id));
-  for (const f of fresh) {
-    for (const x of top) {
-      if (x.id === f.id) continue;
-      if (freshIds.has(x.id) && x.id < f.id) continue;
-      if (!matches(task.cwd, f, x)) continue;
-      const prior = e.db.prepare(
-        "SELECT id, status FROM duplicates WHERE task_id = ? AND new_file = ? AND new_symbol = ? AND existing_file = ? AND existing_symbol = ?"
-      ).get(task_id, f.file, f.name, x.file, x.name);
-      if (prior?.status === "open" || prior?.status === "dismissed") continue;
-      if (prior) {
-        e.db.prepare(
-          "UPDATE duplicates SET status = 'open', commit_sha = ?, new_line = ?, existing_line = ?, closed_by = NULL, closed_at = NULL, found_at = ? WHERE id = ?"
-        ).run(head, f.line, x.line, now, prior.id);
-      } else {
-        e.db.prepare(
-          `INSERT INTO duplicates (task_id, commit_sha, new_symbol, new_file, new_line, existing_symbol, existing_file, existing_line, status, found_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`
-        ).run(task_id, head, f.name, f.file, f.line, x.name, x.file, x.line, now);
-      }
-      logEvent(e, MAP_ACTOR2, "possible_duplicate", task_id, { new: `${f.file}:${f.line}`, existing: `${x.file}:${x.line}`, symbol: f.name });
+  return tx(e, () => {
+    const now = e.now().toISOString();
+    for (const d of openDuplicates(e, task_id)) {
+      const f = fresh.find((n) => n.file === d.new_file && n.name === d.new_symbol);
+      const x = byKey(d.existing_file, d.existing_symbol);
+      if (f && x && matches(task.cwd, f, x)) continue;
+      e.db.prepare("UPDATE duplicates SET status = 'resolved', closed_at = ? WHERE id = ?").run(now, d.id);
     }
-  }
-  logEvent(e, MAP_ACTOR2, "duplicate_check_done", task_id, { head });
-  return openDuplicates(e, task_id);
+    for (const f of fresh) {
+      for (const x of top) {
+        if (x.id === f.id) continue;
+        if (freshIds.has(x.id) && x.id < f.id) continue;
+        if (!matches(task.cwd, f, x)) continue;
+        const prior = e.db.prepare(
+          "SELECT id, status FROM duplicates WHERE task_id = ? AND new_file = ? AND new_symbol = ? AND existing_file = ? AND existing_symbol = ?"
+        ).get(task_id, f.file, f.name, x.file, x.name);
+        if (prior?.status === "open" || prior?.status === "dismissed") continue;
+        if (prior) {
+          e.db.prepare(
+            "UPDATE duplicates SET status = 'open', commit_sha = ?, new_line = ?, existing_line = ?, closed_by = NULL, closed_at = NULL, found_at = ? WHERE id = ?"
+          ).run(head, f.line, x.line, now, prior.id);
+        } else {
+          const r = e.db.prepare(
+            `INSERT INTO duplicates (task_id, commit_sha, new_symbol, new_file, new_line, existing_symbol, existing_file, existing_line, status, found_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?) ON CONFLICT DO NOTHING`
+          ).run(task_id, head, f.name, f.file, f.line, x.name, x.file, x.line, now);
+          if (Number(r.changes) === 0) continue;
+        }
+        logEvent(e, MAP_ACTOR2, "possible_duplicate", task_id, { new: `${f.file}:${f.line}`, existing: `${x.file}:${x.line}`, symbol: f.name });
+      }
+    }
+    logEvent(e, MAP_ACTOR2, "duplicate_check_done", task_id, { head });
+    return openDuplicates(e, task_id);
+  });
 }
 function ensureDuplicateCheck(e, task_id) {
   if (!e.policy.code_map.enabled) return;
