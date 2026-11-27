@@ -8,6 +8,9 @@ tool="$(printf '%s' "$input" | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"
 # Read and Grep fail open: a missing node or a crashed engine must never block a read.
 case "$1:$tool" in pre-tool-use:Read|pre-tool-use:Grep) readtool=1;; *) readtool=0;; esac
 if [ ! -f "$dir/.estack/policy.yaml" ] && [ ! -f "$cwd/.estack/policy.yaml" ]; then exit 0; fi
+# With the code map off, Read and Grep have nothing to check, so Node is not started. The only "enabled" key in
+# the policy is code_map's. A wrong "off" only skips the map-first rule, which is the fail-open direction.
+if [ "$readtool" = 1 ] && ! grep -Eqs '^  enabled: true[[:space:]]*(#.*)?$' "$dir/.estack/policy.yaml" "$cwd/.estack/policy.yaml"; then exit 0; fi
 if ! command -v node >/dev/null 2>&1; then
   [ "$readtool" = 1 ] && exit 0
   case "$1" in pre-tool-use) printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"estack: node is not on PATH, so this repository'"'"'s gates cannot run"}}';; esac

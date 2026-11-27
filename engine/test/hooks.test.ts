@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -639,20 +639,47 @@ describe("hooks: read tools and code-map tools", () => {
     expect(decision(edit(dir, "a.ts"))).toBe("deny");
   });
 
+  const script = join(__dirname, "../../core/hooks/scripts/estack-hook.sh");
+  const runScript = (dir: string, tool: string, path: string) => {
+    const input = JSON.stringify({ hook_event_name: "PreToolUse", session_id: S, cwd: dir, tool_name: tool, tool_input: { file_path: join(dir, "a.ts") } });
+    return spawnSync("/bin/sh", [script, "pre-tool-use"], { input, encoding: "utf8", env: { PATH: path, CLAUDE_PROJECT_DIR: dir } });
+  };
+  const mapOn = (dir: string) => {
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, readFileSync(p, "utf8").replace("enabled: false", "enabled: true"));
+  };
+
   test("the hook script lets Read through without node", () => {
     const dir = repo();
-    const script = join(__dirname, "../../core/hooks/scripts/estack-hook.sh");
-    const run = (tool: string) => {
-      const input = JSON.stringify({ hook_event_name: "PreToolUse", session_id: S, cwd: dir, tool_name: tool, tool_input: { file_path: join(dir, "a.ts") } });
-      return spawnSync("/bin/sh", [script, "pre-tool-use"], { input, encoding: "utf8", env: { PATH: "/usr/bin:/bin", CLAUDE_PROJECT_DIR: dir } });
-    };
+    mapOn(dir);
     for (const t of ["Read", "Grep"]) {
-      const r = run(t);
+      const r = runScript(dir, t, "/usr/bin:/bin");
       expect(r.status).toBe(0);
       expect(r.stdout).toBe("");
     }
-    const r = run("Edit");
+    const r = runScript(dir, "Edit", "/usr/bin:/bin");
     expect(r.status).toBe(0);
     expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  test("with the map off the hook script lets Read and Grep through without starting node", () => {
+    const dir = repo();
+    const bin = realpathSync(mkdtempSync(join(tmpdir(), "estack-bin-")));
+    const marker = join(bin, "node-started");
+    writeFileSync(join(bin, "node"), `#!/bin/sh\ncat >/dev/null\ntouch "${marker}"\nexit 0\n`, { mode: 0o755 });
+    const path = `${bin}:/usr/bin:/bin`;
+    for (const t of ["Read", "Grep"]) {
+      const r = runScript(dir, t, path);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("");
+    }
+    expect(existsSync(marker)).toBe(false);
+    runScript(dir, "Edit", path);
+    expect(existsSync(marker)).toBe(true);
+    // With the map on (the line init writes, comment and all) a Read starts node again.
+    rmSync(marker);
+    mapOn(dir);
+    runScript(dir, "Read", path);
+    expect(existsSync(marker)).toBe(true);
   });
 });

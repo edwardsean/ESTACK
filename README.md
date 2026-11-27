@@ -190,7 +190,7 @@ and `estack handovers` lists what is waiting, each line starting with its id.
 
 ## Hooks
 
-Every hook goes through `hooks/scripts/estack-hook.sh`, which runs the bundled engine. Without `.estack/policy.yaml` the script exits at once without starting Node. In an opted-in repository:
+Every hook goes through `hooks/scripts/estack-hook.sh`, which runs the bundled engine. Without `.estack/policy.yaml` the script exits at once without starting Node, and with the code map off it does the same for `Read` and `Grep`. In an opted-in repository:
 
 | Hook | What it does |
 |---|---|
