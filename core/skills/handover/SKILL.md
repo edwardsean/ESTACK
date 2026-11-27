@@ -22,7 +22,7 @@ Never hand over mid-step. Finish the step you are on first.
    - `open_questions`: what is still unanswered.
    - `files`: files that matter beyond the ones the tasks changed, such as a spec or a config the next session must read.
 3. If the tool refuses because workers are busy, wait for them. Set `workers_done` only when you know those workers are really finished, such as a worker that has already reported or one that was cancelled.
-4. Tell the owner in one line to run `/clear`. The new session resumes by itself.
+4. Tell the owner in one line to run `/clear`. With one handover waiting, the new session is told to load it and does so on its own. If several are waiting, it lists them and asks the owner which, or the owner runs `/{{estack:ns}}:resume <task>`.
 
 This handover covers every open task bound to the session, so the new session picks up all of them.
 

@@ -153,8 +153,10 @@ suggests a handover. Set `window_tokens: 1000000` in `.estack/policy.yaml` on a
 1. Finish the step you are on and let the workers report.
 2. Run `/estack:handover`. It records the goal, the remaining plan, decisions,
    open questions, and the state of every open task.
-3. Run `/clear`. The new session resumes by itself from the recorded state and
-   re-reads the files before it changes anything.
+3. Run `/clear`. With one handover waiting, the new session is told to load it and
+   does so on its own; if several are waiting, it lists them and asks you which
+   (or run `/estack:resume <task>`). It re-reads the files before it changes
+   anything.
 
 Use `/compact` only when the conversation itself must be kept. The engine saves
 state before compaction and restores it afterward. A handover from the CTO
@@ -170,8 +172,8 @@ Every hook goes through `hooks/scripts/estack-hook.sh`, which runs the bundled e
 | `PreToolUse` (edit tools, `Bash`, estack MCP tools) | Denies an edit with no open task, an edit to a protected path, a push without verify evidence, any `ask` action from a worker, and the hard-coded set (touching `.estack/state.db`, `estack skip`/`cancel`/`override`, `--no-verify` or `git commit -n`, `core.hooksPath` in any case, mentioning `CLAUDECODE`). Asks the owner for push, merge, deploy and migration. Fails closed if the engine errors |
 | `PostToolUse` (`Bash`) | Records an approved command in the events log. Never blocks |
 | `SessionStart` | Tells the session the repository is opted in and lists open tasks. After `/clear` it hints that a handover is waiting, and after a compaction it restores the saved state |
-| `UserPromptSubmit` | Reminds the session of its task's next step, and suggests a handover once context passes `handover.threshold` of `handover.window_tokens` |
-| `PreCompact` | Saves a handover before the conversation is compacted. Never blocks |
+| `UserPromptSubmit` | Reminds the session of its task's next step, and suggests a handover, once per task step, only when the session has a bound task with a next step and its context is past `handover.threshold` of `handover.window_tokens` |
+| `PreCompact` | Saves a session handover before the conversation is compacted, only when the session has open tasks. Never blocks |
 | `Stop` | Blocks once when a session task has commits made after the task started but no evidence on its implement or fix step |
 | `SubagentStop` | The same check for the worker's own tasks, and also blocks when implement or fix is settled but the test step is not |
 
