@@ -117,6 +117,23 @@ test("a version-2 database upgrades to 3 and keeps its rows", () => {
   }
   expect(db.prepare("SELECT COUNT(*) c FROM tasks").get()).toMatchObject({ c: 1 });
   expect(db.prepare("SELECT COUNT(*) c FROM handovers").get()).toMatchObject({ c: 1 });
+  expect(indexes(db)).toEqual(PHASE_5_INDEXES);
+  db.close();
+});
+
+const PHASE_5_INDEXES = [
+  { name: "code_queries_task_actor", tbl_name: "code_queries" },
+  { name: "events_kind_task_actor", tbl_name: "events" },
+];
+const indexes = (db: DatabaseSync) =>
+  db.prepare("SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name").all();
+
+test("a new database has the indexes the map-first and reuse_check look-ups use", () => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), "estack-idx-")), "state.db"));
+  expect(indexes(db)).toEqual(PHASE_5_INDEXES);
+  const plan = (sql: string) => (db.prepare("EXPLAIN QUERY PLAN " + sql).all() as { detail: string }[]).map((r) => r.detail).join("\n");
+  expect(plan("SELECT 1 FROM events WHERE kind = 'map_first_denied' AND task_id = 1 AND actor = 'a' LIMIT 1")).toContain("events_kind_task_actor");
+  expect(plan("SELECT 1 FROM code_queries WHERE task_id = 1 AND recorded_by = 'a' AND ok = 1 AND auto = 0 LIMIT 1")).toContain("code_queries_task_actor");
   db.close();
 });
 

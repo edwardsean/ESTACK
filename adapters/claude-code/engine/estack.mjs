@@ -14651,6 +14651,8 @@ CREATE TABLE duplicates (
   status TEXT NOT NULL, reason TEXT, closed_by TEXT, found_at TEXT NOT NULL, closed_at TEXT,
   UNIQUE (task_id, new_file, new_symbol, existing_file, existing_symbol)
 );
+CREATE INDEX events_kind_task_actor ON events(kind, task_id, actor);
+CREATE INDEX code_queries_task_actor ON code_queries(task_id, recorded_by);
 `;
 var MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3];
 function openDb(path) {
