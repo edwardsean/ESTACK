@@ -358,6 +358,25 @@ describe("reuse_check with the code map", () => {
     expect(code(() => done(e, id, "reuse_check")).code).toBe("BAD_EVIDENCE");
   });
 
+  test("the reuse_check refusal names the task it checked", () => {
+    const { e, id } = mapSetup();
+    const err = code(() => done(e, id, "reuse_check", note("nothing")));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toContain(`task #${id}`);
+  });
+
+  test("a search with no task_id counts for the session's task still on reuse_check, else its newest", () => {
+    const { dir, e, id } = mapSetup();
+    const newer = start(e, dir).task.id;
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name IN ('plan', 'reuse_check')").run(newer);
+    const lastTask = () => (e.db.prepare("SELECT task_id FROM code_queries ORDER BY id DESC LIMIT 1").get() as { task_id: number | null }).task_id;
+    runCodeQuery(e, { tool: "find_existing", arg: "fmt", actor: cto, cwd: dir });
+    expect(lastTask()).toBe(id);
+    expect(done(e, id, "reuse_check", note("found fmt")).steps.find((s) => s.name === "reuse_check")!.status).toBe("done");
+    runCodeQuery(e, { tool: "find_existing", arg: "fmt", actor: cto, cwd: dir });
+    expect(lastTask()).toBe(newer);
+  });
+
   test("with the map off, reuse_check takes a plain note", () => {
     const { e, id } = mapSetup(false);
     const v = done(e, id, "reuse_check", note("nothing"));

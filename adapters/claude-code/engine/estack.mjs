@@ -34751,7 +34751,7 @@ function checkEvidence(e, v, step, ev, actor) {
           "SELECT id FROM code_queries WHERE task_id = ? AND recorded_by = ? AND ok = 1 AND auto = 0 AND tool IN ('find_existing','context_for') ORDER BY id"
         ).all(v.task.id, actorId(actor));
         if (rows.length === 0) {
-          bad("reuse_check needs a find_existing or context_for search you ran yourself for this task; the automatic context from start_task and other agents' searches don't count");
+          bad(`reuse_check needs a find_existing or context_for search you ran yourself for task #${v.task.id}; the automatic context from start_task and other agents' searches don't count`);
         }
         return { payload: { text: ev.text, queries: rows.map((r) => r.id) } };
       }
@@ -45757,7 +45757,9 @@ function runCodeQuery(e, input2) {
     } else {
       const t = e.db.prepare(
         `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
-         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ? ORDER BY t.id DESC LIMIT 1`
+         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?
+         ORDER BY EXISTS (SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.name = 'reuse_check' AND s.status IN ('pending', 'in_progress')) DESC,
+           t.id DESC LIMIT 1`
       ).get(checkout, input2.actor.session_id);
       taskId = t?.id ?? null;
     }

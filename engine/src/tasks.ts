@@ -153,7 +153,7 @@ function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, 
           "SELECT id FROM code_queries WHERE task_id = ? AND recorded_by = ? AND ok = 1 AND auto = 0 AND tool IN ('find_existing','context_for') ORDER BY id",
         ).all(v.task.id, actorId(actor)) as { id: number }[];
         if (rows.length === 0) {
-          bad("reuse_check needs a find_existing or context_for search you ran yourself for this task; the automatic context from start_task and other agents' searches don't count");
+          bad(`reuse_check needs a find_existing or context_for search you ran yourself for task #${v.task.id}; the automatic context from start_task and other agents' searches don't count`);
         }
         return { payload: { text: ev.text, queries: rows.map((r) => r.id) } };
       }

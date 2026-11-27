@@ -179,9 +179,12 @@ export function runCodeQuery(e: Engine, input: { tool: CodeTool; arg: string; ac
       if (t.status !== "open") throw new EngineError("TASK_CLOSED", `task ${t.id} is ${t.status}`);
       taskId = t.id;
     } else {
+      // The newest bound open task still on reuse_check (the task the map-first rule applies to), else the newest.
       const t = e.db.prepare(
         `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
-         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ? ORDER BY t.id DESC LIMIT 1`,
+         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?
+         ORDER BY EXISTS (SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.name = 'reuse_check' AND s.status IN ('pending', 'in_progress')) DESC,
+           t.id DESC LIMIT 1`,
       ).get(checkout, input.actor.session_id) as { id: number } | undefined;
       taskId = t?.id ?? null;
     }
