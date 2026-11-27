@@ -77,13 +77,13 @@ Run the engine's init in the project root:
 node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" init --engine "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs"
 ```
 
-Add `--code-map off` if the owner chose no map, and `--exclude "<globs>"` with the confirmed list. Without `--code-map`, the map turns on when a supported Graphify is found and stays off otherwise, and init says so.
+Add `--code-map off` if the owner chose no map, and `--exclude "<globs>"` with the confirmed list. Without `--code-map`, the map turns on when a supported Graphify is found and stays off otherwise. Init prints a message only when the map is off because Graphify was not found. When the map is on, the build line is the signal.
 
 Report each line it prints. It creates `.estack/policy.yaml` and `.estack/brief.md`, and it installs the git hooks `pre-commit` and `pre-push`, which run the same engine so a commit or push made by an agent through git itself is checked too. They act only when an agent runs git (`CLAUDECODE=1`), and the owner's own terminal is never checked. If it prints `git hooks not installed: core.hooksPath is set`, the repository routes hooks through its own directory. Say so, and tell the user that git-level enforcement is off until they call `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" git-hook pre-commit` and `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/engine/estack.mjs" git-hook pre-push` from their own hooks (with `CLAUDE_PLUGIN_ROOT` replaced by the plugin's real path, and the pre-push hook's stdin passed through). The Claude Code hooks still apply either way. If it chained an existing hook, say so.
 
 `.estack/brief.md` is for the owner to fill in: it is where the project's goals and constraints go, and the engine does not write them for you. Init is safe to re-run and never overwrites an existing file. The repository is opted in once `.estack/policy.yaml` exists.
 
-With the map on, init builds it and prints the folder shares, the biggest folders by share of the map. Show them and ask whether any big folder is a copy of other code, such as a vendored library or a mirrored package. If one is, give the owner the exact line to add under `code_map.exclude` in `.estack/policy.yaml`, for example `    - upstream/**`, and let them add it themselves. The agent cannot edit that file.
+With the map on, init builds it and prints the folder shares, the biggest folders by share of the map. Show them and ask whether any big folder is a copy of other code, such as a vendored library or a mirrored package. If one is, tell the owner to edit the `exclude:` line under `code_map` in `.estack/policy.yaml` to include the glob, for example `exclude: ["upstream/**"]` (add it to the existing list if there is one), and let them make the edit themselves. The agent cannot edit that file.
 
 Then tell the owner to commit `.estack/` themselves. Report that they should run, in their own terminal:
 
