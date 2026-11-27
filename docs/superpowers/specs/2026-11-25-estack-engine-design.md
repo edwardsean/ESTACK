@@ -391,11 +391,17 @@ claims.
 
 | Tool | Runs | Returns |
 |---|---|---|
-| `context_for(path or area)` | `graphify query` seeded at the area | The area's imports and the helpers it uses, with file and line; what calls into it; active claims in it |
-| `find_existing(description)` | `graphify query "<description>"` **plus** a text search of the mapped source files for the description's words | The matching functions and modules, each with file, line, why it matched (name or code text), edge confidence, and owning task if in progress |
-| `who_uses(symbol)` | `graphify explain <path>::<symbol>` | Callers and importers with file and line; when a name exists in several files, the candidates to pick from |
+| `context_for(path or area)` | The area's entries in `graph.json` and their edges | The area's imports and the helpers it uses, with file and line; what calls into it; active claims in it |
+| `find_existing(description)` | A name match over the graph's functions **plus** a text search of the mapped source files for the description's words | The matching functions and modules, each with file, line, why it matched (name or code text), edge confidence, and owning task if in progress |
+| `who_uses(symbol)` | The symbol's incoming edges in `graph.json` (what `graphify explain` shows) | Callers and importers with file and line; when a name exists in several files, the candidates to pick from |
 
-**Why the text search.** `graphify query` matches the description's words against
+**Graphify builds, the engine reads.** Graphify builds `graph.json`; the engine reads
+that file itself for all three tools instead of parsing what `graphify query` and
+`graphify explain` print, which is written for people and may change between versions.
+It also lets the engine's tests use a small hand-written graph without Graphify
+installed. (Revised 2026-11-27 while planning phase 5.)
+
+**Why the text search.** Graphify's own `query` matches the description's words against
 names, then walks outward from the matches. In the spike, "run a command with a timeout"
 found nothing named "timeout" near `runBounded`, the function that does exactly that,
 and missed it. A plain search of the mapped files for the same words finds it, because
@@ -577,8 +583,8 @@ Each phase is usable on its own and ends in a check.
 ## 14. Left to the builder
 
 - TypeScript project structure, test framework, the SQLite driver, the MCP SDK version.
-- How the engine calls Graphify (CLI subprocess or its MCP server), provided each call
-  is time-limited, logged in `code_queries` and code-only.
+- How the engine runs Graphify's build, provided it is time-limited and code-only, and
+  how it reads `graph.json`, provided every tool call is logged in `code_queries`.
 - The duplicate-match heuristic's exact thresholds, and how a parameter list is read
   from the source line.
 - `find_existing`'s text search: the search tool, how words are taken from the
