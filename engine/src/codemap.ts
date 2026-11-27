@@ -8,7 +8,7 @@ export const MAX_MATCHES = 15;
 export interface Hit { symbol: string; file: string; line: number; relation?: string; confidence?: string; why?: ("name" | "text")[] }
 export interface ContextResult { graph: string; area: string; defines: Hit[]; uses: Hit[]; used_by: Hit[]; more: Record<string, number> }
 export interface FindResult { graph: string; description: string; words: string[]; matches: Hit[] }
-export interface WhoUsesResult { graph: string; symbol: string; defined_at: Hit[]; callers: Hit[]; ambiguous?: Hit[] }
+export interface WhoUsesResult { graph: string; symbol: string; defined_at: Hit[]; callers: Hit[]; ambiguous?: Hit[]; more?: Record<string, number> }
 
 const USES = new Set(["calls", "indirect_call", "imports", "imports_from", "inherits", "references"]);
 const USED_BY = new Set(["calls", "indirect_call", "imports", "inherits", "references"]);
@@ -62,9 +62,11 @@ export function whoUses(g: Graph, label: string, symbol: string): WhoUsesResult 
     return result;
   }
   const ids = new Set(found.map((n) => n.id));
-  result.callers = g.edges
+  const callers = g.edges
     .filter((ed: GraphEdge) => ids.has(ed.target) && CALLERS.has(ed.relation) && g.nodes.has(ed.source))
     .map((ed) => ({ symbol: g.nodes.get(ed.source)!.name, file: ed.file, line: ed.line, relation: ed.relation, confidence: ed.confidence }));
+  result.callers = callers.slice(0, MAX_LIST);
+  if (callers.length > MAX_LIST) result.more = { callers: callers.length - MAX_LIST };
   return result;
 }
 
@@ -126,7 +128,7 @@ export function findExisting(e: Engine, g: Graph, label: string, description: st
   const ranked = [...score.values()]
     .map((s) => ({ s, total: new Set([...s.name, ...s.text]).size }))
     .filter((r) => r.total > 0)
-    .sort((x, y) => y.total - x.total || x.s.node.file.localeCompare(y.s.node.file) || x.s.node.line - y.s.node.line);
+    .sort((x, y) => y.total - x.total || Number(y.s.name.size > 0) - Number(x.s.name.size > 0) || x.s.node.file.localeCompare(y.s.node.file) || x.s.node.line - y.s.node.line);
   result.matches = ranked.slice(0, MAX_MATCHES).map(({ s }) => ({
     ...hitOf(s.node),
     why: [...(s.name.size ? ["name" as const] : []), ...(s.text.size ? ["text" as const] : [])],

@@ -22,17 +22,17 @@ function setup(extraNodes: object[] = [], extraLinks: object[] = []) {
   const dir = makeRepo();
   initRepo(dir);
   put(dir, "src/utils.ts", "export function formatInvoiceDate(d: Date) { return d; }\n\nexport function runBounded(cmd: string, timeoutMs: number) { // timeout\n}\n");
-  put(dir, "src/orders/invoice.ts", "import { formatInvoiceDate as fmt } from \"../utils\";\n\n\n\n\nexport function render() {\n  return fmt(new Date());\n}\n");
+  put(dir, "src/orders/invoice.ts", "import { formatInvoiceDate } from \"../utils\";\nexport function render() {\n  return formatInvoiceDate(new Date());\n}\n");
   put(dir, "dist/utils.js", "function formatInvoiceDate() {}\nfunction runBounded() { /* timeout */ }\n");
   execFileSync("git", ["add", "-A"], { cwd: dir });
   execFileSync("git", ["commit", "-m", "fixtures"], { cwd: dir, stdio: "ignore" });
   writeFakeGraph(dir, [
     fileNode("u", "src/utils.ts"), fn("fmt", "formatInvoiceDate", "src/utils.ts", 1), fn("rb", "runBounded", "src/utils.ts", 3),
-    fileNode("inv", "src/orders/invoice.ts"), fn("render", "render", "src/orders/invoice.ts", 6),
+    fileNode("inv", "src/orders/invoice.ts"), fn("render", "render", "src/orders/invoice.ts", 2),
     ...extraNodes,
   ], [
     link("inv", "fmt", "imports_from", "src/orders/invoice.ts", 1),
-    link("render", "fmt", "calls", "src/orders/invoice.ts", 7),
+    link("render", "fmt", "calls", "src/orders/invoice.ts", 3),
     ...extraLinks,
   ]);
   return { dir, g: loadGraph(dir)!, e: openEngine(dir) };
@@ -53,7 +53,7 @@ describe("codemap", () => {
   test("who_uses lists callers with file and line", () => {
     const { g } = setup();
     const r = whoUses(g, "main", "formatInvoiceDate");
-    expect(r.callers).toContainEqual({ symbol: "render", file: "src/orders/invoice.ts", line: 7, relation: "calls", confidence: "EXTRACTED" });
+    expect(r.callers).toContainEqual({ symbol: "render", file: "src/orders/invoice.ts", line: 3, relation: "calls", confidence: "EXTRACTED" });
     expect(r.ambiguous).toBeUndefined();
   });
 
@@ -88,6 +88,27 @@ describe("codemap", () => {
     const r = findExisting(e, g, "main", "format invoice date");
     expect(r.matches[0].symbol).toBe("formatInvoiceDate");
     expect(r.matches[0].why).toContain("name");
+  });
+
+  test("a function's own name outranks a line that calls it", () => {
+    const { e, g } = setup();
+    const syms = findExisting(e, g, "main", "format invoice date").matches.map((h) => h.symbol);
+    expect(syms.indexOf("formatInvoiceDate")).toBeGreaterThanOrEqual(0);
+    expect(syms.indexOf("formatInvoiceDate")).toBeLessThan(syms.indexOf("render"));
+  });
+
+  test("who_uses callers are capped with a count of the rest", () => {
+    const nodes: object[] = [];
+    const links: object[] = [];
+    for (let i = 0; i < 45; i++) {
+      nodes.push(fn(`c${i}`, `caller${i}`, `other/f${i}.ts`, 1));
+      links.push(link(`c${i}`, "fmt", "calls", `other/f${i}.ts`, 2));
+    }
+    const { g } = setup(nodes, links);
+    const r = whoUses(g, "main", "formatInvoiceDate");
+    expect(r.callers).toHaveLength(MAX_LIST);
+    expect(r.more).toEqual({ callers: 46 - MAX_LIST });
+    expect(whoUses(setup().g, "main", "formatInvoiceDate").more).toBeUndefined();
   });
 
   test("lists are capped with a count of the rest", () => {
