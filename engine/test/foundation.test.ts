@@ -70,7 +70,7 @@ test("openDb twice is idempotent and sets WAL", () => {
   openDb(path).close();
   const db = openDb(path);
   expect((db.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("wal");
-  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "1" });
+  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "2" });
   db.close();
 });
 

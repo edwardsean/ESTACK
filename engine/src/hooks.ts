@@ -1,6 +1,11 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { contextRatio } from "./context";
 import type { Engine } from "./engine";
+import {
+  activityAfter, buildTaskBody, latestSessionHandover, pendingHandovers, saveSessionHandover, sessionTasks,
+  type Handover, type SessionHandoverBody, type TaskHandoverBody,
+} from "./handover";
 import { openEngine } from "./engine";
 import type { Exec } from "./exec";
 import { classifyCommand, isExempt, isProtected } from "./match";
@@ -10,7 +15,7 @@ import { EngineError, type Actor } from "./types";
 export interface HookEvent {
   hook_event_name: string; session_id: string; cwd: string; agent_id?: string; agent_type?: string;
   tool_name?: string; tool_input?: Record<string, unknown>; tool_use_id?: string;
-  stop_hook_active?: boolean; prompt?: string; source?: string;
+  stop_hook_active?: boolean; prompt?: string; source?: string; transcript_path?: string; trigger?: string;
 }
 export type HookOutput = Record<string, unknown> | null;
 
@@ -186,13 +191,100 @@ function ctxOut(eventName: string, additionalContext: string): HookOutput {
   return { hookSpecificOutput: { hookEventName: eventName, additionalContext } };
 }
 
-export function sessionStart(e: Engine, _ev: HookEvent): HookOutput {
+const MAX_LISTED_HANDOVERS = 10;
+/** A handover's session that logged anything within this long may still be running. */
+const LIVE_SESSION_MS = 10 * 60 * 1000;
+/** A PreCompact handover younger than this was written for the compaction now being restored. */
+const FRESH_COMPACT_MS = 10 * 60 * 1000;
+
+function compactState(b: { goal?: string; plan?: string[]; decisions: { what: string; why: string }[]; open_questions: string[]; files?: string[] },
+  tasks: TaskHandoverBody[]): string[] {
+  const out: string[] = [];
+  if (b.goal) out.push(`goal: ${b.goal}`);
+  if (b.plan?.length) out.push(`plan: ${b.plan.join("; ")}`);
+  for (const t of tasks) out.push(`#${t.task.id} next: ${t.next_step ?? "none"}`);
+  if (b.decisions.length) out.push(`decisions: ${b.decisions.map((d) => `${d.what} (${d.why})`).join("; ")}`);
+  if (b.open_questions.length) out.push(`open questions: ${b.open_questions.join("; ")}`);
+  const files = [...new Set([...(b.files ?? []), ...tasks.flatMap((t) => t.files)])];
+  if (files.length) out.push(`files: ${files.join(", ")}`);
+  return out;
+}
+
+/** Elapsed time as "45s", "12m", "3h" or "2d". */
+function dur(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 48 * 3600) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+const since = (e: Engine, at: string) => dur(e.now().getTime() - Date.parse(at));
+
+const handoverKind = (h: Handover) => h.kind === "session" ? "session" : `task #${h.task_id}`;
+const handoverGoal = (h: Handover) =>
+  (h.body.kind === "session" ? (h.body as SessionHandoverBody).goal : (h.body as TaskHandoverBody).task.title).slice(0, 60) || "(none)";
+
+/** When the handover's session was active after saving it, and recently enough that it may still be running. */
+function stillRunning(e: Engine, h: Handover): string | null {
+  const at = activityAfter(e, h);
+  return at !== null && e.now().getTime() - Date.parse(at) < LIVE_SESSION_MS ? at : null;
+}
+
+function listLine(e: Engine, h: Handover): string {
+  const active = stillRunning(e, h);
+  return `#${h.id} ${handoverKind(h)} from ${h.from_session.slice(0, 8)} ${since(e, h.created_at)} ago goal: ${handoverGoal(h)}${
+    active ? ` (that session was active ${since(e, active)} ago; it may still be running)` : ""}`;
+}
+
+function handoverLines(e: Engine, ev: HookEvent): string[] {
+  try {
+    if (ev.source === "compact") {
+      const h = latestSessionHandover(e, ev.session_id);
+      const reread = "Re-read the listed files before changing anything.";
+      if (h && h.auto && e.now().getTime() - Date.parse(h.created_at) < FRESH_COMPACT_MS) {
+        const b = h.body as SessionHandoverBody;
+        return [...compactState(b, b.tasks), `estack: context was compacted; this is the recorded state of your work. ${reread}`];
+      }
+      // No handover from this compaction: show the session's tasks as they are now, without a stale goal or plan.
+      const actor: Actor = { session_id: ev.session_id };
+      const tasks = sessionTasks(e, ev.session_id).map((v) => buildTaskBody(e, v, {}, actor, true));
+      if (tasks.length === 0) return [];
+      return [...compactState({ decisions: [], open_questions: [] }, tasks),
+        `estack: context was compacted; these are your open tasks as they are now. ${reread}`];
+    }
+    const pending = pendingHandovers(e);
+    if (pending.length === 1 && stillRunning(e, pending[0]) === null) {
+      const h = pending[0];
+      return [`estack: a handover is waiting (#${h.id}, ${handoverKind(h)}, ${since(e, h.created_at)} ago, goal: ${handoverGoal(h)}). Call the resume tool now${
+        h.kind === "task" ? ` with task_id ${h.task_id}` : ""}, then re-read the files it lists and continue.`];
+    }
+    if (pending.length > 0) {
+      const extra = pending.length - MAX_LISTED_HANDOVERS;
+      return [...pending.slice(0, MAX_LISTED_HANDOVERS).map((h) => listLine(e, h)), ...(extra > 0 ? [`+${extra} more`] : []),
+        pending.length === 1
+          ? "estack: a handover is waiting but its session may still be running; ask the owner whether to resume it, then call the resume tool with handover_id."
+          : "estack: several handovers are waiting; ask the owner which one, then call the resume tool with handover_id."];
+    }
+  } catch { /* context hooks fail open */ }
+  return [];
+}
+
+export function sessionStart(e: Engine, ev: HookEvent): HookOutput {
   const head = "estack: this repository is opted in; code edits need an open task (start_task), pushes need verify evidence.";
   const open = listOpen(e).slice(0, MAX_CONTEXT_TASKS);
   const lines = open.length
     ? open.map((v) => `#${v.task.id} [${v.task.type}] ${v.task.title} (${v.task.branch}) next: ${v.next?.name ?? "none"}`)
     : ["no open tasks"];
-  return ctxOut("SessionStart", [head, ...lines].join("\n"));
+  return ctxOut("SessionStart", [head, ...lines, ...handoverLines(e, ev)].join("\n"));
+}
+
+/** Save an auto session handover before compaction, if the session has open tasks. Never blocks. */
+export function preCompact(e: Engine, ev: HookEvent): HookOutput {
+  try {
+    // Workers do not write session handovers; only the main session's compaction does.
+    if (!ev.agent_id && sessionTasks(e, ev.session_id).length > 0) saveSessionHandover(e, {}, { session_id: ev.session_id }, true);
+  } catch { /* fail open */ }
+  return null;
 }
 
 /** Open tasks bound to this session (and, when `agentOnly`, to this agent). */
@@ -205,7 +297,22 @@ function boundTasks(e: Engine, ev: HookEvent, agentOnly: boolean): TaskView[] {
 
 export function userPromptSubmit(e: Engine, ev: HookEvent): HookOutput {
   const v = boundTasks(e, ev, false).find((t) => t.next);
-  return v ? ctxOut("UserPromptSubmit", `estack: task #${v.task.id} next step: ${v.next!.name}`) : null;
+  if (!v) return null;
+  const lines = [`estack: task #${v.task.id} next step: ${v.next!.name}`];
+  try {
+    const { threshold, window_tokens } = e.policy.handover;
+    // Cheap check first: once this session was nudged on this step, the transcript need not be read.
+    const seen = e.db.prepare(
+      `SELECT 1 FROM events WHERE kind = 'handover_suggested' AND json_extract(payload_json, '$.session_id') = ?
+       AND json_extract(payload_json, '$.task_id') = ? AND json_extract(payload_json, '$.step') = ? LIMIT 1`,
+    ).get(ev.session_id, v.task.id, v.next!.name);
+    const ratio = seen ? null : contextRatio(ev.transcript_path, window_tokens);
+    if (ratio !== null && ratio >= threshold) {
+      logEvent(e, actorOf(ev), "handover_suggested", v.task.id, { session_id: ev.session_id, task_id: v.task.id, step: v.next!.name, ratio });
+      lines.push(`estack: context is ${Math.round(ratio * 100)}% full. Finish the current step and collect any running workers, then call the handover tool and tell the owner to run /clear; the new session picks up automatically. Use /compact instead only if the conversation itself must be kept.`);
+    }
+  } catch { /* fail open */ }
+  return ctxOut("UserPromptSubmit", lines.join("\n"));
 }
 
 export function stop(e: Engine, ev: HookEvent): HookOutput {
@@ -247,6 +354,7 @@ export function runHook(name: string, ev: HookEvent, deps: { exec?: Exec; now?: 
       case "pre-tool-use": return preToolUse(e, ev);
       case "post-tool-use": return postToolUse(e, ev);
       case "session-start": return sessionStart(e, ev);
+      case "pre-compact": return preCompact(e, ev);
       case "user-prompt-submit": return userPromptSubmit(e, ev);
       case "stop": return stop(e, { ...ev, hook_event_name: "Stop" });
       case "subagent-stop": return stop(e, { ...ev, hook_event_name: "SubagentStop" });

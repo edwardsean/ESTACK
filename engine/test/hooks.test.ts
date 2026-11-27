@@ -9,7 +9,8 @@ import { recordOverride, skipStep } from "../src/owner";
 import { initRepo } from "../src/policy";
 import { realExec, type Exec } from "../src/exec";
 import { preCommit, prePush } from "../src/githooks";
-import { startTask } from "../src/tasks";
+import { logEvent, startTask } from "../src/tasks";
+import { consumeHandover, saveSessionHandover, type HandoverInput } from "../src/handover";
 import { fakeExec, makeRepo } from "./helpers";
 
 const S = "sess-1";
@@ -217,6 +218,13 @@ describe("hooks", () => {
     expect("agent_id" in m.hookSpecificOutput.updatedInput.actor).toBe(false);
   });
 
+  test("resume calls get the real actor stamped", () => {
+    const dir = repo();
+    const r = pre(dir, { tool_name: "mcp__plugin_estack_estack__resume", agent_id: "A", tool_input: { actor: { session_id: "fake" } } });
+    expect(decision(r)).toBe("allow");
+    expect(r.hookSpecificOutput.updatedInput.actor).toEqual({ session_id: S, agent_id: "A" });
+  });
+
   test("C6 start_task gets the caller's cwd stamped over a typed one", () => {
     const dir = repo();
     const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
@@ -315,6 +323,228 @@ describe("hooks", () => {
       expect(r.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
       expect(ctx(r)).toBe(`estack: task #${id} next step: plan`);
       expect(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", session_id: "other" })).toBeNull();
+    });
+
+    describe("handover hooks", () => {
+      const usage = (dir: string, tokens: number) => {
+        const p = join(dir, `tr-${tokens}.jsonl`);
+        writeFileSync(p, JSON.stringify({ type: "assistant", isSidechain: false, message: { usage: { input_tokens: tokens } } }) + "\n");
+        return p;
+      };
+      const withEngine = <T,>(dir: string, f: (e: ReturnType<typeof openEngine>) => T): T => {
+        const e = openEngine(dir, deps);
+        try { return f(e); } finally { e.db.close(); }
+      };
+      const save = (dir: string, session: string, input: HandoverInput = {}) =>
+        withEngine(dir, (e) => saveSessionHandover(e, input, { session_id: session }, false));
+
+      test("pre-compact saves one auto session handover and returns nothing", () => {
+        const dir = repo();
+        expect(hook("pre-compact", dir, { hook_event_name: "PreCompact" })).toBeNull();
+        expect(rows(dir, "SELECT * FROM handovers")).toHaveLength(0);
+        const id = task(dir);
+        expect(hook("pre-compact", dir, { hook_event_name: "PreCompact", trigger: "auto" })).toBeNull();
+        const h = rows(dir, "SELECT * FROM handovers");
+        expect(h).toHaveLength(1);
+        expect(h[0].kind).toBe("session");
+        expect(h[0].auto).toBe(1);
+        expect(h[0].from_session).toBe(S);
+        expect(JSON.parse(h[0].body_json).tasks[0].task.id).toBe(id);
+      });
+
+      test("after compaction, session start injects the recorded state", () => {
+        const dir = repo();
+        const id = task(dir);
+        writeFileSync(join(dir, "new.ts"), "x");
+        save(dir, S, { goal: "ship the thing", plan: ["do later"], decisions: [{ what: "use sqlite", why: "simple" }], open_questions: ["which port?"], files: ["docs/arch.md"] });
+        hook("pre-compact", dir, { hook_event_name: "PreCompact", trigger: "auto" });
+        const text = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "compact" }));
+        expect(text).toContain("ship the thing");
+        expect(text).toContain("do later");
+        expect(text).toContain(`#${id} next: plan`);
+        expect(text).toContain("use sqlite");
+        expect(text).toContain("which port?");
+        expect(text).toContain("new.ts");
+        expect(text).toContain("docs/arch.md");
+        expect(text).toContain("estack: context was compacted; this is the recorded state of your work. Re-read the listed files before changing anything.");
+        expect(text).not.toContain("a handover is waiting");
+      });
+
+      test("after /clear with one waiting handover, session start tells the agent to resume it", () => {
+        const dir = repo();
+        task(dir);
+        const h = save(dir, S, { goal: "g" });
+        const text = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "clear", session_id: "new" }));
+        expect(text).toMatch(new RegExp(`estack: a handover is waiting \\(#${h.id}, session, \\d+s ago, goal: g\\)\\. Call the resume tool now, then re-read the files it lists and continue\\.`));
+      });
+
+      test("with several waiting handovers, session start lists them and says to ask the owner", () => {
+        const dir = repo();
+        task(dir);
+        const h1 = save(dir, S, { goal: "g" });
+        task(dir, "s2-abcdefghij");
+        const h2 = save(dir, "s2-abcdefghij", { goal: "x".repeat(70) });
+        const text = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "startup", session_id: "new" }));
+        expect(text).toContain("estack: several handovers are waiting; ask the owner which one, then call the resume tool with handover_id.");
+        expect(text).not.toContain("Call the resume tool now");
+        const listed = text.split("\n").filter((l) => /^#\d+ (session|task #\d+) from /.test(l));
+        expect(listed).toHaveLength(2);
+        expect(listed[0]).toMatch(new RegExp(`^#${h1.id} session from ${S.slice(0, 8)} \\d+s ago goal: g$`));
+        expect(listed[1]).toMatch(new RegExp(`^#${h2.id} session from s2-abcde \\d+s ago goal: ${"x".repeat(60)}$`));
+      });
+
+      test("prompt submit suggests a handover once per step above the threshold", () => {
+        const dir = repo();
+        const id = task(dir);
+        const transcript_path = usage(dir, 120000);
+        const first = ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path }));
+        expect(first).toContain(`estack: task #${id} next step: plan`);
+        expect(first).toContain("estack: context is 60% full. Finish the current step and collect any running workers, then call the handover tool and tell the owner to run /clear; the new session picks up automatically. Use /compact instead only if the conversation itself must be kept.");
+        const ev1 = rows(dir, "SELECT * FROM events WHERE kind = 'handover_suggested'");
+        expect(ev1).toHaveLength(1);
+        expect(JSON.parse(ev1[0].payload_json)).toEqual({ session_id: S, task_id: id, step: "plan", ratio: 0.6 });
+        const second = ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path }));
+        expect(second).toBe(`estack: task #${id} next step: plan`);
+        setDone(dir, id, "plan");
+        const third = ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path }));
+        expect(third).toContain("context is 60% full");
+        expect(rows(dir, "SELECT * FROM events WHERE kind = 'handover_suggested'")).toHaveLength(2);
+      });
+
+      const clocked = (startMs: number) => {
+        const c = { t: startMs, deps: { exec: fakeExec({}), now: () => new Date(c.t) } };
+        return c;
+      };
+      const MIN = 60 * 1000;
+
+      test("C1 a finished session's handover is not offered: manual handover, PreCompact, task closed", () => {
+        const dir = repo();
+        const id = task(dir);
+        save(dir, S, { goal: "ship X" });
+        hook("pre-compact", dir, { hook_event_name: "PreCompact", trigger: "auto" });
+        withEngine(dir, (e) => e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(id));
+        const text = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "startup", session_id: "next-day" }));
+        expect(text).toContain("no open tasks");
+        expect(text).not.toContain("resume");
+        expect(text).not.toContain("waiting");
+      });
+
+      test("I1 after compaction and a new task, the resuming session can edit both tasks' worktrees", () => {
+        const dir = repo();
+        task(dir, "A");
+        hook("pre-compact", dir, { hook_event_name: "PreCompact", session_id: "A" });
+        const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+        execFileSync("git", ["worktree", "add", "-b", "b2", wt], { cwd: dir, stdio: "ignore" });
+        withEngine(dir, (e) => startTask(e, { title: "b", type: "feature", goal: "g2", done_check: "d", actor: { session_id: "A" }, cwd: wt }));
+        withEngine(dir, (e) => consumeHandover(e, { session_id: "B" }));
+        expect(edit(wt, join(wt, "x.ts"), { session_id: "B" })).toBeNull();
+        expect(edit(dir, join(dir, "x.ts"), { session_id: "B" })).toBeNull();
+      });
+
+      test("I3 a handover with no later activity from its session auto-resumes", () => {
+        const dir = repo();
+        const c = clocked(Date.parse("2026-01-01T00:00:00Z"));
+        const e = openEngine(dir, c.deps);
+        startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir });
+        const h = saveSessionHandover(e, { goal: "the goal" }, { session_id: S });
+        e.db.close();
+        c.t += 1000;
+        const text = ctx(runHook("session-start", ev(dir, { hook_event_name: "SessionStart", source: "clear", session_id: "new" }), c.deps));
+        expect(text).toContain(`estack: a handover is waiting (#${h.id}, session, 1s ago, goal: the goal). Call the resume tool now, then re-read the files it lists and continue.`);
+      });
+
+      test("I3 a handover whose session was active 2 minutes later is listed as maybe still running, not auto-resumed", () => {
+        const dir = repo();
+        const c = clocked(Date.parse("2026-01-01T00:00:00Z"));
+        const e = openEngine(dir, c.deps);
+        startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir });
+        const h = saveSessionHandover(e, { goal: "the goal" }, { session_id: S });
+        c.t += 2 * MIN;
+        logEvent(e, { session_id: S }, "step_done", null, {});
+        e.db.close();
+        c.t += 1 * MIN;
+        const text = ctx(runHook("session-start", ev(dir, { hook_event_name: "SessionStart", source: "clear", session_id: "new" }), c.deps));
+        expect(text).not.toContain("Call the resume tool now");
+        expect(text).toContain(`#${h.id} session from ${S.slice(0, 8)} 3m ago goal: the goal (that session was active 1m ago; it may still be running)`);
+        expect(text).toContain("ask the owner");
+        expect(text).toContain("handover_id");
+      });
+
+      test("I3 a handover whose session was last active 20 minutes ago auto-resumes", () => {
+        const dir = repo();
+        const c = clocked(Date.parse("2026-01-01T00:00:00Z"));
+        const e = openEngine(dir, c.deps);
+        startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir });
+        const h = saveSessionHandover(e, { goal: "the goal" }, { session_id: S });
+        c.t += 2 * MIN;
+        logEvent(e, { session_id: S }, "step_done", null, {});
+        e.db.close();
+        c.t += 20 * MIN;
+        const text = ctx(runHook("session-start", ev(dir, { hook_event_name: "SessionStart", source: "clear", session_id: "new" }), c.deps));
+        expect(text).toContain(`estack: a handover is waiting (#${h.id}, session, 22m ago, goal: the goal). Call the resume tool now`);
+      });
+
+      test("M1 after compaction an hours-old manual handover is not presented as current state", () => {
+        const dir = repo();
+        const c = clocked(Date.parse("2026-01-01T00:00:00Z"));
+        const e = openEngine(dir, c.deps);
+        const t = startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir });
+        saveSessionHandover(e, { goal: "old goal", plan: ["old plan"] }, { session_id: S });
+        e.db.close();
+        writeFileSync(join(dir, "live.ts"), "x");
+        c.t += 3 * 60 * MIN;
+        const text = ctx(runHook("session-start", ev(dir, { hook_event_name: "SessionStart", source: "compact" }), c.deps));
+        expect(text).not.toContain("old goal");
+        expect(text).not.toContain("old plan");
+        expect(text).toContain(`#${t.task.id} next: plan`);
+        expect(text).toContain("live.ts");
+        expect(text).toContain("Re-read the listed files before changing anything.");
+      });
+
+      test("I4 on a 1M-context model the default window does not print over 100%", () => {
+        const dir = repo();
+        task(dir);
+        const text = ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path: usage(dir, 660000) }));
+        expect(text).toContain("estack: context is 66% full.");
+      });
+
+      test("I2 the waiting list stops at 10 handovers with a +N more line", () => {
+        const dir = repo();
+        for (let i = 0; i < 12; i++) { task(dir, `sess-${i}`); save(dir, `sess-${i}`, { goal: `g${i}` }); }
+        const lines = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "startup", session_id: "new" })).split("\n");
+        expect(lines.filter((l) => /^#\d+ session from /.test(l))).toHaveLength(10);
+        expect(lines.at(-2)).toBe("+2 more");
+        expect(lines.at(-1)).toBe("estack: several handovers are waiting; ask the owner which one, then call the resume tool with handover_id.");
+      });
+
+      test("M2 pre-compact from a worker writes no session handover", () => {
+        const dir = repo();
+        task(dir);
+        expect(hook("pre-compact", dir, { hook_event_name: "PreCompact", agent_id: "w1" })).toBeNull();
+        expect(rows(dir, "SELECT * FROM handovers")).toHaveLength(0);
+      });
+
+      test("M3 after a resume the new session is nudged on a step the old one was already nudged on", () => {
+        const dir = repo();
+        const id = task(dir);
+        const transcript_path = usage(dir, 120000);
+        expect(ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path }))).toContain("context is 60% full");
+        save(dir, S, { goal: "g" });
+        withEngine(dir, (e) => consumeHandover(e, { session_id: "B" }));
+        const b = ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path, session_id: "B" }));
+        expect(b).toContain(`estack: task #${id} next step: plan`);
+        expect(b).toContain("context is 60% full");
+      });
+
+      test("prompt submit stays quiet below the threshold or when the transcript can't be read", () => {
+        const dir = repo();
+        const id = task(dir);
+        const line = `estack: task #${id} next step: plan`;
+        expect(ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path: usage(dir, 50000) }))).toBe(line);
+        expect(ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit", transcript_path: join(dir, "missing.jsonl") }))).toBe(line);
+        expect(ctx(hook("user-prompt-submit", dir, { hook_event_name: "UserPromptSubmit" }))).toBe(line);
+        expect(rows(dir, "SELECT * FROM events WHERE kind = 'handover_suggested'")).toHaveLength(0);
+      });
     });
 
     test("stop blocks when commits exist but implement has no evidence", () => {

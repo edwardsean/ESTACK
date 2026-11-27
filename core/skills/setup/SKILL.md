@@ -38,6 +38,17 @@ Do this before writing anything. The edit and shell-command hooks fail closed wh
 | `protected_paths` | Paths nobody edits, such as `.env*` and the policy file itself |
 | `exempt_paths` | Paths editable with no task, such as markdown and `docs/` |
 | `commands.test`, `commands.verify` | What the engine itself runs for the test and verify steps. Set these to the real commands for this repository |
+| `handover.threshold`, `handover.window_tokens` | Optional. The engine suggests a handover once the session's context passes `threshold` (a fraction, default `0.5`) of `window_tokens` (default `200000`) |
+
+The `handover:` keys are optional and look like this:
+
+```yaml
+handover:
+  threshold: 0.5
+  window_tokens: 200000
+```
+
+If the owner runs a model with a 1M-token context, set `window_tokens: 1000000`. Otherwise the percentage reads too high and the engine suggests a handover far too early.
 
 Show the pattern list for each action class and invite edits. The deploy and migration patterns are the least portable part of this design because every team names those commands differently. The defaults match command forms (`npm run deploy`, `terraform apply`, `prisma migrate deploy`, and so on), so a team that deploys or migrates through its own script name needs to add that pattern, and local dev migrations such as `prisma migrate dev` stay ungated. Offer to add or narrow any pattern the user thinks will miss or misfire.
 

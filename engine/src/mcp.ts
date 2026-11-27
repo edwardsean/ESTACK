@@ -4,6 +4,7 @@ import { z } from "zod";
 import { runCheck } from "./checks";
 import { openEngine, type Engine } from "./engine";
 import type { Exec } from "./exec";
+import { consumeHandover, saveSessionHandover, saveTaskHandover, type SessionHandoverBody } from "./handover";
 import { completeStep, getTask, listOpen, startTask } from "./tasks";
 import { EngineError, type Actor } from "./types";
 
@@ -70,6 +71,40 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
       timeout_ms: a.timeout_sec !== undefined ? a.timeout_sec * 1000 : undefined,
     });
     return { check, task: getTask(e, a.task_id) };
+  }));
+
+  server.registerTool("handover", {
+    description: "Save a handover so a fresh session (after /clear) can pick up the work. With task_id it covers that task; without, the whole session.",
+    inputSchema: {
+      task_id: z.number().int().optional(),
+      goal: z.string().optional().describe("the owner's goal for the session"),
+      plan: z.array(z.string()).optional().describe("remaining work not yet started as a task"),
+      decisions: z.array(z.object({ what: z.string(), why: z.string() })).optional(),
+      open_questions: z.array(z.string()).optional(),
+      files: z.array(z.string()).optional().describe("files to re-read that git cannot see"),
+      workers_done: z.boolean().optional().describe("override the check that no worker is mid-task"),
+      actor: actorSchema,
+    },
+  }, tool((e, a: { task_id?: number; goal?: string; plan?: string[]; decisions?: { what: string; why: string }[]; open_questions?: string[]; files?: string[]; workers_done?: boolean; actor?: Actor }, actor) => {
+    const { task_id, actor: _actor, ...input } = a;
+    const h = task_id !== undefined ? saveTaskHandover(e, task_id, input, actor) : saveSessionHandover(e, input, actor);
+    return { ...h, next: "Handover saved. Tell the owner: run /clear; the new session will load this automatically." };
+  }));
+
+  server.registerTool("resume", {
+    description: "Pick up a saved handover (the newest session one, a task's with task_id, or exactly one with handover_id) and bind its open tasks to this session.",
+    inputSchema: {
+      task_id: z.number().int().optional(),
+      handover_id: z.number().int().optional().describe("the handover the owner chose, from the start-of-session list"),
+      actor: actorSchema,
+    },
+  }, tool((e, a: { task_id?: number; handover_id?: number; actor?: Actor }, actor) => {
+    const { handover, views } = consumeHandover(e, actor, { task_id: a.task_id, handover_id: a.handover_id });
+    const body = handover?.body;
+    const goal = (body?.kind === "session" ? (body as SessionHandoverBody).goal : "") || (views.length === 1 ? views[0].task.goal : "") || "(none recorded)";
+    const next = views.map((v) => (v.next ? `#${v.task.id} ${v.next.name}` : `#${v.task.id} done`)).join(", ");
+    const instructions = `Re-read every file listed in the handover before changing anything; do not trust a summary of code. Goal: ${goal}. Next: ${next}.`;
+    return { handover, views, instructions };
   }));
 
   return server;

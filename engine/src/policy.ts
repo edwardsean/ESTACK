@@ -13,6 +13,7 @@ export interface Policy {
   protected_paths: string[];
   exempt_paths: string[];
   commands: { test?: string; verify?: string };
+  handover: { threshold: number; window_tokens: number };
 }
 
 const strings = z.array(z.string());
@@ -27,6 +28,10 @@ const PolicySchema = z.object({
   protected_paths: strings.default([]),
   exempt_paths: strings.default([]),
   commands: z.object({ test: z.string().optional(), verify: z.string().optional() }).default({}),
+  handover: z.object({
+    threshold: z.number().gt(0).max(1).default(0.5),
+    window_tokens: z.number().int().positive().default(200000),
+  }).default({ threshold: 0.5, window_tokens: 200000 }),
 });
 
 export function parsePolicy(yamlText: string): Policy {
@@ -71,6 +76,9 @@ exempt_paths: ["**/*.md", ".estack/brief.md", "docs/**"]   # editable with no ta
 commands:                 # the engine runs these itself for test and verify (section 7, Evidence)
   test:   "npm test"
   verify: "npm run build && npm run test:e2e"
+# handover:               # when to suggest handing the session over (all optional)
+#   threshold: 0.5        # fraction of the context window in use
+#   window_tokens: 200000 # size of the context window
 `.trimStart();
 
 export const DEFAULT_BRIEF_MD = `# Project brief

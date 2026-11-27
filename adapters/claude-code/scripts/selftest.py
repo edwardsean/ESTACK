@@ -211,6 +211,9 @@ def check_skills() -> set[str]:
         if is_manual and "${CLAUDE_PLUGIN_ROOT}/skills/<name>/SKILL.md" not in path.read_text(encoding="utf-8"):
             fail("skills", f"{rel}: manual-only but carries no note on how to reach other estack skills")
         names.add(skill_dir.name)
+    for needed in ("handover", "resume"):
+        if needed not in names:
+            fail("skills", f"skills/{needed}/ is missing, the handover flow needs /estack:{needed}")
     print(f"skills       {len(names)} ({manual} manual-only, {len(names) - manual} model-invocable)")
     return names
 
@@ -394,7 +397,7 @@ def check_hooks() -> None:
         fail("hooks", f"hooks/hooks.json: {exc}")
         return
     events = manifest.get("hooks", {})
-    for event in ("PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "Stop", "SubagentStop"):
+    for event in ("PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "PreCompact", "Stop", "SubagentStop"):
         if event not in events:
             fail("hooks", f"hooks.json lost its {event} hook")
     count = 0
