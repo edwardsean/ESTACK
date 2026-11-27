@@ -124,6 +124,36 @@ describe("duplicate check", () => {
     expect(row.closed_at).not.toBeNull();
   });
 
+  test("a copy that comes back after being removed is flagged again", () => {
+    const { dir, e, id, graph } = setup();
+    copy(dir, graph);
+    const [d] = checkDuplicates(e, id);
+    commit(dir, "src/orders/format.ts", "export function other() {}\n");
+    graph(fn("n2", "other", "src/orders/format.ts", 1));
+    expect(checkDuplicates(e, id)).toEqual([]);
+    commit(dir, "src/orders/format.ts", "// moved\nexport function formatInvoiceDate(d: Date) {\n  return d;\n}\n");
+    graph(fn("n3", "formatInvoiceDate", "src/orders/format.ts", 2));
+    const open = checkDuplicates(e, id);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ id: d.id, status: "open", new_line: 2, closed_by: null });
+    expect(open[0].commit_sha).toBe(execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir }).toString().trim());
+    const row = e.db.prepare("SELECT closed_at FROM duplicates WHERE id=?").get(d.id) as { closed_at: string | null };
+    expect(row.closed_at).toBeNull();
+    const n = e.db.prepare("SELECT COUNT(*) c FROM events WHERE kind='possible_duplicate'").get() as { c: number };
+    expect(n.c).toBe(2);
+  });
+
+  test("a dismissed pair stays dismissed when re-detected", () => {
+    const { dir, e, id, graph } = setup();
+    copy(dir, graph);
+    const [d] = checkDuplicates(e, id);
+    dismissDuplicate(e, { id: d.id, reason: "different on purpose", actor: B });
+    expect(checkDuplicates(e, id)).toEqual([]);
+    const row = e.db.prepare("SELECT status FROM duplicates WHERE id=?").get(d.id) as { status: string };
+    expect(row.status).toBe("dismissed");
+    expect(e.db.prepare("SELECT COUNT(*) c FROM duplicates").get()).toEqual({ c: 1 });
+  });
+
   test("afterCommit checks the open task on the checkout's branch", () => {
     const { dir, e, id, graph } = setup();
     copy(dir, graph);

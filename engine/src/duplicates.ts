@@ -109,13 +109,21 @@ export function checkDuplicates(e: Engine, task_id: number): Duplicate[] {
       if (x.kind !== "function" || x.id === f.id || isTestFile(x.file)) continue;
       if (freshIds.has(x.id) && x.id < f.id) continue; // an unordered pair is recorded once
       if (!matches(task.cwd, f, x)) continue;
-      const r = e.db.prepare(
-        `INSERT OR IGNORE INTO duplicates (task_id, commit_sha, new_symbol, new_file, new_line, existing_symbol, existing_file, existing_line, status, found_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
-      ).run(task_id, head, f.name, f.file, f.line, x.name, x.file, x.line, now);
-      if (Number(r.changes) > 0) {
-        logEvent(e, MAP_ACTOR, "possible_duplicate", task_id, { new: `${f.file}:${f.line}`, existing: `${x.file}:${x.line}`, symbol: f.name });
+      const prior = e.db.prepare(
+        "SELECT id, status FROM duplicates WHERE task_id = ? AND new_file = ? AND new_symbol = ? AND existing_file = ? AND existing_symbol = ?",
+      ).get(task_id, f.file, f.name, x.file, x.name) as { id: number; status: string } | undefined;
+      if (prior?.status === "open" || prior?.status === "dismissed") continue; // a reviewer's dismissal stands
+      if (prior) {
+        e.db.prepare(
+          "UPDATE duplicates SET status = 'open', commit_sha = ?, new_line = ?, existing_line = ?, closed_by = NULL, closed_at = NULL, found_at = ? WHERE id = ?",
+        ).run(head, f.line, x.line, now, prior.id);
+      } else {
+        e.db.prepare(
+          `INSERT INTO duplicates (task_id, commit_sha, new_symbol, new_file, new_line, existing_symbol, existing_file, existing_line, status, found_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+        ).run(task_id, head, f.name, f.file, f.line, x.name, x.file, x.line, now);
       }
+      logEvent(e, MAP_ACTOR, "possible_duplicate", task_id, { new: `${f.file}:${f.line}`, existing: `${x.file}:${x.line}`, symbol: f.name });
     }
   }
   logEvent(e, MAP_ACTOR, "duplicate_check_done", task_id, { head });
