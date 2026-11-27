@@ -1,12 +1,18 @@
 import { describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openEngine } from "../src/engine";
 import { initRepo } from "../src/policy";
 import { loadGraph } from "../src/graph";
-import { MAX_LIST, contextFor, descriptionWords, findExisting, whoUses } from "../src/codemap";
+import { MAX_LIST, contextFor, descriptionWords, findExisting, runCodeQuery, whoUses } from "../src/codemap";
+import { EngineError } from "../src/types";
 import { makeRepo, writeFakeGraph } from "./helpers";
+
+const thrown = (f: () => unknown): EngineError => {
+  try { f(); } catch (x) { return x as EngineError; }
+  throw new Error("did not throw");
+};
 
 const fileNode = (id: string, file: string) => ({ id, label: file.split("/").pop(), source_file: file, source_location: "L1" });
 const fn = (id: string, name: string, file: string, line: number) => ({ id, label: `${name}()`, source_file: file, source_location: `L${line}` });
@@ -48,6 +54,53 @@ describe("codemap", () => {
     expect(c.uses.every((h) => !h.file.startsWith("dist/"))).toBe(true);
     const u = contextFor(g, "main", "src/utils.ts");
     expect(u.used_by.map((h) => h.symbol)).toContain("render");
+  });
+
+  test("context_for takes an absolute, ./-prefixed or slash-ended area", () => {
+    const { dir, g } = setup();
+    for (const area of [join(dir, "src/orders"), "./src/orders", "./src/orders/", `${dir}/src/orders/`]) {
+      const c = contextFor(g, "main", area);
+      expect(c.area, area).toBe("src/orders");
+      expect(c.defines.map((h) => h.symbol), area).toEqual(["render"]);
+      expect(c.note, area).toBeUndefined();
+    }
+  });
+
+  test("context_for refuses an area outside the checkout, naming the checkout", () => {
+    const { dir, g } = setup();
+    for (const area of ["/elsewhere/src", "../other", join(dir, "..")]) {
+      const err = thrown(() => contextFor(g, "main", area));
+      expect(err.code, area).toBe("BAD_EVIDENCE");
+      expect(err.message, area).toContain(dir);
+    }
+  });
+
+  test("context_for on an area with nothing in the map says so", () => {
+    const { g } = setup();
+    const c = contextFor(g, "main", "src/nothing/");
+    expect(c.defines).toEqual([]);
+    expect(c.note).toBe("nothing in the map under src/nothing; check the path, or use find_existing");
+  });
+
+  test("an area outside the checkout is logged as a failed query", () => {
+    const { dir } = setup();
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, readFileSync(p, "utf8").replace("enabled: false", "enabled: true"));
+    const e = openEngine(dir);
+    expect(thrown(() => runCodeQuery(e, { tool: "context_for", arg: "/elsewhere", actor: { session_id: "s" }, cwd: dir })).code).toBe("BAD_EVIDENCE");
+    expect(e.db.prepare("SELECT ok FROM code_queries").all()).toEqual([{ ok: 0 }]);
+  });
+
+  test("who_uses path::name takes an absolute or ./-prefixed path, and refuses one outside the checkout", () => {
+    const { dir, g } = setup([fn("fmt2", "formatInvoiceDate", "src/other.ts", 5)]);
+    for (const path of [join(dir, "src/utils.ts"), "./src/utils.ts"]) {
+      const r = whoUses(g, "main", `${path}::formatInvoiceDate`);
+      expect(r.defined_at, path).toEqual([{ symbol: "formatInvoiceDate", file: "src/utils.ts", line: 1 }]);
+      expect(r.callers.length, path).toBeGreaterThan(0);
+    }
+    const err = thrown(() => whoUses(g, "main", "/elsewhere/utils.ts::formatInvoiceDate"));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toContain(dir);
   });
 
   test("who_uses lists callers with file and line", () => {

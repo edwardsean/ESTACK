@@ -66,7 +66,7 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
       },
     }, tool((e, a: { task_id?: number; cwd?: string; actor?: Actor } & Record<string, unknown>, actor) =>
       runCodeQuery(e, { tool: name, arg: String(a[argName]), actor, cwd: a.cwd, task_id: a.task_id })));
-  codeTool("context_for", "area", "Code map: what an area (folder or file) defines, what it uses and what uses it. Call it before writing code.", "folder or file path relative to the repository root");
+  codeTool("context_for", "area", "Code map: what an area (folder or file) defines, what it uses and what uses it. Call it before writing code.", "folder or file path, relative to the checkout root or absolute");
   codeTool("find_existing", "description", "Code map: find existing functions that already do what you describe, before you write a new one.", "what you are about to write, in plain words");
   codeTool("who_uses", "symbol", "Code map: who calls or imports a symbol (name, or path::name).", "symbol name, or path::name");
 

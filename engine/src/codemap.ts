@@ -1,3 +1,5 @@
+import { existsSync, realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Engine } from "./engine";
 import { START_TASK_BUILD_TIMEOUT_MS, buildGraph, checkoutLabel, checkoutOf, loadGraph, type Graph, type GraphEdge, type GraphNode } from "./graph";
 import { HOOK_GIT_TIMEOUT_MS, runBounded, type TaskView } from "./tasks";
@@ -7,7 +9,7 @@ export const MAX_LIST = 40;
 export const MAX_MATCHES = 15;
 
 export interface Hit { symbol: string; file: string; line: number; relation?: string; confidence?: string; why?: ("name" | "text")[] }
-export interface ContextResult { graph: string; area: string; defines: Hit[]; uses: Hit[]; used_by: Hit[]; more: Record<string, number> }
+export interface ContextResult { graph: string; area: string; defines: Hit[]; uses: Hit[]; used_by: Hit[]; more: Record<string, number>; note?: string }
 export interface FindResult { graph: string; description: string; words: string[]; matches: Hit[] }
 export interface WhoUsesResult { graph: string; symbol: string; defined_at: Hit[]; callers: Hit[]; ambiguous?: Hit[]; more?: Record<string, number> }
 
@@ -23,9 +25,21 @@ function capped(hits: Hit[], key: string, more: Record<string, number>): Hit[] {
   return hits.slice(0, MAX_LIST);
 }
 
+const real = (p: string): string => (existsSync(p) ? realpathSync(p) : p);
+
+/** A path given absolute, `./`-prefixed or relative to the map's checkout, as the map writes it: relative to the checkout. */
+export function mapPath(g: Graph, path: string): string {
+  const root = real(g.checkout);
+  const rel = relative(root, real(resolve(root, path))).split(sep).join("/");
+  if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
+    throw new EngineError("BAD_EVIDENCE", `${path} is outside the checkout ${g.checkout} that this map is for; give a path inside it`);
+  }
+  return rel;
+}
+
 export function contextFor(g: Graph, label: string, area: string): ContextResult {
-  const a = area.replace(/\/+$/, "");
-  const inArea = (n: GraphNode) => n.file === a || n.file.startsWith(a + "/");
+  const a = mapPath(g, area);
+  const inArea = (n: GraphNode) => a === "" || n.file === a || n.file.startsWith(a + "/");
   const defines = [...g.nodes.values()].filter((n) => inArea(n) && n.kind !== "file").map(hitOf);
   const uses = new Map<string, Hit>();
   const usedBy = new Map<string, Hit>();
@@ -42,19 +56,21 @@ export function contextFor(g: Graph, label: string, area: string): ContextResult
   const more: Record<string, number> = {};
   const seen = new Set<string>();
   const uniqueDefines = defines.filter((h) => !seen.has(`${h.symbol}\0${h.file}`) && seen.add(`${h.symbol}\0${h.file}`));
-  return {
-    graph: label, area: a,
+  const result: ContextResult = {
+    graph: label, area: a || ".",
     defines: capped(uniqueDefines, "defines", more),
     uses: capped([...uses.values()], "uses", more),
     used_by: capped([...usedBy.values()], "used_by", more),
     more,
   };
+  if (![...g.nodes.values()].some(inArea)) result.note = `nothing in the map under ${a || "."}; check the path, or use find_existing`;
+  return result;
 }
 
 export function whoUses(g: Graph, label: string, symbol: string): WhoUsesResult {
-  const sep = symbol.lastIndexOf("::");
-  const path = sep >= 0 ? symbol.slice(0, sep) : null;
-  const name = sep >= 0 ? symbol.slice(sep + 2) : symbol;
+  const at = symbol.lastIndexOf("::");
+  const path = at >= 0 ? mapPath(g, symbol.slice(0, at)) : null;
+  const name = at >= 0 ? symbol.slice(at + 2) : symbol;
   const found = [...g.nodes.values()].filter((n) => n.name === name && (path === null || n.file === path));
   const defined_at = found.map(hitOf);
   const result: WhoUsesResult = { graph: label, symbol, defined_at, callers: [] };
