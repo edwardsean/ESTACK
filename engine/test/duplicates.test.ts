@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { openEngine, type Engine } from "../src/engine";
 import { runCheck } from "../src/checks";
 import {
@@ -10,11 +10,26 @@ import {
 import { initRepo } from "../src/policy";
 import { getTask, startTask } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
-import { makeRepo, writeFakeGraph } from "./helpers";
+import { buildGraph } from "../src/graph";
+import { HAS_GRAPHIFY, makeRepo, writeFakeGraph } from "./helpers";
 
 const A: Actor = { session_id: "s1", agent_id: "A" };
 const B: Actor = { session_id: "s1", agent_id: "B" };
-const fn = (id: string, name: string, file: string, line: number) => ({ id, label: `${name}()`, source_file: file, source_location: `L${line}` });
+type Node = { id: string; label: string; source_file: string; source_location: string };
+const fn = (id: string, name: string, file: string, line: number): Node => ({ id, label: `${name}()`, source_file: file, source_location: `L${line}` });
+const method = (id: string, name: string, file: string, line: number): Node => ({ id, label: `.${name}()`, source_file: file, source_location: `L${line}` });
+const cls = (id: string, name: string, file: string, line: number): Node => ({ id, label: name, source_file: file, source_location: `L${line}` });
+const link = (source: string, target: Node, relation: string) =>
+  ({ source, target: target.id, relation, confidence: "EXTRACTED", source_file: target.source_file, source_location: target.source_location });
+const fileId = (file: string) => `file:${file}`;
+
+/** Write a graph in Graphify's shape: a node per file, each top-level function linked from its file by `contains`. */
+function writeGraph(dir: string, top: Node[], more: { nodes?: Node[]; links?: object[] } = {}) {
+  const files = [...new Set([...top, ...(more.nodes ?? [])].map((n) => n.source_file))];
+  writeFakeGraph(dir,
+    [...files.map((f) => ({ id: fileId(f), label: basename(f), source_file: f, source_location: "L1" })), ...top, ...(more.nodes ?? [])],
+    [...top.map((n) => link(fileId(n.source_file), n, "contains")), ...(more.links ?? [])]);
+}
 const code = (f: () => unknown) => { try { f(); } catch (x) { return x as EngineError; } throw new Error("did not throw"); };
 
 function put(dir: string, rel: string, text: string) {
@@ -28,8 +43,8 @@ function commit(dir: string, rel: string, text: string) {
   git(dir, "commit", "-m", `edit ${rel}`);
 }
 
-/** main has src/utils.ts; the task's branch is `feat`, started before any new commit. */
-function setup(mapOn = true) {
+/** main has src/utils.ts (and `mainFiles`); the task's branch is `feat`, started before any new commit. */
+function setup(mapOn = true, mainFiles: Record<string, string> = {}) {
   const dir = makeRepo();
   initRepo(dir);
   const p = join(dir, ".estack", "policy.yaml");
@@ -37,17 +52,17 @@ function setup(mapOn = true) {
   if (mapOn) y = y.replace("enabled: false", "enabled: true");
   writeFileSync(p, y);
   commit(dir, "src/utils.ts", "export function formatInvoiceDate(d: Date) {\n  return d;\n}\n");
+  for (const [rel, text] of Object.entries(mainFiles)) commit(dir, rel, text);
   git(dir, "checkout", "-b", "feat");
   const e = openEngine(dir);
   const id = startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: A, cwd: dir }).task.id;
-  const graph = (...extra: object[]) =>
-    writeFakeGraph(dir, [fn("u1", "formatInvoiceDate", "src/utils.ts", 1), ...extra], []);
+  const graph = (...extra: Node[]) => writeGraph(dir, [fn("u1", "formatInvoiceDate", "src/utils.ts", 1), ...extra]);
   const toVerify = () => {
     for (const n of ["plan", "reuse_check", "implement", "test"]) e.db.prepare("UPDATE steps SET status='done' WHERE task_id=? AND name=?").run(id, n);
   };
   return { dir, e, id, graph, toVerify };
 }
-const copy = (dir: string, graph: (...x: object[]) => void) => {
+const copy = (dir: string, graph: (...x: Node[]) => void) => {
   commit(dir, "src/orders/format.ts", "export function formatInvoiceDate(d: Date) {\n  return d;\n}\n");
   graph(fn("n1", "formatInvoiceDate", "src/orders/format.ts", 1));
 };
@@ -108,7 +123,7 @@ describe("duplicate check", () => {
     expect(checkDuplicates(e, id)).toEqual([]);
     // an existing function in a test file is not a match either
     commit(dir, "src/orders/format.ts", "export function formatInvoiceDate(d: Date) {\n  return d;\n}\n");
-    writeFakeGraph(dir, [fn("t1", "formatInvoiceDate", "test/helpers.ts", 1), fn("n1", "formatInvoiceDate", "src/orders/format.ts", 1)], []);
+    writeGraph(dir, [fn("t1", "formatInvoiceDate", "test/helpers.ts", 1), fn("n1", "formatInvoiceDate", "src/orders/format.ts", 1)]);
     expect(checkDuplicates(e, id)).toEqual([]);
   });
 
@@ -154,6 +169,45 @@ describe("duplicate check", () => {
     expect(e.db.prepare("SELECT COUNT(*) c FROM duplicates").get()).toEqual({ c: 1 });
   });
 
+  test("a new method or nested function is not checked; a new top-level function still is", () => {
+    const { dir, e, id } = setup(true, { "src/page.ts": "export function render() { return 2; }\nexport function inner() { return 2; }\n" });
+    commit(dir, "src/view.ts", [
+      "export class View {", "  render() { return 1; }", "}",
+      "export function outer() {", "  function inner() { return 1; }", "  return inner();", "}",
+      "export function formatInvoiceDate(d: Date) {", "  return d;", "}", "",
+    ].join("\n"));
+    const view = cls("v", "View", "src/view.ts", 1);
+    const render = method("vr", "render", "src/view.ts", 2);
+    const outer = fn("vo", "outer", "src/view.ts", 4);
+    const inner = fn("vi", "inner", "src/view.ts", 5);
+    writeGraph(dir, [
+      fn("u1", "formatInvoiceDate", "src/utils.ts", 1), fn("pr", "render", "src/page.ts", 1), fn("pi", "inner", "src/page.ts", 2),
+      outer, fn("vf", "formatInvoiceDate", "src/view.ts", 8),
+    ], {
+      nodes: [view, render, inner],
+      links: [link(fileId("src/view.ts"), view, "contains"), link("v", render, "method"), link("vo", inner, "contains")],
+    });
+    const open = checkDuplicates(e, id);
+    expect(open.map((d) => [d.new_symbol, d.new_file, d.existing_file])).toEqual([["formatInvoiceDate", "src/view.ts", "src/utils.ts"]]);
+  });
+
+  test("a new top-level function is not matched against a method or a nested function", () => {
+    const page = "export class Page {\n  render() { return 2; }\n}\nexport function wrap() {\n  function inner() { return 2; }\n  return inner();\n}\n";
+    const { dir, e, id } = setup(true, { "src/page.ts": page });
+    commit(dir, "src/view.ts", "export function render() { return 1; }\nexport function inner() { return 1; }\n");
+    const pageClass = cls("p", "Page", "src/page.ts", 1);
+    const render = method("prm", "render", "src/page.ts", 2);
+    const inner = fn("pin", "inner", "src/page.ts", 5);
+    writeGraph(dir, [
+      fn("u1", "formatInvoiceDate", "src/utils.ts", 1), fn("pw", "wrap", "src/page.ts", 4),
+      fn("vr", "render", "src/view.ts", 1), fn("vi", "inner", "src/view.ts", 2),
+    ], {
+      nodes: [pageClass, render, inner],
+      links: [link(fileId("src/page.ts"), pageClass, "contains"), link("p", render, "method"), link("pw", inner, "contains")],
+    });
+    expect(checkDuplicates(e, id)).toEqual([]);
+  });
+
   test("afterCommit checks the open task on the checkout's branch", () => {
     const { dir, e, id, graph } = setup();
     copy(dir, graph);
@@ -164,6 +218,25 @@ describe("duplicate check", () => {
     afterCommit(e, dir);
     const after = e.db.prepare("SELECT COUNT(*) c FROM events WHERE kind='duplicate_check_done'").get() as { c: number };
     expect(after.c).toBe(before.c);
+  });
+});
+
+describe.skipIf(!HAS_GRAPHIFY)("duplicate check on real Graphify", () => {
+  test("only top-level functions are compared: methods and nested functions are left out", () => {
+    const { dir, e, id } = setup(true, {
+      "src/page.ts": "export class Page {\n  render() { return 2; }\n}\nexport function wrap() {\n  function inner() { return 2; }\n  return inner();\n}\n",
+      "src/b.py": "class Foo:\n    def __init__(self):\n        pass\n",
+    });
+    commit(dir, "src/view.ts", [
+      "export class View {", "  render() { return 1; }", "  toString() { return 'v'; }", "}",
+      "export function outer() {", "  function inner() { return 1; }", "  return inner();", "}",
+      "export function formatInvoiceDate(d: Date) {", "  return d;", "}", "",
+    ].join("\n"));
+    commit(dir, "src/c.py", "class Bar:\n    def __init__(self):\n        pass\n");
+    const b = buildGraph(e, dir);
+    expect(b.error).toBeUndefined();
+    const open = checkDuplicates(e, id);
+    expect(open.map((d) => [d.new_symbol, d.new_file, d.existing_file])).toEqual([["formatInvoiceDate", "src/view.ts", "src/utils.ts"]]);
   });
 });
 

@@ -52,7 +52,21 @@ export function isTestFile(file: string): boolean {
   return TEST_PATTERNS.some((p) => pathMatches(file, p));
 }
 
-/** Function nodes of `g` (outside test files) that start on a line the task's branch added. */
+/**
+ * Top-level functions of `g` outside test files: targets of a `contains` edge from a file node. Graphify links a method
+ * from its class with a `method` edge and a nested function from its enclosing function, so neither is one.
+ */
+export function topLevelFunctions(g: Graph): GraphNode[] {
+  const out = new Map<string, GraphNode>();
+  for (const ed of g.edges) {
+    if (ed.relation !== "contains" || g.nodes.get(ed.source)?.kind !== "file") continue;
+    const n = g.nodes.get(ed.target);
+    if (n?.kind === "function" && !isTestFile(n.file)) out.set(n.id, n);
+  }
+  return [...out.values()];
+}
+
+/** Top-level functions of `g` (outside test files) that start on a line the task's branch added. */
 export function newFunctions(e: Engine, g: Graph, task: Task): GraphNode[] {
   const r = runBounded(e, task.cwd, "git", ["diff", "-U0", "--no-color", `${task.base_sha}..refs/heads/${task.branch}`]);
   if (r.code !== 0) return [];
@@ -68,8 +82,7 @@ export function newFunctions(e: Engine, g: Graph, task: Task): GraphNode[] {
       if (count > 0) (added.get(file) ?? added.set(file, []).get(file)!).push([start, start + count - 1]);
     }
   }
-  return [...g.nodes.values()].filter((n) =>
-    n.kind === "function" && !isTestFile(n.file) && (added.get(n.file) ?? []).some(([a, b]) => n.line >= a && n.line <= b));
+  return topLevelFunctions(g).filter((n) => (added.get(n.file) ?? []).some(([a, b]) => n.line >= a && n.line <= b));
 }
 
 const matches = (checkout: string, f: GraphNode, x: GraphNode): boolean => {
@@ -92,21 +105,22 @@ export function checkDuplicates(e: Engine, task_id: number): Duplicate[] {
   const g = loadGraph(task.cwd);
   if (!g) return [];
   const now = e.now().toISOString();
+  const top = topLevelFunctions(g);
   const fresh = newFunctions(e, g, task);
-  const byKey = (file: string, name: string) => [...g.nodes.values()].find((n) => n.kind === "function" && n.file === file && n.name === name);
+  const byKey = (file: string, name: string) => top.find((n) => n.file === file && n.name === name);
 
   for (const d of openDuplicates(e, task_id)) {
     const f = fresh.find((n) => n.file === d.new_file && n.name === d.new_symbol);
     const x = byKey(d.existing_file, d.existing_symbol);
-    if (f && x && !isTestFile(x.file) && matches(task.cwd, f, x)) continue;
+    if (f && x && matches(task.cwd, f, x)) continue;
     e.db.prepare("UPDATE duplicates SET status = 'resolved', closed_at = ? WHERE id = ?").run(now, d.id);
   }
 
   const head = branchHead(e, task);
   const freshIds = new Set(fresh.map((n) => n.id));
   for (const f of fresh) {
-    for (const x of g.nodes.values()) {
-      if (x.kind !== "function" || x.id === f.id || isTestFile(x.file)) continue;
+    for (const x of top) {
+      if (x.id === f.id) continue;
       if (freshIds.has(x.id) && x.id < f.id) continue; // an unordered pair is recorded once
       if (!matches(task.cwd, f, x)) continue;
       const prior = e.db.prepare(
