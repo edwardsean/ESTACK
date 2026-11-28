@@ -204,7 +204,7 @@ In a repository that opted in, the engine makes the worktrees and holds the file
 4. **Dispatch the seat.** Give it the worktree path, full paths for every file, and `git -C <worktree>` for git. A seat does not change directory.
 5. **Merge.** When the worker's verify and review pass, run `git -C <feature cwd> merge --no-ff <branch>`, then `complete_step` `merge` with evidence `{kind: "merged"}`.
 6. **A held file.** A worker whose edit is denied reports it to you. Check it with `claim_status`, then `allow_edit` or wait. A hold owned by another CTO is the owner's call: ask them to run `estack allow`. Workers never allow edits, accept overlaps or withdraw tasks.
-7. **Bakeoffs.** Give every candidate the same `group`, so they can touch the same files without blocking each other.
+7. **Bakeoffs.** Give every candidate the same `group`, so they can touch the same files without blocking each other. This holds only for siblings under the same feature.
 
 Outside an estack repository there is no engine to make worktrees, so pass `isolation: "worktree"` on the `Agent` call yourself.
 

@@ -162,10 +162,11 @@ an agent session (when `CLAUDECODE=1`), as a guard against accidental use; it
 is not a security boundary. Run them from a normal terminal.
 
 **Features and workers.** A feature is a task with `worktree: true` and no parent:
-the engine makes `feat/<id>-<slug>` under `.estack/worktrees/`. The CTO splits it
+the engine makes `feat/<id>-<slug>` under `.estack/worktrees/`. A CTO already in
+a feature checkout starts its feature there without a worktree. The CTO splits it
 with `plan_tasks`, which reports overlaps to resolve with `depends_on` or
-`accept_overlap`, then starts each worker (`worktree: true`, `parent_task_id`) on
-`task/<id>-<slug>`. A worker's last step is `merge`, which the CTO does into the
+`accept_overlap`, then starts each worker (`start_task` with its `task_id` and `worktree: true`;
+the stored parent wins) on `task/<id>-<slug>`. A worker's last step is `merge`, which the CTO does into the
 feature. Editing a file another task holds is denied, and the CTO sees it with
 `claim_status` and allows it with `allow_edit`. `status` lists planned, starting
 and kept items, and `estack cancel` takes planned and starting tasks too. Policy

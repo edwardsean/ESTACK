@@ -13,7 +13,7 @@ that has not opted in.
 |---|---|---|
 | Claude Code with plugin support | Everything | `claude --version`, then `claude plugin list` after install |
 | Claude Code v2.1.292 or later | The per-call `effort` parameter every dispatching skill passes from `{{estack:models_file}}` | `claude --version`. Older builds run each seat at its frontmatter effort |
-| A git repository in the workspace | `isolation: worktree` on the panel seats, `{{estack:ns}}:estack-verifier`, and the five engineering seats, plus `isolation: "worktree"` on any other dispatch | `git rev-parse --show-toplevel` |
+| A git repository in the workspace | Worktrees for seats. In an estack repository the engine makes them. Elsewhere the dispatcher passes `isolation: "worktree"` on the `Agent` call | `git rev-parse --show-toplevel` |
 | `python3` on `PATH` in the hook environment | The approval gates, in a repository that opted in. The gate fails closed without it | `command -v python3` from the shell Claude Code runs hooks in |
 
 If the workspace is not a git repository, a worktree-isolated seat gets no

@@ -83,7 +83,7 @@ that name.
 | `model: performance`, `efficient`, `lite`, `auto` | `opus`, `sonnet`, `haiku`, `inherit` | Agent frontmatter transform, M01 to M04 in prose |
 | Bare seat names `estack-judge` | `estack:estack-judge`, `subagent_type: "estack:..."` | S01, S03 |
 | `tools: [..]`, `disallowedTools: [..]` YAML lists | Kept as YAML lists | Documented as accepted |
-| `isolation: worktree` in frontmatter | Kept | Documented subagent field |
+| `isolation: worktree` in frontmatter | Not used by any seat | Documented subagent field; the engine makes worktrees in an estack repository |
 | "Qoder specifics" agent sections | "Claude Code specifics", content rewritten | C30 to C40, C45, C46 |
 | "Custom Agent" | "plugin subagent" | Hand edits |
 | Skill `disable-model-invocation` dropped, intent moved into the description | Restored from upstream's Claude edition for 57 skills, description guard kept | Lever transform, plus one inserted line telling the model how to reach a manual-only skill |
@@ -100,7 +100,7 @@ of what was lost. Claude Code has the capability, so the real step returns.
 | Per-call reasoning effort | Fixed per seat, not overridable at all | `effort` on the `Agent` call. Every "name the seat rather than a reasoning level" sentence became "pick each subagent's seat and reasoning level" (C93) |
 | Background subagents | A per-agent default needing a settings switch, "do not promise a detached run" | Subagents run in the background by default and notify the parent (`arena`, `swarm`, `poteto-mode`, `poteto-agent`) |
 | `/loop` wake | Not supported, one bounded attended pass | `/loop` in `autonomous-run`, `autopilot-full`, `bug-fix`, `shipping`, `visual-parity`, the overnight guide page and the recipes page (C70 to C75, C77, hand edits) |
-| Worktree per dispatch | Only seats with `isolation: worktree`, or a manual `git worktree add` | Also `isolation: "worktree"` on any `Agent` call |
+| Worktree per dispatch | The engine, in an estack repository, or a manual `git worktree add` | Also `isolation: "worktree"` on any `Agent` call |
 | Manual-only skills | A sentence in the description, a hint the model could ignore | `disable-model-invocation: true`, enforced by Claude Code |
 | Background shell scan in `worktree-cleanup` | "let it finish" | "run it in the background" (C73) |
 
@@ -152,7 +152,7 @@ records them as gaps.
 ## Frontmatter fields
 
 Agent frontmatter uses only `name`, `description`, `model`, `effort`, `color`,
-`isolation`, `tools`, and `disallowedTools`, all documented. No agent sets
+`tools`, and `disallowedTools`, all documented. No agent sets `isolation` (the engine makes worktrees), and none sets
 `hooks`, `mcpServers`, `permissionMode`, or `initialPrompt`, which Claude Code
 ignores on plugin subagents. `scripts/selftest.py` fails on any of them.
 
