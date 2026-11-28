@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const MIGRATION_1 = `
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -57,7 +57,12 @@ CREATE INDEX events_kind_task_actor ON events(kind, task_id, actor);
 CREATE INDEX code_queries_task_actor ON code_queries(task_id, recorded_by);
 `;
 
-const MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3];
+/** Handovers record the checkout (worktree top level) they were saved from, so offers stay in their own worktree. */
+export const MIGRATION_4 = `
+ALTER TABLE handovers ADD COLUMN checkout TEXT;
+`;
+
+const MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4];
 
 /** Open (creating if needed) the state database, apply pragmas and pending migrations. */
 export function openDb(path: string): DatabaseSync {

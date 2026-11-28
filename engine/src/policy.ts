@@ -67,7 +67,7 @@ patterns:                 # how shell commands map to actions
   git_push:      ["git push*", "gh pr create*"]
   merge:         ["gh pr merge*"]
   deploy:        ["npm run deploy*", "pnpm run deploy*", "pnpm deploy*", "yarn deploy*", "vercel --prod*", "vercel deploy*", "fly deploy*", "flyctl deploy*", "kubectl apply*", "kubectl delete*", "kubectl rollout*", "terraform apply*", "terraform destroy*", "helm install*", "helm upgrade*", "helm uninstall*"]
-  db_migration:  ["prisma migrate deploy*", "prisma migrate reset*", "prisma db push*", "alembic upgrade*", "alembic downgrade*", "flyway migrate*", "rails db:migrate*", "npm run migrate*", "psql * -c *", "mysql * -e *"]
+  db_migration:  ["prisma migrate deploy*", "prisma migrate reset*", "prisma db push*", "alembic upgrade*", "alembic downgrade*", "flyway migrate*", "rails db:migrate*", "npm run migrate*", "npm run *:migrate*", "pnpm run migrate*", "pnpm run *:migrate*", "pnpm migrate*", "pnpm *:migrate*", "yarn migrate*", "yarn *:migrate*", "psql * -c *", "mysql * -e *"]
   force_push_protected: ["git push --force* origin main", "git push -f* origin main", "git push --force* origin master", "git push -f* origin master", "git push* origin main* --force*", "git push* origin main* -f*", "git push* origin +main*", "git push* origin master* --force*", "git push* origin master* -f*", "git push* origin +master*"]
 task_types:
   feature:  [plan, reuse_check, implement, test, verify, review, pr]

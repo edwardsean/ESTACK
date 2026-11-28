@@ -89,6 +89,13 @@ describe("phase 3 review fixes", () => {
     expect(v("npm run deploy")).toMatchObject({ kind: "ask", action: "deploy" });
   });
 
+  test("default migration patterns catch db:migrate scripts in npm, pnpm and yarn", () => {
+    for (const c of ["npm run db:migrate", "npm run migrate", "pnpm run db:migrate", "pnpm db:migrate", "yarn db:migrate", "yarn migrate"]) {
+      expect(v(c), c).toMatchObject({ kind: "ask", action: "db_migration" });
+    }
+    expect(v("npm run test")).toEqual({ kind: "none" });
+  });
+
   test("C1 force push with the flag after the refspec is denied", () => {
     for (const c of ["git push origin main --force", "git push origin main -f", "git push origin +main", "git push origin master --force", "git push origin +master"]) {
       expect(v(c), c).toMatchObject({ kind: "deny", action: "force_push_protected", hardcoded: false });

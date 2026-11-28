@@ -1,4 +1,5 @@
 import type { Engine } from "./engine";
+import { checkoutOf } from "./graph";
 import { HOOK_GIT_TIMEOUT_MS, getTask, listOpen, logEvent, runBounded, tx, type TaskView } from "./tasks";
 import { EngineError, actorId, type Actor, type Evidence } from "./types";
 
@@ -27,6 +28,8 @@ export interface SessionHandoverBody extends BodyBase {
 export interface Handover {
   id: number; kind: HandoverKind; task_id: number | null; from_session: string; created_at: string;
   auto: boolean; consumed_by: string | null; consumed_at: string | null;
+  /** The checkout it was saved from; null on handovers saved before schema 4. */
+  checkout: string | null;
   body: TaskHandoverBody | SessionHandoverBody;
 }
 export interface HandoverInput {
@@ -39,7 +42,7 @@ export const MAX_FILES = 50;
 
 interface Row {
   id: number; kind: HandoverKind; task_id: number | null; from_session: string; created_at: string;
-  auto: number; body_json: string; consumed_by: string | null; consumed_at: string | null;
+  auto: number; body_json: string; consumed_by: string | null; consumed_at: string | null; checkout: string | null;
 }
 const toHandover = ({ auto, body_json, ...r }: Row): Handover => ({ ...r, auto: auto === 1, body: JSON.parse(body_json) });
 
@@ -123,10 +126,10 @@ export function busyWorkerTasks(e: Engine, session_id: string): TaskView[] {
 }
 
 function insertHandover(e: Engine, kind: HandoverKind, task_id: number | null, actor: Actor, auto: boolean,
-  body: TaskHandoverBody | SessionHandoverBody): Handover {
+  body: TaskHandoverBody | SessionHandoverBody, checkout: string): Handover {
   const r = e.db.prepare(
-    "INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json) VALUES (?, ?, ?, ?, ?, ?)",
-  ).run(kind, task_id, actor.session_id, body.created_at, auto ? 1 : 0, JSON.stringify(body));
+    "INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json, checkout) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(kind, task_id, actor.session_id, body.created_at, auto ? 1 : 0, JSON.stringify(body), checkout);
   const id = Number(r.lastInsertRowid);
   logEvent(e, actor, "handover_saved", task_id, { id, kind, auto });
   return toHandover(e.db.prepare("SELECT * FROM handovers WHERE id = ?").get(id) as unknown as Row);
@@ -135,7 +138,7 @@ function insertHandover(e: Engine, kind: HandoverKind, task_id: number | null, a
 export function saveTaskHandover(e: Engine, task_id: number, input: HandoverInput, actor: Actor, auto = false): Handover {
   const v = getTask(e, task_id);
   const body = buildTaskBody(e, v, input, actor, auto);
-  return tx(e, () => insertHandover(e, "task", task_id, actor, auto, body));
+  return tx(e, () => insertHandover(e, "task", task_id, actor, auto, body, v.task.cwd));
 }
 
 export function latestSessionHandover(e: Engine, session_id: string): Handover | null {
@@ -150,7 +153,8 @@ function lastConsumedBy(e: Engine, session_id: string): Handover | null {
   return row ? toHandover(row) : null;
 }
 
-export function saveSessionHandover(e: Engine, input: HandoverInput, actor: Actor, auto = false): Handover {
+/** `cwd` is the saving session's working directory; its checkout scopes who is offered the handover. */
+export function saveSessionHandover(e: Engine, input: HandoverInput, actor: Actor, auto = false, cwd?: string): Handover {
   if (!input.workers_done && !auto) {
     const busy = busyWorkerTasks(e, actor.session_id);
     if (busy.length > 0) {
@@ -175,7 +179,8 @@ export function saveSessionHandover(e: Engine, input: HandoverInput, actor: Acto
     goal: merged.goal ?? "", plan: merged.plan ?? [],
     files: cap([...new Set(merged.files ?? [])].sort(), MAX_FILES), tasks,
   };
-  return tx(e, () => insertHandover(e, "session", null, actor, auto, body));
+  const checkout = checkoutOf(e, cwd ?? e.cwd);
+  return tx(e, () => insertHandover(e, "session", null, actor, auto, body, checkout));
 }
 
 /** Ids of open tasks bound (by anyone in it) to the session. */
@@ -207,9 +212,9 @@ export const STALE_PLAN_MS = 24 * 3600 * 1000;
  * Unconsumed handovers worth resuming: the newest session handover per session, and the newest task handover
  * per open task not covered by a newer one. A session handover whose session owns no open task is dropped when
  * it has no plan left, or when its session logged events after saving it (the session carried on and finished),
- * or when it is older than STALE_PLAN_MS.
+ * or when it is older than STALE_PLAN_MS. With `checkout`, only handovers saved from that checkout (see savedIn).
  */
-export function pendingHandovers(e: Engine): Handover[] {
+export function pendingHandovers(e: Engine, checkout?: string): Handover[] {
   const rows = (e.db.prepare("SELECT * FROM handovers WHERE consumed_at IS NULL ORDER BY id").all() as unknown as Row[]).map(toHandover);
   const newestSession = new Map<string, Handover>();
   for (const h of rows) if (h.kind === "session") newestSession.set(h.from_session, h);
@@ -225,7 +230,13 @@ export function pendingHandovers(e: Engine): Handover[] {
     // Plan items but no open task: worth resuming only while the old session went quiet right after saving it.
     return activityAfter(e, h) === null && e.now().getTime() - Date.parse(h.created_at) < STALE_PLAN_MS;
   });
-  return [...live, ...tasks].sort((a, b) => a.id - b.id);
+  return [...live, ...tasks].filter((h) => checkout === undefined || savedIn(e, h) === checkout).sort((a, b) => a.id - b.id);
+}
+
+/** The checkout a handover belongs to. Rows saved before schema 4 fall back to the task's worktree, or the main checkout. */
+export function savedIn(e: Engine, h: Handover): string {
+  if (h.checkout) return h.checkout;
+  return h.kind === "task" ? (h.body as TaskHandoverBody).task.cwd : e.repo.root;
 }
 
 function bind(e: Engine, task_id: number, actor: Actor): void {
@@ -243,8 +254,11 @@ export interface ResumeSelector { task_id?: number; handover_id?: number }
  * Consume a handover and bind its open tasks to the caller. A session handover binds every task open now and bound
  * to its session (plus any still-open task its body lists); the returned body's tasks are rebuilt live.
  */
-export function consumeHandover(e: Engine, actor: Actor, sel: ResumeSelector = {}): { handover: Handover | null; views: TaskView[] } {
+export function consumeHandover(e: Engine, actor: Actor, sel: ResumeSelector = {}, cwd?: string):
+  { handover: Handover | null; views: TaskView[] } {
   const { task_id, handover_id } = sel;
+  // With no selector, only the caller's own checkout counts, so one worktree's session never takes another's work.
+  const here = task_id === undefined && handover_id === undefined ? checkoutOf(e, cwd ?? e.cwd) : null;
   const result = tx(e, () => {
     let handover: Handover | null = null;
     let ids: number[];
@@ -267,8 +281,12 @@ export function consumeHandover(e: Engine, actor: Actor, sel: ResumeSelector = {
       handover = row ? toHandover(row) : null;
       ids = [task_id];
     } else {
-      handover = pendingHandovers(e).filter((h) => h.kind === "session").at(-1) ?? null;
-      if (!handover) throw new EngineError("NO_TASK", "no session handover waiting");
+      const waiting = pendingHandovers(e, here as string).filter((h) => h.kind === "session");
+      if (waiting.length === 0) throw new EngineError("NO_TASK", `no session handover waiting in ${here}`);
+      if (waiting.length > 1) {
+        throw new EngineError("NO_TASK", `several session handovers are waiting here: ${waiting.map((h) => `#${h.id}`).join(", ")}; pass handover_id (ask the owner which)`);
+      }
+      handover = waiting[0];
       ids = [];
     }
     if (handover?.kind === "session") {

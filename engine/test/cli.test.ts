@@ -155,10 +155,10 @@ describe("cli hook", () => {
     const th = saveTaskHandover(e, id, {}, { session_id: "s" });
     const r = run(dir, ["handovers"]);
     expect(r.status).toBe(0);
-    expect(r.out).toMatch(new RegExp(`^#${th.id} task #${id} \\S+ from s manual next: #${id} plan\\n$`));
+    expect(r.out).toMatch(new RegExp(`^#${th.id} task #${id} \\S+ from s manual in main next: #${id} plan\\n$`));
     const sh = saveSessionHandover(e, { goal: "g", workers_done: true }, { session_id: "s" });
     const s = run(dir, ["handovers"]).out;
-    expect(s).toMatch(new RegExp(`^#${sh.id} session \\S+ from s manual next: #\\d+ plan\\n$`));
+    expect(s).toMatch(new RegExp(`^#${sh.id} session \\S+ from s manual in main next: #\\d+ plan\\n$`));
     const j = JSON.parse(run(dir, ["handovers", "--json"]).out);
     expect(j).toHaveLength(1);
     expect(j[0].kind).toBe("session");
