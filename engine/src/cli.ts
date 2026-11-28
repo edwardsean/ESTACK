@@ -18,6 +18,7 @@ import {
   type FolderShare,
 } from "./graph";
 import { activeClaims, keptWorktrees, syncMerged } from "./claims";
+import { recordOutcomes } from "./outcomes";
 import { listOpen } from "./tasks";
 import { plannedTasks, startingTasks } from "./plan";
 import { EngineError } from "./types";
@@ -74,6 +75,7 @@ const CLI_ACTOR = { session_id: "cli" };
 
 function status(e: Engine, json: boolean, out: (s: string) => void): void {
   syncMerged(e);
+  recordOutcomes(e);
   const open = listOpen(e);
   const starting = startingTasks(e);
   const planned = plannedTasks(e);

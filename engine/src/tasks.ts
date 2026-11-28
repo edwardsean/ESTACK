@@ -1,4 +1,5 @@
 import { passClaims, releaseClaims, syncMerged } from "./claims";
+import { recordOutcomes } from "./outcomes";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
 import { areaPath, claimInfo, gateStart, releaseStale } from "./plan";
@@ -439,5 +440,6 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
     }
     logEvent(e, input.actor, "task_merged", v.task.id, { into: payload.into });
   }
+  recordOutcomes(e);
   return result;
 }

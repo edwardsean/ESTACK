@@ -1,5 +1,6 @@
 import { ensureDuplicateCheck, openDuplicates } from "./duplicates";
 import type { Engine } from "./engine";
+import { recordOutcomes } from "./outcomes";
 import { finishStep, getTask, insertEvidence, logEvent, runBounded, tx } from "./tasks";
 import { EngineError, STEP_EVIDENCE, type Actor } from "./types";
 
@@ -59,5 +60,6 @@ export function runCheck(e: Engine, input: { task_id: number; step: string; acto
       logEvent(e, input.actor, "step_done", input.task_id, { step: input.step, closed });
     }
   });
+  recordOutcomes(e);
   return result;
 }

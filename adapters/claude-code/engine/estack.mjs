@@ -34626,11 +34626,11 @@ function openEngine(cwd, deps = {}) {
 }
 
 // engine/src/hooks.ts
-import { existsSync as existsSync8, realpathSync as realpathSync3 } from "node:fs";
+import { existsSync as existsSync9, realpathSync as realpathSync3 } from "node:fs";
 import { dirname as dirname3, isAbsolute as isAbsolute3, join as join8, relative as relative3, resolve as resolve2, sep as sep3 } from "node:path";
 
 // engine/src/claims.ts
-import { existsSync as existsSync6 } from "node:fs";
+import { existsSync as existsSync7 } from "node:fs";
 import { isAbsolute as isAbsolute2, join as join7 } from "node:path";
 
 // engine/src/match.ts
@@ -34725,8 +34725,11 @@ import { readFileSync as readFileSync3 } from "node:fs";
 import { join as join6 } from "node:path";
 
 // engine/src/graph.ts
-import { appendFileSync, existsSync as existsSync5, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { appendFileSync, existsSync as existsSync6, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { basename, join as join5 } from "node:path";
+
+// engine/src/outcomes.ts
+import { existsSync as existsSync4 } from "node:fs";
 
 // engine/src/plan.ts
 import { existsSync as existsSync3, realpathSync as realpathSync2 } from "node:fs";
@@ -34966,12 +34969,12 @@ function dependencyState(e, task_id) {
     if (dep.status === "cancelled" || dep.status === "starting") return { finished: false, detail: `task #${d} was cancelled; withdraw this task or plan it again` };
     if (me.parent_id !== null && dep.parent_id === me.parent_id) {
       const merge2 = e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'merge'").get(d);
-      const finished2 = merge2?.status === "done";
-      return { finished: finished2, detail: finished2 ? `task #${d} is merged into the feature` : `task #${d} (${dep.title}) is not merged into the feature yet` };
+      const finished3 = merge2?.status === "done";
+      return { finished: finished3, detail: finished3 ? `task #${d} is merged into the feature` : `task #${d} (${dep.title}) is not merged into the feature yet` };
     }
     const feature = dep.parent_id === null ? dep : getRow(e, dep.parent_id) ?? dep;
-    const finished = mergedIntoMain(e, dep);
-    return { finished, detail: finished ? `task #${d} is merged into main` : `task #${d} (${dep.title}) waits for its feature #${feature.id} to merge into main` };
+    const finished2 = mergedIntoMain(e, dep);
+    return { finished: finished2, detail: finished2 ? `task #${d} is merged into main` : `task #${d} (${dep.title}) waits for its feature #${feature.id} to merge into main` };
   });
 }
 function gateStart(e, actor, what) {
@@ -35010,12 +35013,95 @@ function plannedTasks(e) {
   }));
 }
 
+// engine/src/outcomes.ts
+var ENGINE = { session_id: "engine" };
+var getTask2 = (e, id) => e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+var featureOf = (e, t) => t.parent_id === null ? t : getTask2(e, t.parent_id) ?? t;
+function holderAtGrant(e, g) {
+  const rows = e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'claim_granted' AND task_id = ? ORDER BY id").all(g.task_id);
+  for (const r of rows) {
+    const p = JSON.parse(r.p);
+    if (p.path === g.path && typeof p.holder === "number") return p.holder;
+  }
+  return e.db.prepare("SELECT task_id FROM claims WHERE id = ?").get(g.claim_id)?.task_id;
+}
+function changedFiles(e, t) {
+  if (!t.cwd || !existsSync4(t.cwd)) return null;
+  const run = (args) => e.exec.run("git", args, { cwd: t.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS });
+  const diff = run(["diff", "--name-only", t.base_sha]);
+  if (diff.code !== 0) return null;
+  const fresh = run(["ls-files", "--others", "--exclude-standard"]);
+  return new Set([...diff.stdout.split("\n"), ...fresh.code === 0 ? fresh.stdout.split("\n") : []].filter(Boolean));
+}
+function conflicted(e, g, holder, grantee) {
+  const features = [...new Map([featureOf(e, grantee), featureOf(e, holder)].map((f) => [f.id, f])).values()];
+  for (const f of features) {
+    if (!f.cwd || !existsSync4(f.cwd)) continue;
+    const r = e.exec.run("git", ["-C", f.cwd, "diff", "--name-only", "--diff-filter=U"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS });
+    if (r.code === 0 && r.stdout.split("\n").includes(g.path)) return true;
+  }
+  if (features.length < 2) return false;
+  for (const f of features) {
+    if (!f.branch) continue;
+    const pr = e.exec.run("gh", ["pr", "view", f.branch, "--json", "mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+    if (pr.code !== 0) continue;
+    let mergeable;
+    try {
+      mergeable = JSON.parse(pr.stdout).mergeable;
+    } catch {
+      continue;
+    }
+    if (mergeable !== "CONFLICTING") continue;
+    const both = features.map((x) => changedFiles(e, x));
+    if (both.every((s) => s?.has(g.path))) return true;
+  }
+  return false;
+}
+function holderFailed(e, g, holder) {
+  const failed = e.db.prepare(
+    "SELECT 1 FROM evidence WHERE task_id = ? AND kind = 'command' AND ok = 0 AND step IN ('test', 'verify') AND recorded_at >= ? LIMIT 1"
+  ).get(holder.id, g.at);
+  return failed !== void 0 && (changedFiles(e, holder)?.has(g.path) ?? false);
+}
+function finished(e, t) {
+  if (t.parent_id === null) return mergedIntoMain(e, t);
+  return e.db.prepare("SELECT 1 FROM evidence WHERE task_id = ? AND kind = 'merged' AND ok = 1 LIMIT 1").get(t.id) !== void 0 || mergedIntoMain(e, t);
+}
+function judge(e, g) {
+  const grantee = getTask2(e, g.task_id);
+  const holderId = holderAtGrant(e, g);
+  const holder = holderId === void 0 ? void 0 : getTask2(e, holderId);
+  if (!grantee || !holder) return null;
+  if (conflicted(e, g, holder, grantee)) return "conflict";
+  if (holderFailed(e, g, holder)) return "holder_failed";
+  return finished(e, grantee) && finished(e, holder) ? "clean" : null;
+}
+function recordOutcomes(e) {
+  let grants;
+  try {
+    grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all();
+  } catch {
+    return;
+  }
+  for (const g of grants) {
+    try {
+      const outcome = judge(e, g);
+      if (!outcome) continue;
+      tx(e, () => {
+        const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL").run(outcome, e.now().toISOString(), g.id);
+        if (r.changes === 1) logEvent(e, ENGINE, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
+      });
+    } catch {
+    }
+  }
+}
+
 // engine/src/worktree.ts
-import { existsSync as existsSync4 } from "node:fs";
+import { existsSync as existsSync5 } from "node:fs";
 import { join as join4 } from "node:path";
 var WORKTREES_DIR = ".estack/worktrees";
 var WORKTREE_SETUP_TIMEOUT_MS = 6e5;
-var ENGINE = { session_id: "engine" };
+var ENGINE2 = { session_id: "engine" };
 function slug(title) {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
 }
@@ -35045,7 +35131,7 @@ function ensureWorktree(e, input2) {
   const byHand = `remove it by hand (git worktree remove ${path}, then git branch -d ${input2.branch}) and start the task again`;
   const here = blocks.find((b) => b.path === path);
   if (here) {
-    if (here.prunable || !existsSync4(path)) {
+    if (here.prunable || !existsSync5(path)) {
       throw new EngineError("POLICY_INVALID", `${path} is a worktree git lists but whose folder is gone; inspect it with git worktree list, clear it with git worktree prune, and start the task again`);
     }
     if (here.locked) {
@@ -35055,7 +35141,7 @@ function ensureWorktree(e, input2) {
     if (!input2.reuse) throw new EngineError("POLICY_INVALID", `${path} already exists from earlier work that is not this task's; ${byHand}`);
     return { path, reused: true };
   }
-  if (existsSync4(path)) throw new EngineError("POLICY_INVALID", `${path} already exists and is not the worktree of ${input2.branch}; ${byHand}`);
+  if (existsSync5(path)) throw new EngineError("POLICY_INVALID", `${path} already exists and is not the worktree of ${input2.branch}; ${byHand}`);
   if (runBounded(e, input2.under, "git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).code === 0) {
     const holder = blocks.find((b) => b.branch === ref);
     throw new EngineError("POLICY_INVALID", holder ? `branch ${input2.branch} is checked out in ${holder.path}, not at ${path}; remove that worktree by hand (git worktree remove ${holder.path}) and start the task again` : `branch ${input2.branch} already exists without its worktree; delete it by hand (git branch -d ${input2.branch}) and start the task again`);
@@ -35074,13 +35160,13 @@ function removeWorktree(e, task) {
   const keep = (reason) => {
     const last = e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'worktree_kept' AND task_id = ? ORDER BY id DESC LIMIT 1").get(task.id);
     if ((last ? JSON.parse(last.p).reason : void 0) !== reason) {
-      logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason });
+      logEvent(e, ENGINE2, "worktree_kept", task.id, { path: task.cwd, reason });
     }
     return "kept";
   };
   if (task.cwd === "") return "missing";
   if (!task.cwd.includes(`/${WORKTREES_DIR}/`)) return keep("not engine-made");
-  if (!existsSync4(task.cwd)) return "missing";
+  if (!existsSync5(task.cwd)) return "missing";
   const list = runBounded(e, e.repo.root, "git", ["worktree", "list", "--porcelain"]);
   if (list.code !== 0) return keep("could not list worktrees");
   const nested = list.stdout.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice("worktree ".length)).some((p) => p.startsWith(task.cwd + "/"));
@@ -35090,9 +35176,9 @@ function removeWorktree(e, task) {
   const rm = runBounded(e, e.repo.root, "git", ["worktree", "remove", task.cwd]);
   if (rm.code !== 0) return keep(rm.stderr.trim());
   const parent = task.parent_id === null ? void 0 : e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(task.parent_id);
-  const from = parent?.cwd && existsSync4(parent.cwd) ? parent.cwd : e.repo.root;
+  const from = parent?.cwd && existsSync5(parent.cwd) ? parent.cwd : e.repo.root;
   const br = runBounded(e, from, "git", ["branch", "-d", task.branch]);
-  logEvent(e, ENGINE, "worktree_removed", task.id, { path: task.cwd, branch: task.branch, branch_deleted: br.code === 0 });
+  logEvent(e, ENGINE2, "worktree_removed", task.id, { path: task.cwd, branch: task.branch, branch_deleted: br.code === 0 });
   return "removed";
 }
 
@@ -35435,6 +35521,7 @@ function completeStep(e, input2) {
     }
     logEvent(e, input2.actor, "task_merged", v.task.id, { into: payload.into });
   }
+  recordOutcomes(e);
   return result;
 }
 
@@ -35481,7 +35568,7 @@ function appendExclude(e, checkout, wanted) {
   const info = join5(r.stdout.trim(), "info");
   const file2 = join5(info, "exclude");
   mkdirSync2(info, { recursive: true });
-  const have = existsSync5(file2) ? readFileSync2(file2, "utf8") : "";
+  const have = existsSync6(file2) ? readFileSync2(file2, "utf8") : "";
   const present = new Set(have.split("\n"));
   const missing = wanted.filter((l) => !present.has(l));
   if (missing.length) appendFileSync(file2, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
@@ -35834,7 +35921,7 @@ function dismissDuplicate(e, input2) {
 }
 
 // engine/src/claims.ts
-var ENGINE2 = { session_id: "engine" };
+var ENGINE3 = { session_id: "engine" };
 var iso2 = (e) => e.now().toISOString();
 function isClaimExempt(e, path) {
   return isExempt(path, e.policy) || e.policy.claims.exempt.some((p) => pathMatches(path, p));
@@ -35857,7 +35944,7 @@ function hasGrant(e, task_id, path) {
 function mayEdit(e, task, holder, path) {
   return holder.id === task.id || holder.cwd === task.cwd || holder.id === task.parent_id || holder.parent_id === task.id || task.task_group !== null && holder.task_group === task.task_group && holder.parent_id === task.parent_id || hasGrant(e, task.id, path);
 }
-function checkEdit(e, task, path, actor = ENGINE2, take = true) {
+function checkEdit(e, task, path, actor = ENGINE3, take = true) {
   if (isClaimExempt(e, path)) return { ok: true };
   for (let attempt = 0; attempt < 3; attempt++) {
     const held2 = holderOf(e, path);
@@ -35881,7 +35968,7 @@ function checkEdit(e, task, path, actor = ENGINE2, take = true) {
   if (held && !mayEdit(e, task, held.task, path)) return { ok: false, holder: held.task, claim_id: held.claim_id };
   return { ok: true };
 }
-function passClaims(e, from, to, actor = ENGINE2) {
+function passClaims(e, from, to, actor = ENGINE3) {
   const rows = e.db.prepare("SELECT id, kind, target FROM claims WHERE task_id = ? AND status = 'active' ORDER BY id").all(from.id);
   for (const c of rows) {
     e.db.prepare("UPDATE claims SET task_id = ? WHERE id = ?").run(to.id, c.id);
@@ -35912,7 +35999,7 @@ function syncMerged(e) {
   const todo = rows.map((task) => ({
     task,
     hasClaims: e.db.prepare("SELECT 1 FROM claims WHERE task_id = ? AND status = 'active'").get(task.id) !== void 0,
-    hasTree: task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync6(task.cwd)
+    hasTree: task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync7(task.cwd)
   })).filter((x) => x.hasClaims || x.hasTree);
   if (todo.length === 0) return;
   const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
@@ -35920,10 +36007,10 @@ function syncMerged(e) {
   for (const { task, hasClaims, hasTree } of todo) {
     try {
       if (mergedIntoMain(e, task, { fetched: true })) {
-        if (hasClaims) tx(e, () => releaseClaims(e, task, ENGINE2));
+        if (hasClaims) tx(e, () => releaseClaims(e, task, ENGINE3));
         if (hasTree) removeWorktree(e, task);
       } else if (hasClaims && prClosed(e, task)) {
-        tx(e, () => releaseClaims(e, task, ENGINE2, "pr closed"));
+        tx(e, () => releaseClaims(e, task, ENGINE3, "pr closed"));
       }
     } catch (x) {
       if (!(x instanceof EngineError)) throw x;
@@ -35950,9 +36037,9 @@ function claimStatus(e, rawPath) {
     "SELECT task_id, reason, by, at FROM claim_grants WHERE claim_id = ? AND path = ? ORDER BY id"
   ).all(held.claim_id, path);
   const out = { path, holder: { task_id: task.id, title: task.title, goal: task.goal, cwd: task.cwd }, diff: "", grants };
-  if (!existsSync6(task.cwd)) return { ...out, note: `the holder's worktree is gone (${task.cwd}), so its changes cannot be shown` };
+  if (!existsSync7(task.cwd)) return { ...out, note: `the holder's worktree is gone (${task.cwd}), so its changes cannot be shown` };
   const tracked = runBounded(e, task.cwd, "git", ["ls-files", "--error-unmatch", "--", path], HOOK_GIT_TIMEOUT_MS).code === 0;
-  const fresh = !tracked && existsSync6(join7(task.cwd, path));
+  const fresh = !tracked && existsSync7(join7(task.cwd, path));
   const r = fresh ? runBounded(e, task.cwd, "git", ["diff", "--no-index", "--no-color", "--", "/dev/null", path], HOOK_GIT_TIMEOUT_MS) : runBounded(e, task.cwd, "git", ["diff", "--no-color", task.base_sha, "--", path], HOOK_GIT_TIMEOUT_MS);
   if (r.code !== 0 && !(fresh && r.code === 1)) return { ...out, note: `could not read the holder's changes: ${r.stderr.trim()}` };
   out.diff = r.stdout.length > MAX_CLAIM_DIFF ? `${r.stdout.slice(0, MAX_CLAIM_DIFF)}
@@ -36037,7 +36124,7 @@ function keptWorktrees(e) {
   return rows.map((r) => {
     const kept = JSON.parse(r.p);
     return { task_id: r.task_id, title: r.title, path: typeof kept.path === "string" ? kept.path : r.path, reason: String(kept.reason ?? "") };
-  }).filter((k) => existsSync6(k.path));
+  }).filter((k) => existsSync7(k.path));
 }
 
 // engine/src/context.ts
@@ -36333,7 +36420,7 @@ function consumeHandover(e, actor, sel = {}, cwd) {
 }
 
 // engine/src/mapfirst.ts
-import { existsSync as existsSync7, statSync as statSync2 } from "node:fs";
+import { existsSync as existsSync8, statSync as statSync2 } from "node:fs";
 import { relative as relative2, sep as sep2 } from "node:path";
 var READ_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep"]);
 function preRead(e, ev) {
@@ -36348,7 +36435,7 @@ function preRead(e, ev) {
     const raw = isRead ? input2.file_path : input2.path ?? ev.cwd;
     if (typeof raw !== "string" || raw === "") return null;
     const abs = resolveReal(ev.cwd, raw);
-    const top = runBounded(e, existsSync7(abs) && statSync2(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
+    const top = runBounded(e, existsSync8(abs) && statSync2(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
     if (top.code !== 0) return null;
     const checkout = top.stdout.trim();
     if (workerSession) {
@@ -36421,7 +36508,7 @@ function resolveReal(cwd, p) {
   const abs = resolve2(cwd, p);
   let d = abs;
   const rest = [];
-  while (!existsSync8(d)) {
+  while (!existsSync9(d)) {
     const up = dirname3(d);
     if (up === d) return abs;
     rest.unshift(d.slice(up.length + 1));
@@ -36431,7 +36518,7 @@ function resolveReal(cwd, p) {
 }
 function nearestDir(p) {
   let d = dirname3(p);
-  while (!existsSync8(d)) {
+  while (!existsSync9(d)) {
     const up = dirname3(d);
     if (up === d) break;
     d = up;
@@ -36796,6 +36883,7 @@ function runCheck(e, input2) {
       logEvent(e, input2.actor, "step_done", input2.task_id, { step: input2.step, closed });
     }
   });
+  recordOutcomes(e);
   return result;
 }
 
@@ -46482,7 +46570,7 @@ var StdioServerTransport = class {
 };
 
 // engine/src/codemap.ts
-import { existsSync as existsSync9, realpathSync as realpathSync4 } from "node:fs";
+import { existsSync as existsSync10, realpathSync as realpathSync4 } from "node:fs";
 import { isAbsolute as isAbsolute4, relative as relative4, resolve as resolve3, sep as sep4 } from "node:path";
 var MAX_LIST = 40;
 var MAX_MATCHES = 15;
@@ -46496,7 +46584,7 @@ function capped(hits, key, more) {
   if (hits.length > MAX_LIST) more[key] = hits.length - MAX_LIST;
   return hits.slice(0, MAX_LIST);
 }
-var real = (p) => existsSync9(p) ? realpathSync4(p) : p;
+var real = (p) => existsSync10(p) ? realpathSync4(p) : p;
 function mapPath(g, path) {
   const root = real(g.checkout);
   const rel = relative4(root, real(resolve3(root, path))).split(sep4).join("/");
@@ -46810,6 +46898,7 @@ function createServer(cwd, deps = {}) {
     inputSchema: { task_id: external_exports.number().int().optional(), actor: actorSchema }
   }, tool((e, a) => {
     syncMerged(e);
+    recordOutcomes(e);
     return a.task_id !== void 0 ? getTask(e, a.task_id) : { tasks: listOpen(e), claims: activeClaims(e), kept_worktrees: keptWorktrees(e) };
   }));
   server.registerTool("claim_status", {
@@ -46952,7 +47041,7 @@ function ownerRelease(e, input2, env) {
 
 // engine/src/githooks.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { chmodSync, existsSync as existsSync10, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { chmodSync, existsSync as existsSync11, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { join as join9, resolve as resolve4 } from "node:path";
 var MANAGED_MARK = "# estack-managed-hook";
 var MAP_HOOKS = ["post-commit", "post-checkout", "post-merge", "post-rewrite"];
@@ -47015,9 +47104,9 @@ function installGitHooks(repoRoot, enginePath) {
   const installed = [], chained = [];
   for (const name of HOOKS) {
     const p = join9(dir, name);
-    if (existsSync10(p) && !readFileSync4(p, "utf8").includes(MANAGED_MARK)) {
+    if (existsSync11(p) && !readFileSync4(p, "utf8").includes(MANAGED_MARK)) {
       let dest = `${p}.estack-prev`;
-      for (let n = 2; existsSync10(dest); n++) dest = `${p}.estack-prev.${n}`;
+      for (let n = 2; existsSync11(dest); n++) dest = `${p}.estack-prev.${n}`;
       renameSync2(p, dest);
       chained.push(name);
     }
@@ -47047,7 +47136,7 @@ function preCommit(e, cwd) {
   ).get(toplevel);
   if (!open2) return `no open estack task for ${toplevel}`;
   const mergeHead = runBounded(e, toplevel, "git", ["rev-parse", "--git-path", "MERGE_HEAD"], HOOK_GIT_TIMEOUT_MS);
-  if (mergeHead.code === 0 && existsSync10(resolve4(toplevel, mergeHead.stdout.trim()))) return null;
+  if (mergeHead.code === 0 && existsSync11(resolve4(toplevel, mergeHead.stdout.trim()))) return null;
   const git2 = { session_id: "git" };
   const refused = [];
   for (const p of paths) {
@@ -47125,6 +47214,7 @@ function num(s, what) {
 var CLI_ACTOR = { session_id: "cli" };
 function status(e, json2, out) {
   syncMerged(e);
+  recordOutcomes(e);
   const open2 = listOpen(e);
   const starting = startingTasks(e);
   const planned = plannedTasks(e);

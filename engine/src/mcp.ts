@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { recordOutcomes } from "./outcomes";
 import { activeClaims, allowEdit, claimStatus, claimSymbol, keptWorktrees, syncMerged } from "./claims";
 import { runCheck } from "./checks";
 import { openEngine, type Engine } from "./engine";
@@ -132,6 +133,7 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
     inputSchema: { task_id: z.number().int().optional(), actor: actorSchema },
   }, tool((e, a: { task_id?: number; actor?: Actor }) => {
     syncMerged(e);
+    recordOutcomes(e);
     return a.task_id !== undefined ? getTask(e, a.task_id) : { tasks: listOpen(e), claims: activeClaims(e), kept_worktrees: keptWorktrees(e) };
   }));
 
