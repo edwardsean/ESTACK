@@ -36606,13 +36606,28 @@ function recordAsk(e, ev, taskId, action, command) {
 }
 function pushedBranch(e, cwd, command) {
   const current = (dir) => runBounded(e, dir, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  let here = cwd;
   for (const segment of command.split(/[;&|\n]+/)) {
     const words = (segment.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^(["'])(.*)\1$/, "$2"));
+    if (words[0] === "cd" && words[1] !== void 0 && words[1] !== "-") {
+      here = resolve2(here, words[1]);
+      continue;
+    }
+    const gh = words.findIndex((w) => /(^|\/)gh$/.test(w));
+    const pr = words.indexOf("pr", gh);
+    if (gh >= 0 && pr > gh && words[pr + 1] === "create") {
+      const args2 = words.slice(pr + 2);
+      for (const [i, w] of args2.entries()) {
+        const head = w === "--head" || w === "-H" ? args2[i + 1] : /^--head=(.+)$/.exec(w)?.[1] ?? /^-H(.+)$/.exec(w)?.[1];
+        if (head) return { branch: head.split(":").at(-1), pr: true };
+      }
+      return { branch: current(here), pr: true };
+    }
     const git2 = words.findIndex((w) => /(^|\/)git$/.test(w));
     const at = words.indexOf("push");
     if (git2 < 0 || at < git2) continue;
     const c = words.indexOf("-C");
-    const dir = c >= 0 && c < at && words[c + 1] ? resolve2(cwd, words[c + 1]) : cwd;
+    const dir = c >= 0 && c < at && words[c + 1] ? resolve2(here, words[c + 1]) : here;
     const args = [];
     let skip = false;
     for (const w of words.slice(at + 1)) {
@@ -36630,11 +36645,11 @@ function pushedBranch(e, cwd, command) {
     const ref = args[1];
     if (ref !== void 0 && ref !== "HEAD") {
       const dst = ref.replace(/^\+/, "").split(":").at(-1).replace(/^refs\/heads\//, "");
-      if (dst !== "" && dst !== "HEAD") return dst;
+      if (dst !== "" && dst !== "HEAD") return { branch: dst, pr: false };
     }
-    return current(dir);
+    return { branch: current(dir), pr: false };
   }
-  return current(cwd);
+  return { branch: current(here), pr: false };
 }
 function preBash(e, ev) {
   const command = typeof ev.tool_input?.command === "string" ? ev.tool_input.command : "";
@@ -36648,9 +36663,10 @@ function preBash(e, ev) {
     recordAsk(e, ev, null, v.action, command);
     return pre("ask", `${v.action} needs the owner's approval (pattern ${v.pattern})`);
   }
-  const branch = pushedBranch(e, ev.cwd, command);
+  const { branch, pr } = pushedBranch(e, ev.cwd, command);
   const { task: t, verifySettled } = pushReadiness(e, branch);
-  const refusal = !t ? `no estack task for branch ${branch}; start one, or the owner can run \`estack override git_push --reason \u2026\` in a terminal` : !verifySettled ? `task #${t.id} has no verify evidence; run run_check with step verify first` : null;
+  const where = pr ? "open the feature PR from its worktree (cd <feature cwd> && gh pr create) or pass --head <feature branch>" : "push the feature branch from its worktree (git -C <feature cwd> push) or name it (git push origin <feature branch>)";
+  const refusal = !t ? `no estack task for branch ${branch}; ${where}; or the owner can run \`estack override git_push --reason \u2026\` in a terminal` : !verifySettled ? `task #${t.id} has no verify evidence; run run_check with step verify first` : null;
   if (refusal !== null) {
     const found = findOverride(e, "git_push");
     if (found === null) return deny(refusal);

@@ -750,6 +750,37 @@ describe("workers and the push check", () => {
     expect(own?.reason).not.toContain(`task #${w.task.id}`);
   });
 
+  test("the feature PR can be opened from the main checkout with --head or a leading cd", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = startTask(e, { title: "Feat", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, worktree: true });
+    e.db.close();
+    const { branch, cwd } = f.task;
+    const none = bash(dir, "gh pr create --title x --body y");
+    expect(decision(none)).toBe("deny");
+    expect(reason(none)).toContain(`no estack task for branch main; open the feature PR from its worktree (cd <feature cwd> && gh pr create) or pass --head <feature branch>`);
+    expect(reason(none)).not.toMatch(/start one/);
+    expect(reason(none).indexOf("estack override git_push")).toBeGreaterThan(reason(none).indexOf("--head <feature branch>"));
+    // Before verify the feature's own refusal shows, so the branch was found.
+    expect(reason(bash(dir, `gh pr create --head ${branch} --title x`))).toContain(`task #${f.task.id} has no verify evidence`);
+    markVerifyDone(dir, f.task.id);
+    for (const command of [
+      `gh pr create --head ${branch} --base main --title x --body y`,
+      `gh pr create -H ${branch} --title x`,
+      `gh pr create --title x --head=${branch}`,
+      `gh pr create --head someone:${branch} --title x`,
+      `cd ${cwd} && gh pr create --title x --body y`,
+      `cd ${cwd}; gh pr create --fill`,
+      `cd ${cwd} && git push -u origin HEAD`,
+    ]) {
+      expect(decision(bash(dir, command)), command).toBe("ask");
+    }
+    const push = bash(dir, "git push origin HEAD");
+    expect(decision(push)).toBe("deny");
+    expect(reason(push)).toContain("no estack task for branch main; push the feature branch from its worktree");
+    expect(reason(push)).not.toMatch(/start one/);
+  });
+
   test("the push check uses the pushed branch", () => {
     const dir = repo();
     execFileSync("git", ["branch", "feat/x"], { cwd: dir });

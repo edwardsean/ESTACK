@@ -14,7 +14,7 @@ A repository is opted in when `.estack/policy.yaml` exists. `/estack:setup` crea
 |---|---|---|
 | Editing source files | Needs an open task bound to this session. Start one with the `start_task` tool (title, type, goal, done_check) | Work that no task owns has no steps and no evidence |
 | Editing protected paths | Always denied, such as `.env*`, secrets folders, `.git`, and the policy file | These are the controls themselves |
-| `git push`, `gh pr create` | Needs verify evidence on the task for the branch, then the owner's approval | A push is outward-facing and hard to take back |
+| `git push`, `gh pr create` | Needs verify evidence on the task for the branch, then the owner's approval. The branch is the one `--head` names for `gh pr create`, else the current branch where the command runs (after a leading `cd` or `git -C`) | A push is outward-facing and hard to take back |
 | Merge, deploy, database migration | The owner's approval, every time | Same reason, with a bigger blast radius |
 | Force push to a protected branch | Denied | Not recoverable |
 | Reading code before `reuse_check` | The first Read or Grep is denied once. Call `context_for` or `find_existing` first | Existing code is found by searching the map, not by wandering |
