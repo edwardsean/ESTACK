@@ -58,7 +58,7 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
     inputSchema: {
       title: z.string().optional(), type: z.string().optional(), goal: z.string().optional(), done_check: z.string().optional(),
       branch: z.string().optional(),
-      area: z.union([z.string(), z.array(z.string())]).optional().describe("the folders or files you will change; with the code map on, the first one's context is returned"),
+      area: z.union([z.string(), z.array(z.string())]).optional().describe("the folders or files you will change, relative to the checkout root or absolute; with the code map on, the first one's context is returned"),
       worktree: z.boolean().optional().describe("make the task its own branch and git worktree (a feature, or a worker when parent_task_id is given)"),
       parent_task_id: z.number().int().optional().describe("the feature this task is a worker of"),
       group: z.string().optional(), task_id: z.number().int().optional().describe("start this planned task instead of making a new one"),
@@ -100,7 +100,7 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
       parent_task_id: z.number().int().describe("the feature these tasks belong to"),
       tasks: z.array(z.object({
         title: z.string(), type: z.string(), goal: z.string(), done_check: z.string(),
-        area: z.array(z.string()).describe("the folders or files the task will change"),
+        area: z.array(z.string()).describe("the folders or files the task will change, relative to the checkout root or absolute; \".\" is the whole repository"),
         adds: z.array(z.string()).optional().describe("names of shared helpers the task plans to add"),
         depends_on: z.array(z.union([z.number().int(), z.string()])).optional().describe('task ids, or "#2" for the second task in this batch'),
         group: z.string().optional().describe("tasks in one group are one piece of work and never overlap each other"),

@@ -4003,10 +4003,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep: sep4, value } = collItem;
+        const { start, key, sep: sep5, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep4?.[0],
+          next: key ?? sep5?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4020,7 +4020,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep4) {
+          if (!keyProps.anchor && !keyProps.tag && !sep5) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map2.comment)
@@ -4044,7 +4044,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map2.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep4 ?? [], {
+        const valueProps = resolveProps.resolveProps(sep5 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4060,7 +4060,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep4, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep5, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4151,7 +4151,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep4 = "";
+        let sep5 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4165,13 +4165,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep4 + cb;
-              sep4 = "";
+                comment += sep5 + cb;
+              sep5 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep4 += source;
+                sep5 += source;
               hasSpace = true;
               break;
             default:
@@ -4214,18 +4214,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep: sep4, value } = collItem;
+        const { start, key, sep: sep5, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep4?.[0],
+          next: key ?? sep5?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep4 && !value) {
+          if (!props.anchor && !props.tag && !sep5 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4279,8 +4279,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep4 && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep4, null, props, onError);
+        if (!isMap && !sep5 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep5, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4292,7 +4292,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep4 ?? [], {
+          const valueProps = resolveProps.resolveProps(sep5 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4303,8 +4303,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep4)
-                for (const st of sep4) {
+              if (sep5)
+                for (const st of sep5) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4321,7 +4321,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep4, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep5, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4501,7 +4501,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep4 = "";
+      let sep5 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines2[i][0].slice(trimIndent) + "\n";
@@ -4518,24 +4518,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep4 + indent.slice(trimIndent) + content;
-          sep4 = "\n";
+          value += sep5 + indent.slice(trimIndent) + content;
+          sep5 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep4 === " ")
-            sep4 = "\n";
-          else if (!prevMoreIndented && sep4 === "\n")
-            sep4 = "\n\n";
-          value += sep4 + indent.slice(trimIndent) + content;
-          sep4 = "\n";
+          if (sep5 === " ")
+            sep5 = "\n";
+          else if (!prevMoreIndented && sep5 === "\n")
+            sep5 = "\n\n";
+          value += sep5 + indent.slice(trimIndent) + content;
+          sep5 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep4 === "\n")
+          if (sep5 === "\n")
             value += "\n";
           else
-            sep4 = "\n";
+            sep5 = "\n";
         } else {
-          value += sep4 + content;
-          sep4 = " ";
+          value += sep5 + content;
+          sep5 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4718,25 +4718,25 @@ var require_resolve_flow_scalar = __commonJS({
         trimBoth = /^[ \t]+|[ \t]+$/g;
       }
       let res = match[1].replace(trimEnd, "");
-      let sep4 = " ";
+      let sep5 = " ";
       let pos = line.lastIndex;
       while (match = line.exec(source)) {
         const lm = match[1].replace(trimBoth, "");
         if (lm === "") {
-          if (sep4 === "\n")
-            res += sep4;
+          if (sep5 === "\n")
+            res += sep5;
           else
-            sep4 = "\n";
+            sep5 = "\n";
         } else {
-          res += sep4 + lm;
-          sep4 = " ";
+          res += sep5 + lm;
+          sep5 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep4 + (match?.[1] ?? "");
+      return res + sep5 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5546,14 +5546,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep: sep4, value }) {
+    function stringifyItem({ start, key, sep: sep5, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep4)
-        for (const st of sep4)
+      if (sep5)
+        for (const st of sep5)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6720,18 +6720,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep4;
+          let sep5;
           if (scalar.end) {
-            sep4 = scalar.end;
-            sep4.push(this.sourceToken);
+            sep5 = scalar.end;
+            sep5.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep4 = [this.sourceToken];
+            sep5 = [this.sourceToken];
           const map2 = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep: sep4 }]
+            items: [{ start, key: scalar, sep: sep5 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map2;
@@ -6884,15 +6884,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep4 = it.sep;
-                  sep4.push(this.sourceToken);
+                  const sep5 = it.sep;
+                  sep5.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep: sep4 }]
+                    items: [{ start: start2, key, sep: sep5 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7086,13 +7086,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep4 = fc.end.splice(1, fc.end.length);
-            sep4.push(this.sourceToken);
+            const sep5 = fc.end.splice(1, fc.end.length);
+            sep5.push(this.sourceToken);
             const map2 = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep: sep4 }]
+              items: [{ start, key: fc, sep: sep5 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map2;
@@ -10321,7 +10321,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve5.call(this, root, ref);
+      let _sch = resolve6.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -10348,7 +10348,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve5(root, ref) {
+    function resolve6(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -11212,7 +11212,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve5(baseURI, relativeURI, options) {
+    function resolve6(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -11248,50 +11248,50 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
-    function resolveComponent(base, relative4, options, skipNormalization) {
+    function resolveComponent(base, relative5, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
         base = parse5(serialize(base, options), options);
-        relative4 = parse5(serialize(relative4, options), options);
+        relative5 = parse5(serialize(relative5, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative4.scheme) {
-        target.scheme = relative4.scheme;
-        target.userinfo = relative4.userinfo;
-        target.host = relative4.host;
-        target.port = relative4.port;
-        target.path = removeDotSegments(relative4.path || "");
-        target.query = relative4.query;
+      if (!options.tolerant && relative5.scheme) {
+        target.scheme = relative5.scheme;
+        target.userinfo = relative5.userinfo;
+        target.host = relative5.host;
+        target.port = relative5.port;
+        target.path = removeDotSegments(relative5.path || "");
+        target.query = relative5.query;
       } else {
-        if (relative4.userinfo !== void 0 || relative4.host !== void 0 || relative4.port !== void 0) {
-          target.userinfo = relative4.userinfo;
-          target.host = relative4.host;
-          target.port = relative4.port;
-          target.path = removeDotSegments(relative4.path || "");
-          target.query = relative4.query;
+        if (relative5.userinfo !== void 0 || relative5.host !== void 0 || relative5.port !== void 0) {
+          target.userinfo = relative5.userinfo;
+          target.host = relative5.host;
+          target.port = relative5.port;
+          target.path = removeDotSegments(relative5.path || "");
+          target.query = relative5.query;
         } else {
-          if (!relative4.path) {
+          if (!relative5.path) {
             target.path = base.path;
-            if (relative4.query !== void 0) {
-              target.query = relative4.query;
+            if (relative5.query !== void 0) {
+              target.query = relative5.query;
             } else {
               target.query = base.query;
             }
           } else {
-            if (relative4.path[0] === "/") {
-              target.path = removeDotSegments(relative4.path);
+            if (relative5.path[0] === "/") {
+              target.path = removeDotSegments(relative5.path);
             } else {
               const baseHasAuthority = base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0;
               if (baseHasAuthority && !base.path) {
-                target.path = "/" + relative4.path;
+                target.path = "/" + relative5.path;
               } else if (!base.path) {
-                target.path = relative4.path;
+                target.path = relative5.path;
               } else {
-                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative4.path;
+                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative5.path;
               }
               target.path = base.scheme === void 0 && !baseHasAuthority && target.path[0] !== "/" ? removeDotSegmentsRelative(target.path) : removeDotSegments(target.path);
             }
-            target.query = relative4.query;
+            target.query = relative5.query;
           }
           target.userinfo = base.userinfo;
           target.host = base.host;
@@ -11299,7 +11299,7 @@ var require_fast_uri = __commonJS({
         }
         target.scheme = base.scheme;
       }
-      target.fragment = relative4.fragment;
+      target.fragment = relative5.fragment;
       return target;
     }
     function equal(uriA, uriB, options) {
@@ -11603,7 +11603,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve5,
+      resolve: resolve6,
       resolveComponent,
       equal,
       serialize,
@@ -14593,8 +14593,8 @@ var require_dist2 = __commonJS({
 });
 
 // engine/src/cli.ts
-import { readFileSync as readFileSync5, realpathSync as realpathSync4, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join9, resolve as resolve4 } from "node:path";
+import { readFileSync as readFileSync5, realpathSync as realpathSync5, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join9, resolve as resolve5 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // engine/src/engine.ts
@@ -19797,7 +19797,7 @@ var recursive = /* @__PURE__ */ new WeakMap();
 var NONE = 0;
 var ASSUMED = 1;
 var PROVEN = 2;
-function isRecursive(inst, stack, resolve5) {
+function isRecursive(inst, stack, resolve6) {
   const cached2 = recursive.get(inst);
   if (cached2 !== void 0)
     return cached2 ? PROVEN : NONE;
@@ -19807,7 +19807,7 @@ function isRecursive(inst, stack, resolve5) {
   let result = NONE;
   const check2 = (child) => {
     if (result !== PROVEN && child?._zod) {
-      const answer = isRecursive(child, stack, resolve5);
+      const answer = isRecursive(child, stack, resolve6);
       if (answer > result)
         result = answer;
     }
@@ -19818,7 +19818,7 @@ function isRecursive(inst, stack, resolve5) {
       const desc = Object.getOwnPropertyDescriptor(sh, key);
       if (spread && !desc.enumerable)
         continue;
-      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve5) : NONE;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve6) : NONE;
       if (child > answer)
         answer = child;
     }
@@ -19882,7 +19882,7 @@ function isRecursive(inst, stack, resolve5) {
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
-      const inner = def._cachedInner ?? (resolve5 ? inst._zod.innerType : void 0);
+      const inner = def._cachedInner ?? (resolve6 ? inst._zod.innerType : void 0);
       merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
     }
@@ -34626,8 +34626,8 @@ function openEngine(cwd, deps = {}) {
 }
 
 // engine/src/hooks.ts
-import { existsSync as existsSync6, realpathSync as realpathSync2 } from "node:fs";
-import { dirname as dirname2, isAbsolute, join as join7, relative as relative2, resolve, sep as sep2 } from "node:path";
+import { existsSync as existsSync7, realpathSync as realpathSync3 } from "node:fs";
+import { dirname as dirname3, isAbsolute as isAbsolute2, join as join7, relative as relative3, resolve as resolve2, sep as sep3 } from "node:path";
 
 // engine/src/context.ts
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
@@ -34682,8 +34682,12 @@ function contextRatio(transcriptPath, windowTokens) {
 }
 
 // engine/src/graph.ts
-import { appendFileSync, existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync3, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { appendFileSync, existsSync as existsSync5, mkdirSync as mkdirSync2, readFileSync as readFileSync3, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { basename, join as join6 } from "node:path";
+
+// engine/src/plan.ts
+import { existsSync as existsSync3, realpathSync as realpathSync2 } from "node:fs";
+import { dirname as dirname2, isAbsolute, relative, resolve, sep } from "node:path";
 
 // engine/src/duplicates.ts
 import { readFileSync as readFileSync2 } from "node:fs";
@@ -34934,11 +34938,25 @@ function subjectOf(e, t) {
     items: col("SELECT adds v FROM plan_items WHERE task_id = ? ORDER BY adds")
   };
 }
-var cleanPath = (p) => p.replace(/^\.\//, "").replace(/\/+$/, "");
+function realish(p) {
+  if (existsSync3(p)) return realpathSync2(p);
+  const up = dirname2(p);
+  return up === p ? p : resolve(realish(up), p.slice(up.length).replace(/^[\\/]+/, ""));
+}
+function areaPath(checkout, path) {
+  const root = realish(checkout);
+  const rel = relative(root, realish(resolve(root, path))).split(sep).join("/");
+  if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
+    throw new EngineError("POLICY_INVALID", `${path} is outside the checkout ${checkout}; give a path inside it`);
+  }
+  return rel;
+}
 function areaClash(x, y) {
-  const a = cleanPath(x);
-  const b = cleanPath(y);
-  if (a === b) return `both change ${a}`;
+  const a = x;
+  const b = y;
+  if (a === b) return `both change ${a === "" ? "the whole repository" : a}`;
+  if (a === "") return `the whole repository contains ${b}`;
+  if (b === "") return `the whole repository contains ${a}`;
   if (b.startsWith(`${a}/`)) return `${a} contains ${b}`;
   if (a.startsWith(`${b}/`)) return `${b} contains ${a}`;
   return null;
@@ -34977,9 +34995,15 @@ function isResolved(e, o) {
     "SELECT 1 FROM task_deps WHERE (task_id = ?1 AND depends_on = ?2) OR (task_id = ?2 AND depends_on = ?1)"
   ).get(o.a, o.b) !== void 0;
 }
+function claimInfo(e, task_id) {
+  const row = e.db.prepare("SELECT at, payload_json p FROM events WHERE kind = 'task_claimed' AND task_id = ? ORDER BY id DESC LIMIT 1").get(task_id);
+  if (!row) return { from: "new", stale: true };
+  const from = JSON.parse(row.p).from === "planned" ? "planned" : "new";
+  return { from, stale: e.now().getTime() - new Date(row.at).getTime() > STALE_CLAIM_MS };
+}
 function others(e, s) {
-  const rows = e.db.prepare("SELECT * FROM tasks WHERE status IN ('open','planned') ORDER BY id").all();
-  return rows.filter((t) => t.id !== s.id && !(s.group !== null && t.task_group === s.group) && t.id !== s.parent_id && !(s.id !== null && t.parent_id === s.id)).map((t) => subjectOf(e, t));
+  const rows = e.db.prepare("SELECT * FROM tasks WHERE status IN ('open','planned','starting') ORDER BY id").all();
+  return rows.filter((t) => !(t.status === "starting" && claimInfo(e, t.id).stale && claimInfo(e, t.id).from === "new")).filter((t) => t.id !== s.id && !(s.group !== null && t.task_group === s.group && t.parent_id === s.parent_id) && t.id !== s.parent_id && !(s.id !== null && t.parent_id === s.id)).map((t) => subjectOf(e, t));
 }
 function overlapsOf(e, s) {
   const raw = [...others(e, s).flatMap((o) => between(s, o)), ...existing(e, s)];
@@ -34999,16 +35023,17 @@ function planTasks(e, input2) {
   for (const t of input2.tasks) {
     if (!e.policy.task_types[t.type]) throw new EngineError("POLICY_INVALID", `unknown task type "${t.type}"`);
   }
+  const areas = input2.tasks.map((t) => t.area.map((p) => areaPath(parent.cwd, p)));
   const by = actorId(input2.actor);
   const now = e.now().toISOString();
   const ids = tx(e, () => {
     const made = [];
-    for (const t of input2.tasks) {
+    for (const [i, t] of input2.tasks.entries()) {
       const id = Number(e.db.prepare(
         "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'planned', '', ?, '', ?, ?, ?, ?)"
       ).run(t.title, t.type, t.goal, t.done_check, parent.cwd, by, now, parent.id, t.group ?? null).lastInsertRowid);
       made.push(id);
-      for (const p of t.area) e.db.prepare("INSERT OR IGNORE INTO task_areas (task_id, path) VALUES (?, ?)").run(id, cleanPath(p));
+      for (const p of areas[i]) e.db.prepare("INSERT OR IGNORE INTO task_areas (task_id, path) VALUES (?, ?)").run(id, p);
       for (const n of t.adds ?? []) e.db.prepare("INSERT OR IGNORE INTO plan_items (task_id, adds) VALUES (?, ?)").run(id, n);
     }
     input2.tasks.forEach((t, i) => {
@@ -35018,10 +35043,27 @@ function planTasks(e, input2) {
           throw new EngineError("NO_TASK", `task ${input2.tasks[i].title} depends on ${d}, which is not a task`);
         }
         if (dep === made[i]) throw new EngineError("DEPENDENCY", `task ${input2.tasks[i].title} cannot depend on itself`);
+        if (dep === parent.id) {
+          throw new EngineError("DEPENDENCY", `task ${input2.tasks[i].title} cannot depend on its own feature #${parent.id}: the feature waits for its tasks, so neither could start`);
+        }
         e.db.prepare("INSERT OR IGNORE INTO task_deps (task_id, depends_on) VALUES (?, ?)").run(made[i], dep);
       }
       logEvent(e, input2.actor, "task_planned", made[i], { title: t.title, area: t.area, adds: t.adds ?? [] });
     });
+    const next = (id) => e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ?").all(id).map((r) => r.d);
+    for (const id of made) {
+      const seen2 = /* @__PURE__ */ new Set();
+      const walk = (n, trail) => {
+        for (const d of next(n)) {
+          if (d === id) throw new EngineError("DEPENDENCY", `these tasks depend on each other in a circle: ${[...trail, n, id].map((x) => `#${x}`).join(" -> ")}`);
+          if (!seen2.has(d)) {
+            seen2.add(d);
+            walk(d, [...trail, n]);
+          }
+        }
+      };
+      walk(id, []);
+    }
     return made;
   });
   const seen = /* @__PURE__ */ new Set();
@@ -35053,27 +35095,41 @@ function withdrawTask(e, task_id, actor) {
   tx(e, () => {
     const t = getRow(e, task_id);
     if (!t) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
-    if (t.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${t.status}; only a planned task can be withdrawn`);
     if (!ownsTask(e, actor.session_id, task_id)) throw new EngineError("OWNER_ONLY", `only the CTO of task ${task_id} can withdraw it`);
-    e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(task_id);
+    if (t.status === "starting") {
+      const c = claimInfo(e, task_id);
+      if (!c.stale) throw new EngineError("TASK_CLOSED", `task #${task_id} is being started; try again when it is open`);
+      if (c.from !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is cancelled; only a planned task can be withdrawn`);
+      e.db.prepare("UPDATE tasks SET status = 'planned', cwd = (SELECT cwd FROM tasks p WHERE p.id = tasks.parent_id), branch = '' WHERE id = ? AND status = 'starting'").run(task_id);
+      logEvent(e, actor, "task_released", task_id, {});
+      return;
+    }
+    if (t.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${t.status}; only a planned task can be withdrawn`);
+    e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'planned'").run(task_id);
     logEvent(e, actor, "task_withdrawn", task_id, {});
   });
 }
 function mergedIntoMain(e, task) {
-  if (!task.branch) return false;
-  const pr = e.exec.run("gh", ["pr", "view", task.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-  if (pr.code === 0) {
-    try {
-      if (JSON.parse(pr.stdout).state === "MERGED") return true;
-    } catch {
+  const feature = task.parent_id === null ? task : getRow(e, task.parent_id);
+  if (!feature) return false;
+  const last = (kind, field) => {
+    const row = e.db.prepare("SELECT payload_json p FROM evidence WHERE task_id = ? AND kind = ? AND ok = 1 ORDER BY id DESC LIMIT 1").get(task.id, kind);
+    const v = row ? JSON.parse(row.p)[field] : void 0;
+    return typeof v === "string" ? v : null;
+  };
+  const sha = task.parent_id === null ? last("commit", "sha") : last("merged", "head");
+  if (!sha) return false;
+  if (feature.branch) {
+    const pr = e.exec.run("gh", ["pr", "view", feature.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+    if (pr.code === 0) {
+      try {
+        if (JSON.parse(pr.stdout).state === "MERGED") return true;
+      } catch {
+      }
     }
   }
-  const git2 = (args, timeoutMs = HOOK_GIT_TIMEOUT_MS) => e.exec.run("git", args, { cwd: e.cwd, timeoutMs });
-  const head = git2(["rev-parse", "--verify", "--quiet", `refs/heads/${task.branch}^{commit}`]);
-  const sha = head.stdout.trim();
-  if (head.code !== 0 || !sha || sha === task.base_sha) return false;
-  git2(["fetch", "origin", "main"], HOOK_FETCH_TIMEOUT_MS);
-  return git2(["merge-base", "--is-ancestor", sha, "refs/remotes/origin/main"]).code === 0;
+  e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  return e.exec.run("git", ["merge-base", "--is-ancestor", sha, "refs/remotes/origin/main"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
 }
 function dependencyState(e, task_id) {
   const me = getRow(e, task_id);
@@ -35082,14 +35138,17 @@ function dependencyState(e, task_id) {
   return deps.map(({ d }) => {
     const dep = getRow(e, d);
     if (!dep) return { finished: false, detail: `task #${d} does not exist` };
-    if (dep.status === "cancelled") return { finished: false, detail: `task #${d} was cancelled; withdraw this task or plan it again` };
+    if (dep.status === "starting" && !(claimInfo(e, d).stale && claimInfo(e, d).from === "new")) {
+      return { finished: false, detail: `task #${d} is being started; try again when it is open` };
+    }
+    if (dep.status === "cancelled" || dep.status === "starting") return { finished: false, detail: `task #${d} was cancelled; withdraw this task or plan it again` };
     if (me.parent_id !== null && dep.parent_id === me.parent_id) {
       const merge2 = e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'merge'").get(d);
       const finished2 = merge2?.status === "done";
       return { finished: finished2, detail: finished2 ? `task #${d} is merged into the feature` : `task #${d} (${dep.title}) is not merged into the feature yet` };
     }
     const feature = dep.parent_id === null ? dep : getRow(e, dep.parent_id) ?? dep;
-    const finished = mergedIntoMain(e, feature);
+    const finished = mergedIntoMain(e, dep);
     return { finished, detail: finished ? `task #${d} is merged into main` : `task #${d} (${dep.title}) waits for its feature #${feature.id} to merge into main` };
   });
 }
@@ -35116,7 +35175,7 @@ ${lines2.join("\n")}${hint}`);
   }
 }
 function plannedTasks(e) {
-  const rows = e.db.prepare("SELECT * FROM tasks WHERE status = 'planned' ORDER BY id").all();
+  const rows = e.db.prepare("SELECT * FROM tasks WHERE status IN ('planned','starting') ORDER BY id").all();
   return rows.map((task) => ({
     task,
     depends_on: e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ? ORDER BY depends_on").all(task.id).map((r) => r.d),
@@ -35125,7 +35184,7 @@ function plannedTasks(e) {
 }
 
 // engine/src/worktree.ts
-import { existsSync as existsSync3 } from "node:fs";
+import { existsSync as existsSync4 } from "node:fs";
 import { join as join5 } from "node:path";
 var WORKTREES_DIR = ".estack/worktrees";
 var WORKTREE_SETUP_TIMEOUT_MS = 6e5;
@@ -35157,7 +35216,7 @@ function removeWorktree(e, task) {
   };
   if (task.cwd === "") return "missing";
   if (!task.cwd.includes(`/${WORKTREES_DIR}/`)) return keep("not engine-made");
-  if (!existsSync3(task.cwd)) return "missing";
+  if (!existsSync4(task.cwd)) return "missing";
   const list = runBounded(e, e.repo.root, "git", ["worktree", "list", "--porcelain"]);
   if (list.code !== 0) return keep("could not list worktrees");
   const nested = list.stdout.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice("worktree ".length)).some((p) => p.startsWith(task.cwd + "/"));
@@ -35167,7 +35226,7 @@ function removeWorktree(e, task) {
   const rm = runBounded(e, e.repo.root, "git", ["worktree", "remove", task.cwd]);
   if (rm.code !== 0) return keep(rm.stderr.trim());
   const parent = task.parent_id === null ? void 0 : e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(task.parent_id);
-  const from = parent?.cwd && existsSync3(parent.cwd) ? parent.cwd : e.repo.root;
+  const from = parent?.cwd && existsSync4(parent.cwd) ? parent.cwd : e.repo.root;
   const br = runBounded(e, from, "git", ["branch", "-d", task.branch]);
   logEvent(e, ENGINE, "worktree_removed", task.id, { path: task.cwd, branch: task.branch, branch_deleted: br.code === 0 });
   return "removed";
@@ -35255,19 +35314,30 @@ function featureBase(e, checkout) {
   return { ref: "main", sha: m.stdout.trim() };
 }
 var HOOK_FETCH_TIMEOUT_MS = 2e4;
-var STARTING = "(starting)";
+var STALE_CLAIM_MS = WORKTREE_SETUP_TIMEOUT_MS + 3e5;
 var alreadyStarting = (id) => new EngineError("TASK_CLOSED", `task #${id} is already being started`);
-function claimPlanned(e, id) {
-  const r = e.db.prepare("UPDATE tasks SET status = 'cancelled', branch = ? WHERE id = ? AND status = 'planned'").run(STARTING, id);
+function claimPlanned(e, id, actor) {
+  const row = e.db.prepare("SELECT status FROM tasks WHERE id = ?").get(id);
+  const c = row?.status === "starting" ? claimInfo(e, id) : null;
+  if (!row || row.status !== "planned" && !(c && c.stale && c.from === "planned")) throw alreadyStarting(id);
+  const r = e.db.prepare("UPDATE tasks SET status = 'starting' WHERE id = ? AND status = ?").run(id, row.status);
   if (r.changes !== 1) throw alreadyStarting(id);
+  logEvent(e, actor, "task_claimed", id, { from: "planned" });
 }
 function startTask(e, input2) {
   let planned;
   if (input2.task_id !== void 0) {
     planned = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input2.task_id);
     if (!planned) throw new EngineError("NO_TASK", `no task with id ${input2.task_id}`);
-    if (planned.status === "cancelled" && planned.branch === STARTING) throw alreadyStarting(planned.id);
-    if (planned.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${planned.id} is ${planned.status}, not planned`);
+    if (planned.status === "starting") {
+      const c = claimInfo(e, planned.id);
+      if (!(c.stale && c.from === "planned")) throw alreadyStarting(planned.id);
+    } else if (planned.status !== "planned") {
+      throw new EngineError("TASK_CLOSED", `task ${planned.id} is ${planned.status}, not planned`);
+    }
+    if (!ownsTask(e, input2.actor.session_id, planned.id)) {
+      throw new EngineError("OWNER_ONLY", `task #${planned.id} belongs to another CTO; only the CTO who planned it can start it`);
+    }
   }
   const field = (name2) => {
     const v = planned ? planned[name2] : input2[name2];
@@ -35282,8 +35352,6 @@ function startTask(e, input2) {
   const group = planned ? planned.task_group : input2.group ?? null;
   const typeSteps = e.policy.task_types[type];
   if (!typeSteps) throw new EngineError("POLICY_INVALID", `unknown task type "${type}"`);
-  if (planned) gateStart(e, input2.actor, { planned });
-  else if (input2.area && input2.area.length > 0) gateStart(e, input2.actor, { fresh: { parent_id: parentId, group, areas: input2.area } });
   if (input2.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input2.branch}`);
   let parent = null;
   if (parentId !== null && input2.worktree) {
@@ -35294,6 +35362,12 @@ function startTask(e, input2) {
   const top = runBounded(e, input2.cwd ?? e.cwd, "git", ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0) throw new EngineError("NOT_A_REPO", `not a git repository: ${input2.cwd ?? e.cwd}`);
   const checkout = top.stdout.trim();
+  const areas = (input2.area ?? []).map((p) => areaPath(checkout, p));
+  const gate = () => {
+    if (planned) gateStart(e, input2.actor, { planned });
+    else if (areas.length > 0) gateStart(e, input2.actor, { fresh: { parent_id: parentId, group, areas } });
+  };
+  gate();
   const by = actorId(input2.actor);
   const now = iso(e);
   if (!input2.worktree) {
@@ -35308,13 +35382,14 @@ function startTask(e, input2) {
       let id2;
       if (planned) {
         id2 = planned.id;
-        const r = e.db.prepare("UPDATE tasks SET status = 'open', branch = ?, cwd = ?, base_sha = ? WHERE id = ? AND status = 'planned'").run(branch2, checkout, base_sha, id2);
-        if (r.changes !== 1) throw alreadyStarting(id2);
+        claimPlanned(e, id2, input2.actor);
+        e.db.prepare("UPDATE tasks SET status = 'open', branch = ?, cwd = ?, base_sha = ? WHERE id = ? AND status = 'starting'").run(branch2, checkout, base_sha, id2);
       } else {
+        gate();
         id2 = Number(e.db.prepare(
           "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)"
         ).run(title, type, goal, done_check, branch2, checkout, base_sha, by, now, parentId, group).lastInsertRowid);
-        insertAreas(e, id2, input2.area);
+        insertAreas(e, id2, areas);
       }
       insertSteps(e, id2, typeSteps);
       insertBinding(e, id2, input2.actor);
@@ -35327,15 +35402,19 @@ function startTask(e, input2) {
     if (h.code !== 0) throw new EngineError("POLICY_INVALID", `no such branch: "${parent.branch}"`);
     return { ref: parent.branch, sha: h.stdout.trim() };
   })() : featureBase(e, checkout);
-  let id;
-  if (planned) {
-    id = planned.id;
-  } else {
-    id = Number(e.db.prepare(
-      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'cancelled', '', '', ?, ?, ?, ?, ?)"
+  const id = tx(e, () => {
+    if (planned) {
+      claimPlanned(e, planned.id, input2.actor);
+      return planned.id;
+    }
+    gate();
+    const made = Number(e.db.prepare(
+      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'starting', '', '', ?, ?, ?, ?, ?)"
     ).run(title, type, goal, done_check, from.sha, by, now, parentId, group).lastInsertRowid);
-  }
-  if (planned) tx(e, () => claimPlanned(e, id));
+    insertAreas(e, made, areas);
+    logEvent(e, input2.actor, "task_claimed", made, { from: "new" });
+    return made;
+  });
   const name = `${id}-${slug(title)}`;
   const branch = `${parent ? "task" : "feat"}/${name}`;
   try {
@@ -35346,15 +35425,15 @@ function startTask(e, input2) {
     if (setup && !setup.ok) logEvent(e, input2.actor, "worktree_setup_failed", id, { output_tail: setup.output_tail });
     const base_sha = runBounded(e, path, "git", ["rev-parse", "HEAD"]).stdout.trim() || from.sha;
     return tx(e, () => {
-      e.db.prepare("UPDATE tasks SET status = 'open', cwd = ?, branch = ?, base_sha = ? WHERE id = ?").run(path, branch, base_sha, id);
-      if (!planned) insertAreas(e, id, input2.area);
+      const r = e.db.prepare("UPDATE tasks SET status = 'open', cwd = ?, branch = ?, base_sha = ? WHERE id = ? AND status = 'starting'").run(path, branch, base_sha, id);
+      if (r.changes !== 1) throw new EngineError("TASK_CLOSED", `task #${id} was released while it was starting`);
       insertSteps(e, id, parent ? workerSteps(typeSteps) : typeSteps);
       insertBinding(e, id, input2.actor);
       logEvent(e, input2.actor, "task_started", id, { type, title, branch });
       return { ...view(e, id), worktree_path: path, ...setup ? { setup } : {} };
     });
   } catch (x) {
-    e.db.prepare("UPDATE tasks SET status = ?, cwd = '', branch = '' WHERE id = ? AND status <> 'open'").run(planned ? "planned" : "cancelled", id);
+    e.db.prepare("UPDATE tasks SET status = ?, cwd = '', branch = '' WHERE id = ? AND status = 'starting'").run(planned ? "planned" : "cancelled", id);
     logEvent(e, input2.actor, "worktree_failed", id, { error: x instanceof Error ? x.message : String(x) });
     throw x;
   }
@@ -35524,7 +35603,7 @@ function appendExclude(e, checkout, wanted) {
   const info = join6(r.stdout.trim(), "info");
   const file2 = join6(info, "exclude");
   mkdirSync2(info, { recursive: true });
-  const have = existsSync4(file2) ? readFileSync3(file2, "utf8") : "";
+  const have = existsSync5(file2) ? readFileSync3(file2, "utf8") : "";
   const present = new Set(have.split("\n"));
   const missing = wanted.filter((l) => !present.has(l));
   if (missing.length) appendFileSync(file2, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
@@ -35944,8 +36023,8 @@ function consumeHandover(e, actor, sel = {}, cwd) {
 }
 
 // engine/src/mapfirst.ts
-import { existsSync as existsSync5, statSync as statSync2 } from "node:fs";
-import { relative, sep } from "node:path";
+import { existsSync as existsSync6, statSync as statSync2 } from "node:fs";
+import { relative as relative2, sep as sep2 } from "node:path";
 var READ_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep"]);
 function preRead(e, ev) {
   try {
@@ -35959,7 +36038,7 @@ function preRead(e, ev) {
     const raw = isRead ? input2.file_path : input2.path ?? ev.cwd;
     if (typeof raw !== "string" || raw === "") return null;
     const abs = resolveReal(ev.cwd, raw);
-    const top = runBounded(e, existsSync5(abs) && statSync2(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
+    const top = runBounded(e, existsSync6(abs) && statSync2(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
     if (top.code !== 0) return null;
     const checkout = top.stdout.trim();
     if (workerSession) {
@@ -35979,7 +36058,7 @@ function preRead(e, ev) {
     if (!task) return null;
     const mapped = mappedFiles(checkout);
     if (!mapped) return null;
-    const rel = relative(checkout, abs).split(sep).join("/") || ".";
+    const rel = relative2(checkout, abs).split(sep2).join("/") || ".";
     if (isRead && !mapped.has(rel)) return null;
     const by = actorId(actorOf(ev));
     const searched = e.db.prepare(
@@ -36029,21 +36108,21 @@ function consumeOverride(e, action, ref) {
   });
 }
 function resolveReal(cwd, p) {
-  const abs = resolve(cwd, p);
+  const abs = resolve2(cwd, p);
   let d = abs;
   const rest = [];
-  while (!existsSync6(d)) {
-    const up = dirname2(d);
+  while (!existsSync7(d)) {
+    const up = dirname3(d);
     if (up === d) return abs;
     rest.unshift(d.slice(up.length + 1));
     d = up;
   }
-  return join7(realpathSync2(d), ...rest);
+  return join7(realpathSync3(d), ...rest);
 }
 function nearestDir(p) {
-  let d = dirname2(p);
-  while (!existsSync6(d)) {
-    const up = dirname2(d);
+  let d = dirname3(p);
+  while (!existsSync7(d)) {
+    const up = dirname3(d);
     if (up === d) break;
     d = up;
   }
@@ -36063,22 +36142,22 @@ function preEdit(e, ev) {
   const commonDir = common.stdout.trim();
   let commonReal;
   try {
-    commonReal = realpathSync2(commonDir);
+    commonReal = realpathSync3(commonDir);
   } catch {
     return null;
   }
-  if (realpathSync2(dirname2(commonReal)) !== e.repo.root) return null;
+  if (realpathSync3(dirname3(commonReal)) !== e.repo.root) return null;
   const top = runBounded(e, dir, "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
   if (top.code !== 0) {
     if (top.code === 128 && /work ?tree/i.test(top.stderr)) {
-      const inGit = abs === commonReal || abs.startsWith(commonReal + sep2);
-      return inGit ? deny(`${relative2(e.repo.root, abs).split(sep2).join("/")} is protected (git directory)`) : null;
+      const inGit = abs === commonReal || abs.startsWith(commonReal + sep3);
+      return inGit ? deny(`${relative3(e.repo.root, abs).split(sep3).join("/")} is protected (git directory)`) : null;
     }
     throw new EngineError("NOT_A_REPO", `git failed while checking ${raw}: ${top.stderr.trim() || `exit ${top.code}`}`);
   }
   const worktree = top.stdout.trim();
-  const rel = relative2(worktree, abs).split(sep2).join("/");
-  if (rel.startsWith("..") || isAbsolute(rel)) return null;
+  const rel = relative3(worktree, abs).split(sep3).join("/");
+  if (rel.startsWith("..") || isAbsolute2(rel)) return null;
   if (rel === ".git" || rel.startsWith(".git/")) return deny(`${rel} is protected (git directory)`);
   if (isProtected(rel, e.policy)) return deny(`${rel} is protected by .estack/policy.yaml`);
   if (isExempt(rel, e.policy)) return null;
@@ -36103,7 +36182,7 @@ function pushedBranch(e, cwd, command) {
     const at = words.indexOf("push");
     if (git2 < 0 || at < git2) continue;
     const c = words.indexOf("-C");
-    const dir = c >= 0 && c < at && words[c + 1] ? resolve(cwd, words[c + 1]) : cwd;
+    const dir = c >= 0 && c < at && words[c + 1] ? resolve2(cwd, words[c + 1]) : cwd;
     const args = [];
     let skip = false;
     for (const w of words.slice(at + 1)) {
@@ -43913,7 +43992,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
+        await new Promise((resolve6) => setTimeout(resolve6, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error62) {
@@ -43930,7 +44009,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve6, reject) => {
       const earlyReject = (error62) => {
         reject(error62);
       };
@@ -44008,7 +44087,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve5(parseResult.data);
+            resolve6(parseResult.data);
           }
         } catch (error62) {
           reject(error62);
@@ -44270,12 +44349,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve6, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve5, interval);
+      const timeoutId = setTimeout(resolve6, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -45415,7 +45494,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
+      await new Promise((resolve6) => setTimeout(resolve6, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -46079,20 +46158,20 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve5) => {
+    return new Promise((resolve6) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve5();
+        resolve6();
       } else {
-        this._stdout.once("drain", resolve5);
+        this._stdout.once("drain", resolve6);
       }
     });
   }
 };
 
 // engine/src/codemap.ts
-import { existsSync as existsSync7, realpathSync as realpathSync3 } from "node:fs";
-import { isAbsolute as isAbsolute2, relative as relative3, resolve as resolve2, sep as sep3 } from "node:path";
+import { existsSync as existsSync8, realpathSync as realpathSync4 } from "node:fs";
+import { isAbsolute as isAbsolute3, relative as relative4, resolve as resolve3, sep as sep4 } from "node:path";
 var MAX_LIST = 40;
 var MAX_MATCHES = 15;
 var USES = /* @__PURE__ */ new Set(["calls", "indirect_call", "imports", "imports_from", "inherits", "references"]);
@@ -46104,11 +46183,11 @@ function capped(hits, key, more) {
   if (hits.length > MAX_LIST) more[key] = hits.length - MAX_LIST;
   return hits.slice(0, MAX_LIST);
 }
-var real = (p) => existsSync7(p) ? realpathSync3(p) : p;
+var real = (p) => existsSync8(p) ? realpathSync4(p) : p;
 function mapPath(g, path) {
   const root = real(g.checkout);
-  const rel = relative3(root, real(resolve2(root, path))).split(sep3).join("/");
-  if (rel === ".." || rel.startsWith("../") || isAbsolute2(rel)) {
+  const rel = relative4(root, real(resolve3(root, path))).split(sep4).join("/");
+  if (rel === ".." || rel.startsWith("../") || isAbsolute3(rel)) {
     throw new EngineError("BAD_EVIDENCE", `${path} is outside the checkout ${g.checkout} that this map is for; give a path inside it`);
   }
   return rel;
@@ -46321,7 +46400,7 @@ function createServer(cwd, deps = {}) {
       goal: external_exports.string().optional(),
       done_check: external_exports.string().optional(),
       branch: external_exports.string().optional(),
-      area: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).optional().describe("the folders or files you will change; with the code map on, the first one's context is returned"),
+      area: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).optional().describe("the folders or files you will change, relative to the checkout root or absolute; with the code map on, the first one's context is returned"),
       worktree: external_exports.boolean().optional().describe("make the task its own branch and git worktree (a feature, or a worker when parent_task_id is given)"),
       parent_task_id: external_exports.number().int().optional().describe("the feature this task is a worker of"),
       group: external_exports.string().optional(),
@@ -46372,7 +46451,7 @@ function createServer(cwd, deps = {}) {
         type: external_exports.string(),
         goal: external_exports.string(),
         done_check: external_exports.string(),
-        area: external_exports.array(external_exports.string()).describe("the folders or files the task will change"),
+        area: external_exports.array(external_exports.string()).describe('the folders or files the task will change, relative to the checkout root or absolute; "." is the whole repository'),
         adds: external_exports.array(external_exports.string()).optional().describe("names of shared helpers the task plans to add"),
         depends_on: external_exports.array(external_exports.union([external_exports.number().int(), external_exports.string()])).optional().describe('task ids, or "#2" for the second task in this batch'),
         group: external_exports.string().optional().describe("tasks in one group are one piece of work and never overlap each other")
@@ -46508,8 +46587,8 @@ function recordOverride(e, input2, env) {
 
 // engine/src/githooks.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { chmodSync, existsSync as existsSync8, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join8, resolve as resolve3 } from "node:path";
+import { chmodSync, existsSync as existsSync9, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join8, resolve as resolve4 } from "node:path";
 var MANAGED_MARK = "# estack-managed-hook";
 var MAP_HOOKS = ["post-commit", "post-checkout", "post-merge", "post-rewrite"];
 var HOOKS = ["pre-commit", "pre-push", ...MAP_HOOKS];
@@ -46566,14 +46645,14 @@ function installGitHooks(repoRoot, enginePath) {
   const hp = cfg.status === 0 ? cfg.stdout.trim() : "";
   if (hp) return { installed: [], chained: [], skipped: `core.hooksPath is set (${hp})` };
   const r = runGit(repoRoot, ["rev-parse", "--git-path", "hooks"]);
-  const dir = resolve3(repoRoot, r);
+  const dir = resolve4(repoRoot, r);
   mkdirSync3(dir, { recursive: true });
   const installed = [], chained = [];
   for (const name of HOOKS) {
     const p = join8(dir, name);
-    if (existsSync8(p) && !readFileSync4(p, "utf8").includes(MANAGED_MARK)) {
+    if (existsSync9(p) && !readFileSync4(p, "utf8").includes(MANAGED_MARK)) {
       let dest = `${p}.estack-prev`;
-      for (let n = 2; existsSync8(dest); n++) dest = `${p}.estack-prev.${n}`;
+      for (let n = 2; existsSync9(dest); n++) dest = `${p}.estack-prev.${n}`;
       renameSync2(p, dest);
       chained.push(name);
     }
@@ -46675,7 +46754,7 @@ function status(e, json2, out) {
 `);
   }
   for (const p of planned) {
-    out(`#${p.task.id} [planned] ${p.task.title} (under #${p.task.parent_id})
+    out(`#${p.task.id} [${p.task.status}] ${p.task.title} (under #${p.task.parent_id})
 `);
     if (p.depends_on.length > 0) out(`  depends on: ${p.depends_on.map((d) => `#${d}`).join(", ")}
 `);
@@ -46765,7 +46844,7 @@ function dispatch(cmd, rest, io) {
       io.out(created.length ? created.map((f) => `created ${f}`).join("\n") + "\n" : "already initialised\n");
       if (!fresh && (opt["code-map"] !== void 0 || opt.exclude !== void 0)) io.out(NOT_APPLIED);
       const entry2 = process.argv[1];
-      const enginePath = opt.engine !== void 0 ? resolve4(io.cwd, opt.engine) : entry2 && /estack\.mjs$/.test(entry2) ? realpathSync4(entry2) : null;
+      const enginePath = opt.engine !== void 0 ? resolve5(io.cwd, opt.engine) : entry2 && /estack\.mjs$/.test(entry2) ? realpathSync5(entry2) : null;
       if (enginePath === null) io.out("git hooks not installed: engine path unknown\n");
       else {
         const h = installGitHooks(findRepo(io.cwd).root, enginePath);
@@ -46967,7 +47046,7 @@ ${USAGE}`);
   }
 }
 var entry = process.argv[1];
-if (entry && realpathSync4(entry) === realpathSync4(fileURLToPath(import.meta.url))) {
+if (entry && realpathSync5(entry) === realpathSync5(fileURLToPath(import.meta.url))) {
   process.exitCode = main(process.argv.slice(2), {
     cwd: process.cwd(),
     env: process.env,

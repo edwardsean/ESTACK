@@ -83,7 +83,7 @@ function status(e: Engine, json: boolean, out: (s: string) => void): void {
     out(`  next: ${t.next?.name ?? "none"}\n`);
   }
   for (const p of planned) {
-    out(`#${p.task.id} [planned] ${p.task.title} (under #${p.task.parent_id})\n`);
+    out(`#${p.task.id} [${p.task.status}] ${p.task.title} (under #${p.task.parent_id})\n`);
     if (p.depends_on.length > 0) out(`  depends on: ${p.depends_on.map((d) => `#${d}`).join(", ")}\n`);
     for (const o of p.overlaps) out(`  overlap (${o.kind}): ${o.kind === "exists" ? o.detail : `#${o.a} and #${o.b}, ${o.detail}`}\n`);
   }

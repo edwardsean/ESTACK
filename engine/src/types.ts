@@ -10,7 +10,7 @@ export class EngineError extends Error {
   }
 }
 
-export type TaskStatus = "planned" | "open" | "done" | "cancelled";
+export type TaskStatus = "planned" | "starting" | "open" | "done" | "cancelled";
 export type StepStatus = "pending" | "in_progress" | "done" | "skipped";
 export type EvidenceKind = "command" | "commit" | "pr" | "review" | "note" | "merged";
 

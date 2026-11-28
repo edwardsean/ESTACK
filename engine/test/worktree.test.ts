@@ -25,6 +25,7 @@ function setup(setupCmd?: string) {
 }
 const feature = (e: Engine, dir: string, title = "Add invoice totals") =>
   startTask(e, { title, type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, worktree: true });
+const own = (e: Engine, id: number) => e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, 's1', NULL, 'cto', 'now')").run(id);
 const code = (fn: () => unknown) => { try { fn(); } catch (x) { return (x as EngineError).code; } throw new Error("did not throw"); };
 
 describe("worktrees", () => {
@@ -46,7 +47,7 @@ describe("worktrees", () => {
     expect(v.worktree_path).toBe(v.task.cwd);
     expect(v.steps.map((s) => s.name)).toEqual(["plan", "reuse_check", "implement", "test", "verify", "review", "pr"]);
     expect(e.db.prepare("SELECT role FROM task_bindings WHERE task_id = ?").get(id)).toEqual({ role: "cto" });
-    expect(e.db.prepare("SELECT kind FROM events WHERE task_id = ? ORDER BY id").all(id).map((r) => r.kind)).toEqual(["worktree_created", "task_started"]);
+    expect(e.db.prepare("SELECT kind FROM events WHERE task_id = ? ORDER BY id").all(id).map((r) => r.kind)).toEqual(["task_claimed", "worktree_created", "task_started"]);
   });
 
   test("a feature branches from origin/main when an origin exists", () => {
@@ -158,6 +159,7 @@ describe("worktrees", () => {
       "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES ('Planned one', 'feature', 'g', 'd', ?, '', '', '', 's1/main', 'now')",
     ).run(status).lastInsertRowid);
     const planned = ins("planned");
+    own(e, planned);
     const v = startTask(e, { title: "x", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, worktree: true, task_id: planned });
     expect(v.task).toMatchObject({ id: planned, status: "open", title: "Planned one", branch: `feat/${planned}-planned-one` });
     expect(v.steps).toHaveLength(7);
@@ -170,6 +172,7 @@ describe("worktrees", () => {
     const id = Number(e.db.prepare(
       "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES ('Only id', 'feature', 'g', 'd', 'planned', '', '', '', 's1/main', 'now')",
     ).run().lastInsertRowid);
+    own(e, id);
     const v = startTask(e, { actor: cto, cwd: dir, worktree: true, task_id: id });
     expect(v.task).toMatchObject({ id, status: "open", title: "Only id", branch: `feat/${id}-only-id` });
     expect(code(() => startTask(e, { actor: cto, cwd: dir, title: "t" }))).toBe("POLICY_INVALID");
@@ -269,6 +272,7 @@ describe("worktrees", () => {
     const id = Number(e.db.prepare(
       "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES ('P', 'feature', 'g', 'd', 'planned', '', '', '', 's1/main', 'now')",
     ).run().lastInsertRowid);
+    own(e, id);
     const v = startTask(e, { actor: cto, cwd: dir, worktree: true, task_id: id, parent_task_id: f.task.id, group: "x" });
     expect(v.task).toMatchObject({ parent_id: null, task_group: null });
     expect(v.task.branch).toBe(`feat/${id}-p`);

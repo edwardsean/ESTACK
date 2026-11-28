@@ -1,7 +1,7 @@
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
-import { gateStart } from "./plan";
-import { createWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
+import { areaPath, claimInfo, gateStart } from "./plan";
+import { WORKTREE_SETUP_TIMEOUT_MS, createWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
 import {
   EngineError, STEP_EVIDENCE, actorId,
   type Actor, type Evidence, type EvidenceKind, type Step, type Task,
@@ -134,14 +134,21 @@ function featureBase(e: Engine, checkout: string): { ref: string; sha: string } 
 
 export const HOOK_FETCH_TIMEOUT_MS = 20_000;
 
-/** Branch marker of a planned task a start_task call has claimed (status cancelled until it opens or fails back to planned). */
-const STARTING = "(starting)";
+/** A `starting` row older than this has lost its starter (the setup command's limit plus five minutes). */
+export const STALE_CLAIM_MS = WORKTREE_SETUP_TIMEOUT_MS + 300_000;
 const alreadyStarting = (id: number) => new EngineError("TASK_CLOSED", `task #${id} is already being started`);
 
-/** Claim a planned task for this call in one statement; a second caller finds it gone. */
-function claimPlanned(e: Engine, id: number): void {
-  const r = e.db.prepare("UPDATE tasks SET status = 'cancelled', branch = ? WHERE id = ? AND status = 'planned'").run(STARTING, id);
+/**
+ * Claim a planned task (or one whose earlier claim went stale) for this call. Runs inside the caller's write transaction,
+ * so a second caller finds the row taken. Status `starting` opens nothing: every gate still asks for `open`.
+ */
+function claimPlanned(e: Engine, id: number, actor: Actor): void {
+  const row = e.db.prepare("SELECT status FROM tasks WHERE id = ?").get(id) as { status: string } | undefined;
+  const c = row?.status === "starting" ? claimInfo(e, id) : null;
+  if (!row || (row.status !== "planned" && !(c && c.stale && c.from === "planned"))) throw alreadyStarting(id);
+  const r = e.db.prepare("UPDATE tasks SET status = 'starting' WHERE id = ? AND status = ?").run(id, row.status);
   if (r.changes !== 1) throw alreadyStarting(id);
+  logEvent(e, actor, "task_claimed", id, { from: "planned" });
 }
 
 export function startTask(e: Engine, input: {
@@ -153,8 +160,16 @@ export function startTask(e: Engine, input: {
   if (input.task_id !== undefined) {
     planned = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input.task_id) as unknown as Task | undefined;
     if (!planned) throw new EngineError("NO_TASK", `no task with id ${input.task_id}`);
-    if (planned.status === "cancelled" && planned.branch === STARTING) throw alreadyStarting(planned.id);
-    if (planned.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${planned.id} is ${planned.status}, not planned`);
+    if (planned.status === "starting") {
+      const c = claimInfo(e, planned.id);
+      if (!(c.stale && c.from === "planned")) throw alreadyStarting(planned.id);
+    } else if (planned.status !== "planned") {
+      throw new EngineError("TASK_CLOSED", `task ${planned.id} is ${planned.status}, not planned`);
+    }
+    // Starting a planned task makes the caller its CTO, so only its CTO may.
+    if (!ownsTask(e, input.actor.session_id, planned.id)) {
+      throw new EngineError("OWNER_ONLY", `task #${planned.id} belongs to another CTO; only the CTO who planned it can start it`);
+    }
   }
   const field = (name: "title" | "type" | "goal" | "done_check"): string => {
     const v = planned ? planned[name] : input[name];
@@ -170,9 +185,6 @@ export function startTask(e: Engine, input: {
   const group = planned ? planned.task_group : input.group ?? null;
   const typeSteps = e.policy.task_types[type];
   if (!typeSteps) throw new EngineError("POLICY_INVALID", `unknown task type "${type}"`);
-  // Overlaps are checked for a planned task and for any task started with an area; a planned task also waits for its dependencies.
-  if (planned) gateStart(e, input.actor, { planned });
-  else if (input.area && input.area.length > 0) gateStart(e, input.actor, { fresh: { parent_id: parentId, group, areas: input.area } });
   if (input.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input.branch}`);
   let parent: Task | null = null;
   if (parentId !== null && input.worktree) {
@@ -184,6 +196,13 @@ export function startTask(e: Engine, input: {
   const top = runBounded(e, input.cwd ?? e.cwd, "git", ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0) throw new EngineError("NOT_A_REPO", `not a git repository: ${input.cwd ?? e.cwd}`);
   const checkout = top.stdout.trim();
+  // Overlaps are checked for a planned task and for any task started with an area; a planned task also waits for its dependencies.
+  const areas = (input.area ?? []).map((p) => areaPath(checkout, p));
+  const gate = () => {
+    if (planned) gateStart(e, input.actor, { planned });
+    else if (areas.length > 0) gateStart(e, input.actor, { fresh: { parent_id: parentId, group, areas } });
+  };
+  gate();
   const by = actorId(input.actor);
   const now = iso(e);
 
@@ -199,13 +218,14 @@ export function startTask(e: Engine, input: {
       let id: number;
       if (planned) {
         id = planned.id;
-        const r = e.db.prepare("UPDATE tasks SET status = 'open', branch = ?, cwd = ?, base_sha = ? WHERE id = ? AND status = 'planned'").run(branch, checkout, base_sha, id);
-        if (r.changes !== 1) throw alreadyStarting(id);
+        claimPlanned(e, id, input.actor);
+        e.db.prepare("UPDATE tasks SET status = 'open', branch = ?, cwd = ?, base_sha = ? WHERE id = ? AND status = 'starting'").run(branch, checkout, base_sha, id);
       } else {
+        gate(); // again under the write lock, so two overlapping starts cannot both pass
         id = Number(e.db.prepare(
           "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)",
         ).run(title, type, goal, done_check, branch, checkout, base_sha, by, now, parentId, group).lastInsertRowid);
-        insertAreas(e, id, input.area);
+        insertAreas(e, id, areas);
       }
       insertSteps(e, id, typeSteps);
       insertBinding(e, id, input.actor);
@@ -224,16 +244,21 @@ export function startTask(e: Engine, input: {
     : featureBase(e, checkout);
   // Insert first (the id names the branch and folder), then build the worktree outside any transaction.
   // Until the final transaction the row is not open and has no cwd, so no commit gate sees a half-made task.
-  let id: number;
-  if (planned) {
-    id = planned.id;
-  } else {
-    id = Number(e.db.prepare(
-      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'cancelled', '', '', ?, ?, ?, ?, ?)",
+  // The row is `starting` from here to the final transaction: it opens nothing, but other starts and dependents see it.
+  // A planned task is claimed before any git work, so two simultaneous calls cannot both promote it.
+  const id = tx(e, () => {
+    if (planned) {
+      claimPlanned(e, planned.id, input.actor);
+      return planned.id;
+    }
+    gate(); // again under the write lock, so two overlapping starts cannot both pass
+    const made = Number(e.db.prepare(
+      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'starting', '', '', ?, ?, ?, ?, ?)",
     ).run(title, type, goal, done_check, from.sha, by, now, parentId, group).lastInsertRowid);
-  }
-  // Claim a planned task before any git work, so two simultaneous calls cannot both promote it.
-  if (planned) tx(e, () => claimPlanned(e, id));
+    insertAreas(e, made, areas);
+    logEvent(e, input.actor, "task_claimed", made, { from: "new" });
+    return made;
+  });
   const name = `${id}-${slug(title)}`;
   const branch = `${parent ? "task" : "feat"}/${name}`;
   try {
@@ -245,8 +270,8 @@ export function startTask(e: Engine, input: {
     if (setup && !setup.ok) logEvent(e, input.actor, "worktree_setup_failed", id, { output_tail: setup.output_tail });
     const base_sha = runBounded(e, path, "git", ["rev-parse", "HEAD"]).stdout.trim() || from.sha;
     return tx(e, () => {
-      e.db.prepare("UPDATE tasks SET status = 'open', cwd = ?, branch = ?, base_sha = ? WHERE id = ?").run(path, branch, base_sha, id);
-      if (!planned) insertAreas(e, id, input.area);
+      const r = e.db.prepare("UPDATE tasks SET status = 'open', cwd = ?, branch = ?, base_sha = ? WHERE id = ? AND status = 'starting'").run(path, branch, base_sha, id);
+      if (r.changes !== 1) throw new EngineError("TASK_CLOSED", `task #${id} was released while it was starting`);
       insertSteps(e, id, parent ? workerSteps(typeSteps) : typeSteps);
       insertBinding(e, id, input.actor);
       logEvent(e, input.actor, "task_started", id, { type, title, branch });
@@ -254,8 +279,8 @@ export function startTask(e: Engine, input: {
     });
   } catch (x) {
     // A new task stays cancelled; a planned one stays planned. No open task remains. A worktree already made is kept.
-    // Never touch a task another process has opened in the meantime.
-    e.db.prepare("UPDATE tasks SET status = ?, cwd = '', branch = '' WHERE id = ? AND status <> 'open'").run(planned ? "planned" : "cancelled", id);
+    // Only the row this call claimed: never a task another process has opened or released in the meantime.
+    e.db.prepare("UPDATE tasks SET status = ?, cwd = '', branch = '' WHERE id = ? AND status = 'starting'").run(planned ? "planned" : "cancelled", id);
     logEvent(e, input.actor, "worktree_failed", id, { error: x instanceof Error ? x.message : String(x) });
     throw x;
   }
