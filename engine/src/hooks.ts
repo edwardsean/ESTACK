@@ -143,10 +143,13 @@ function pushedBranch(e: Engine, cwd: string, command: string): { branch: string
   const current = (dir: string) =>
     runBounded(e, dir, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
   let here = cwd;
+  let previous = cwd;   // what `cd -` returns to: the directory before the last cd, the event's cwd when there was none
   for (const segment of command.split(/[;&|\n]+/)) {
     const words = (segment.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^(["'])(.*)\1$/, "$2"));
-    if (words[0] === "cd" && words[1] !== undefined && words[1] !== "-") {
-      here = resolve(here, words[1]);
+    if (words[0] === "cd" && words[1] !== undefined) {
+      const next = words[1] === "-" ? previous : resolve(here, words[1]);
+      previous = here;
+      here = next;
       continue;
     }
     const gh = words.findIndex((w) => /(^|\/)gh$/.test(w));
@@ -175,8 +178,9 @@ function pushedBranch(e: Engine, cwd: string, command: string): { branch: string
     }
     const ref = args[1];
     if (ref !== undefined && ref !== "HEAD") {
-      const dst = ref.replace(/^\+/, "").split(":").at(-1)!.replace(/^refs\/heads\//, "");
-      if (dst !== "" && dst !== "HEAD") return { branch: dst, pr: false };
+      // pre-push checks the local branch being pushed, so the source side of `src:dst`; an empty source (a delete) names none.
+      const src = ref.replace(/^\+/, "").split(":")[0].replace(/^refs\/heads\//, "");
+      if (src !== "" && src !== "HEAD") return { branch: src, pr: false };
     }
     return { branch: current(dir), pr: false };
   }

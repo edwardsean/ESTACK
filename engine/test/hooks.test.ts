@@ -788,13 +788,15 @@ describe("workers and the push check", () => {
     e.db.prepare("UPDATE steps SET status='done' WHERE task_id=? AND name='verify'").run(t.task.id);
     e.db.close();
     expect(decision(bash(dir, "git push origin feat/x"))).toBe("ask");
-    expect(decision(bash(dir, "git push -u origin HEAD:refs/heads/feat/x"))).toBe("ask");
+    // HEAD is the source, so it is the current branch (main here) that pre-push will see.
+    expect(decision(bash(dir, "git push -u origin HEAD:refs/heads/feat/x"))).toBe("deny");
     expect(decision(bash(dir, "git push origin +refs/heads/feat/x"))).toBe("ask");
     const r = bash(dir, "git push origin main");
     expect(decision(r)).toBe("deny");
     expect(reason(r)).toContain("no estack task for branch main");
     execFileSync("git", ["checkout", "-q", "feat/x"], { cwd: dir });
     expect(decision(bash(dir, "git push"))).toBe("ask");
+    expect(decision(bash(dir, "git push -u origin HEAD:refs/heads/feat/x"))).toBe("ask");
     // Redirections are not refs.
     expect(decision(bash(dir, "git push origin 2>&1"))).toBe("ask");
     expect(decision(bash(dir, "git push origin > log"))).toBe("ask");
@@ -802,5 +804,38 @@ describe("workers and the push check", () => {
     const other = repo();
     execFileSync("git", ["worktree", "add", "-q", "-b", "elsewhere", join(other, "wt")], { cwd: other });
     expect(reason(bash(other, `git -C ${join(other, "wt")} push origin`))).toContain("no estack task for branch elsewhere");
+  });
+
+  test("cd - returns to the previous directory", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = startTask(e, { title: "Feat", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, worktree: true });
+    e.db.close();
+    markVerifyDone(dir, f.task.id);
+    const { cwd } = f.task;
+    expect(decision(bash(dir, `cd ${cwd} && git push origin HEAD`))).toBe("ask");
+    // Back in the main checkout, so the push is of main.
+    const back = bash(dir, `cd ${cwd} && cd - && git push origin HEAD`);
+    expect(decision(back)).toBe("deny");
+    expect(reason(back)).toContain("no estack task for branch main");
+    expect(decision(bash(dir, `cd - && cd ${cwd} && git push origin HEAD`))).toBe("ask");   // no previous directory: the event's cwd
+    expect(decision(bash(cwd, `cd ${dir} && cd - && git push origin HEAD`))).toBe("ask");
+  });
+
+  test("a refspec is checked on its source side", () => {
+    const dir = repo();
+    execFileSync("git", ["branch", "feat/x"], { cwd: dir });
+    const e = openEngine(dir, deps);
+    const t = startTask(e, { title: "x", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, branch: "feat/x" });
+    e.db.prepare("UPDATE steps SET status='done' WHERE task_id=? AND name='verify'").run(t.task.id);
+    e.db.close();
+    expect(decision(bash(dir, "git push origin feat/x:somewhere-else"))).toBe("ask");
+    expect(decision(bash(dir, "git push origin +refs/heads/feat/x:refs/heads/other"))).toBe("ask");
+    // The destination being the task's branch does not make a push of another source one.
+    const r = bash(dir, "git push origin main:feat/x");
+    expect(decision(r)).toBe("deny");
+    expect(reason(r)).toContain("no estack task for branch main");
+    // A delete has no source: the current branch is checked.
+    expect(reason(bash(dir, "git push origin :feat/x"))).toContain("no estack task for branch main");
   });
 });
