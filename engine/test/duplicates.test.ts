@@ -45,7 +45,7 @@ function commit(dir: string, rel: string, text: string) {
 }
 
 /** main has src/utils.ts (and `mainFiles`); the task's branch is `feat`, started before any new commit. */
-function setup(mapOn = true, mainFiles: Record<string, string> = {}) {
+function setup(mapOn = true, mainFiles: Record<string, string> = {}, branch = "feat") {
   const dir = makeRepo();
   initRepo(dir);
   const p = join(dir, ".estack", "policy.yaml");
@@ -54,7 +54,7 @@ function setup(mapOn = true, mainFiles: Record<string, string> = {}) {
   writeFileSync(p, y);
   commit(dir, "src/utils.ts", "export function formatInvoiceDate(d: Date) {\n  return d;\n}\n");
   for (const [rel, text] of Object.entries(mainFiles)) commit(dir, rel, text);
-  git(dir, "checkout", "-b", "feat");
+  git(dir, "checkout", "-b", branch);
   const e = openEngine(dir);
   const id = startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: A, cwd: dir }).task.id;
   const graph = (...extra: Node[]) => writeGraph(dir, [fn("u1", "formatInvoiceDate", "src/utils.ts", 1), ...extra]);
@@ -302,5 +302,46 @@ describe("verify gate and dismissal", () => {
     toVerify();
     expect(runCheck(e, { task_id: id, step: "verify", actor: A }).ok).toBe(true);
     expect(e.db.prepare("SELECT COUNT(*) c FROM duplicates").get()).toEqual({ c: 0 });
+  });
+});
+
+/** Mark the checkout's graph as built at its branch head, so it is not read as stale. */
+function stamp(dir: string) {
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir }).toString().trim();
+  const p = join(dir, "graphify-out", "graph.json");
+  const g = JSON.parse(readFileSync(p, "utf8"));
+  g.built_at_commit = head;
+  writeFileSync(p, JSON.stringify(g));
+}
+
+describe("duplicates across open tasks", () => {
+  test("a feature that merged its open worker's helper raises no duplicate against that worker", () => {
+    const { dir, e, id } = setup(true, {}, "work");
+    e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, 's1', NULL, 'cto', ?)").run(id, e.now().toISOString());
+    const w = startTask(e, { title: "worker", type: "feature", goal: "g", done_check: "d", actor: { session_id: "s1" }, cwd: dir, worktree: true, parent_task_id: id }).task;
+    commit(w.cwd, "src/totals.ts", "export function computeInvoiceTotal(items: number[]) {\n  return items.length;\n}\n");
+    writeGraph(w.cwd, [fn("o1", "computeInvoiceTotal", "src/totals.ts", 1)]);
+    stamp(w.cwd);
+    git(dir, "merge", "--no-edit", w.branch);
+    writeGraph(dir, [fn("u1", "formatInvoiceDate", "src/utils.ts", 1), fn("n1", "computeInvoiceTotal", "src/totals.ts", 1)]);
+    expect(checkDuplicates(e, id)).toEqual([]);
+  });
+
+  test("the duplicate check flags a helper another open task is already adding", () => {
+    const { dir, e, id } = setup(true, {}, "work");
+    const other = startTask(e, { title: "other", type: "feature", goal: "g", done_check: "d", actor: B, cwd: dir, worktree: true }).task;
+    commit(other.cwd, "src/totals.ts", "export function computeInvoiceTotal(items: number[]) {\n  return items.length;\n}\n");
+    writeGraph(other.cwd, [fn("o1", "computeInvoiceTotal", "src/totals.ts", 1)]);
+    stamp(other.cwd);
+    commit(dir, "src/orders/sum.ts", "export function calculateInvoiceTotal(rows: number[]) {\n  return rows.length;\n}\n");
+    writeGraph(dir, [fn("u1", "formatInvoiceDate", "src/utils.ts", 1), fn("n1", "calculateInvoiceTotal", "src/orders/sum.ts", 1)]);
+    const open = checkDuplicates(e, id);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({
+      new_symbol: "calculateInvoiceTotal", existing_symbol: "computeInvoiceTotal",
+      existing_file: `task #${other.id}: src/totals.ts`, existing_line: 1, status: "open",
+    });
+    // still open on a second run, not duplicated
+    expect(checkDuplicates(e, id)).toHaveLength(1);
   });
 });

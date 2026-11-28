@@ -139,24 +139,38 @@ along with `.estack/brief.md`, which the owner fills in. Every change appends a
 row to an events log.
 
 **MCP tools.** The plugin registers an `estack` MCP server (`core/.mcp.json`)
-that exposes ten tools: `start_task`, `status`, `complete_step`,
-`run_check`, `handover` and `resume`, and for the code map `context_for`,
-`find_existing`, `who_uses` and `dismiss_duplicate`. For `test` and `verify` the engine runs the command fixed in
+that exposes sixteen tools: `start_task`, `status`, `complete_step`,
+`run_check`, `handover` and `resume`, for the code map `context_for`,
+`find_existing`, `who_uses` and `dismiss_duplicate`, and for parallel work
+`plan_tasks`, `accept_overlap`, `withdraw_task`, `claim_status`, `allow_edit`
+and `claim_symbol`. For `test` and `verify` the engine runs the command fixed in
 `policy.yaml` itself, in the task's worktree, and never trusts evidence
 described in words.
 
 **CLI.** Run `npm link` once in the estack clone to get `estack` on your PATH,
 or call `node --no-warnings adapters/claude-code/engine/estack.mjs`. Commands:
 `init`, `status [--json]`, `handovers`, `run --task <id> --step <test|verify>`, `skip`,
-`cancel`, `override`, `map update|status|suggest` (build the code map, show it,
+`cancel`, `override`, `allow` and `release` (owner only: let a task into a held
+file, accept an overlap across CTOs, free a stale hold with `--path`, or every claim of an abandoned task with `--task`), `map update|status|suggest` (build the code map, show it,
 suggest what to exclude), and `mcp`, plus `git-hook` and `map-hook`, which the
 installed git hooks call. Exit codes: 0 on success, 1 for an engine or
 internal error, 2 for a usage error, and 3 when `run` ran the check but it
 failed.
 
-**Owner-only commands.** `skip`, `cancel` and `override` refuse to run inside
+**Owner-only commands.** `skip`, `cancel`, `override`, `allow` and `release` refuse to run inside
 an agent session (when `CLAUDECODE=1`), as a guard against accidental use; it
 is not a security boundary. Run them from a normal terminal.
+
+**Features and workers.** A feature is a task with `worktree: true` and no parent:
+the engine makes `feat/<id>-<slug>` under `.estack/worktrees/`. A CTO already in
+a feature checkout starts its feature there without a worktree. The CTO splits it
+with `plan_tasks`, which reports overlaps to resolve with `depends_on` or
+`accept_overlap`, then starts each worker (`start_task` with its `task_id`;
+a worker always gets its own worktree, and the stored parent wins) on `task/<id>-<slug>`. A worker's last step is `merge`, which the CTO does into the
+feature. Editing a file another task holds is denied, and the CTO sees it with
+`claim_status` and allows it with `allow_edit`. A task whose steps have neither `pr` nor `merge` (a spike) gives up its holds when it closes, since it never reaches main. A CTO retires an open worker it will not merge (a bakeoff loser) with `withdraw_task`. `status` lists planned, starting
+and kept items, and stray worktrees: folders under `.estack/worktrees/` that git still lists but no task uses, left by a failed start or a crash (listed only, never removed). Its JSON form (`estack status --json`, and the MCP `status` tool without `task_id`) is `{tasks, claims, kept_worktrees, stray_worktrees}`. `estack cancel` takes planned and starting tasks too; on a feature it also cancels the feature's planned, starting and open workers. Both release the holds and remove the worktrees, keeping any with uncommitted changes. Policy
+keys: `commands.worktree_setup` (for example `npm ci`) and `claims.exempt`.
 
 ### Handover
 
@@ -268,7 +282,7 @@ estack is being built in phases, each one usable on its own
 | 3 | Hooks and git hooks that enforce the engine | Done |
 | 4 | Handover: continue a task in a fresh session from recorded state | Done |
 | 5 | Code map on [Graphify](https://github.com/Graphify-Labs/graphify): agents see existing code before writing new code, and reuse searches count as evidence | Done |
-| 6 | Parallel workers in their own worktrees, with claims so two never build the same thing | Planned |
+| 6 | Parallel workers in their own worktrees, with claims so two never build the same thing | Done |
 | 7 | A second coding agent (Cursor or OpenCode) from the same `core/` | Planned |
 
 ## More detail

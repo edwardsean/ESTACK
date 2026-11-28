@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine } from "../src/engine";
@@ -11,7 +10,7 @@ import { realExec, type Exec } from "../src/exec";
 import { preCommit, prePush } from "../src/githooks";
 import { logEvent, startTask } from "../src/tasks";
 import { consumeHandover, saveSessionHandover, type HandoverInput } from "../src/handover";
-import { fakeExec, makeRepo } from "./helpers";
+import { fakeExec, makeRepo, tempDir } from "./helpers";
 
 const S = "sess-1";
 
@@ -66,7 +65,7 @@ describe("hooks", () => {
 
   test("edit outside the repo is allowed with no output", () => {
     const dir = repo();
-    const other = realpathSync(mkdtempSync(join(tmpdir(), "estack-other-")));
+    const other = tempDir("estack-other-");
     expect(edit(dir, join(other, "a.ts"))).toBeNull();
   });
 
@@ -112,7 +111,7 @@ describe("hooks", () => {
 
   test("a write into a linked worktree's gitdir is denied", () => {
     const dir = repo();
-    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    const wt = join(tempDir("estack-wt-"), "wt");
     execFileSync("git", ["worktree", "add", "-b", "feat", wt], { cwd: dir, stdio: "ignore" });
     const r = edit(dir, join(dir, ".git", "worktrees", "wt", "hooks", "pre-push"), { tool_name: "Write" });
     expect(decision(r)).toBe("deny");
@@ -140,7 +139,7 @@ describe("hooks", () => {
 
   test("hard-coded denials apply to bash", () => {
     const dir = repo();
-    for (const c of ["cat .estack/state.db", "estack override git_push --reason x", "git commit --no-verify -m x"]) {
+    for (const c of ["cat .estack/state.db", "estack override git_push --reason x", "estack allow --task 1 --path a --reason x", "env -i PATH=$PATH estack release --path a --reason x", "estack release --task 3 --reason x", "git commit --no-verify -m x"]) {
       const r = bash(dir, c);
       expect(decision(r), c).toBe("deny");
       expect(reason(r)).toContain("blocked by estack");
@@ -227,7 +226,7 @@ describe("hooks", () => {
 
   test("C6 start_task gets the caller's cwd stamped over a typed one", () => {
     const dir = repo();
-    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    const wt = join(tempDir("estack-wt-"), "wt");
     execFileSync("git", ["worktree", "add", "-b", "feat", wt], { cwd: dir, stdio: "ignore" });
     const r = pre(wt, { tool_name: "mcp__plugin_estack_estack__start_task", tool_input: { title: "x", cwd: "/elsewhere" } });
     expect(decision(r)).toBe("allow");
@@ -241,7 +240,7 @@ describe("hooks", () => {
     process.env.LC_ALL = "de_DE.UTF-8";
     process.env.LANG = "de_DE.UTF-8";
     try {
-      const other = realpathSync(mkdtempSync(join(tmpdir(), "estack-other-")));
+      const other = tempDir("estack-other-");
       expect(edit(dir, join(other, "a.ts"), { tool_name: "Write" })).toBeNull();
     } finally {
       for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
@@ -392,7 +391,7 @@ describe("hooks", () => {
 
       test("a new session in another worktree is not told to resume a handover saved in a different one", () => {
         const dir = repo();
-        const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "a");
+        const wt = join(tempDir("estack-wt-"), "a");
         execFileSync("git", ["worktree", "add", "-q", wt, "-b", "feat-a"], { cwd: dir });
         const real = realpathSync(wt);
         withEngine(dir, (e) => startTask(e, { title: "a", type: "feature", goal: "feature A", done_check: "d", actor: { session_id: "sA" }, cwd: real }));
@@ -459,12 +458,12 @@ describe("hooks", () => {
         const dir = repo();
         task(dir, "A");
         hook("pre-compact", dir, { hook_event_name: "PreCompact", session_id: "A" });
-        const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+        const wt = join(tempDir("estack-wt-"), "wt");
         execFileSync("git", ["worktree", "add", "-b", "b2", wt], { cwd: dir, stdio: "ignore" });
         withEngine(dir, (e) => startTask(e, { title: "b", type: "feature", goal: "g2", done_check: "d", actor: { session_id: "A" }, cwd: wt }));
         withEngine(dir, (e) => consumeHandover(e, { session_id: "B" }));
         expect(edit(wt, join(wt, "x.ts"), { session_id: "B" })).toBeNull();
-        expect(edit(dir, join(dir, "x.ts"), { session_id: "B" })).toBeNull();
+        expect(edit(dir, join(dir, "y.ts"), { session_id: "B" })).toBeNull();
       });
 
       test("I3 a handover with no later activity from its session auto-resumes", () => {
@@ -690,7 +689,7 @@ describe("hooks: read tools and code-map tools", () => {
 
   test("with the map off the hook script lets Read and Grep through without starting node", () => {
     const dir = repo();
-    const bin = realpathSync(mkdtempSync(join(tmpdir(), "estack-bin-")));
+    const bin = tempDir("estack-bin-");
     const marker = join(bin, "node-started");
     writeFileSync(join(bin, "node"), `#!/bin/sh\ncat >/dev/null\ntouch "${marker}"\nexit 0\n`, { mode: 0o755 });
     const path = `${bin}:/usr/bin:/bin`;
@@ -707,5 +706,101 @@ describe("hooks: read tools and code-map tools", () => {
     mapOn(dir);
     runScript(dir, "Read", path);
     expect(existsSync(marker)).toBe(true);
+  });
+});
+
+describe("workers and the push check", () => {
+  test("a worker is bound on its first edit, read or task tool call", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = startTask(e, { title: "Feat", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, worktree: true });
+    const w = startTask(e, { title: "Work", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: f.task.cwd, worktree: true, parent_task_id: f.task.id });
+    e.db.close();
+    const bindings = () => rows(dir, `SELECT agent_id, role FROM task_bindings WHERE task_id = ${w.task.id} ORDER BY rowid`);
+    expect(bindings()).toEqual([{ agent_id: null, role: "cto" }]);
+    const r = edit(w.task.cwd, join(w.task.cwd, "a.txt"), { agent_id: "W" });
+    expect(r).toBeNull();
+    expect(bindings()).toEqual([{ agent_id: null, role: "cto" }, { agent_id: "W", role: "worker" }]);
+    edit(w.task.cwd, join(w.task.cwd, "a.txt"), { agent_id: "W" });
+    expect(bindings()).toHaveLength(2);
+    // An edit that is denied binds nothing.
+    edit(w.task.cwd, join(w.task.cwd, "b.txt"), { agent_id: "V", session_id: "other" });
+    expect(bindings()).toHaveLength(2);
+  });
+
+  test("the CTO's stop is not blocked by a background worker's commits; the worker's own stop is", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = startTask(e, { title: "Feat", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, worktree: true });
+    const w = startTask(e, { title: "Work", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, parent_task_id: f.task.id });
+    e.db.close();
+    expect(edit(w.task.cwd, join(w.task.cwd, "a.ts"), { agent_id: "W" })).toBeNull();   // binds W to the worker task
+    execFileSync("git", ["commit", "--allow-empty", "-m", "worker work"], { cwd: w.task.cwd, stdio: "ignore" });
+    const stop = (o: Partial<HookEvent>) => runHook(o.hook_event_name === "SubagentStop" ? "subagent-stop" : "stop", ev(dir, o), deps) as any;
+    expect(stop({ hook_event_name: "Stop" })).toBeNull();
+    const sub = stop({ hook_event_name: "SubagentStop", agent_id: "W", cwd: w.task.cwd });
+    expect(sub?.decision).toBe("block");
+    expect(sub?.reason).toContain(`task #${w.task.id} has 1 new commit(s)`);
+    // The CTO's own feature still blocks its stop.
+    execFileSync("git", ["commit", "--allow-empty", "-m", "feature work"], { cwd: f.task.cwd, stdio: "ignore" });
+    const own = stop({ hook_event_name: "Stop" });
+    expect(own?.decision).toBe("block");
+    expect(own?.reason).toContain(`task #${f.task.id}`);
+    expect(own?.reason).not.toContain(`task #${w.task.id}`);
+  });
+
+  test("the feature PR can be opened from the main checkout with --head or a leading cd", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = startTask(e, { title: "Feat", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, worktree: true });
+    e.db.close();
+    const { branch, cwd } = f.task;
+    const none = bash(dir, "gh pr create --title x --body y");
+    expect(decision(none)).toBe("deny");
+    expect(reason(none)).toContain(`no estack task for branch main; open the feature PR from its worktree (cd <feature cwd> && gh pr create) or pass --head <feature branch>`);
+    expect(reason(none)).not.toMatch(/start one/);
+    expect(reason(none).indexOf("estack override git_push")).toBeGreaterThan(reason(none).indexOf("--head <feature branch>"));
+    // Before verify the feature's own refusal shows, so the branch was found.
+    expect(reason(bash(dir, `gh pr create --head ${branch} --title x`))).toContain(`task #${f.task.id} has no verify evidence`);
+    markVerifyDone(dir, f.task.id);
+    for (const command of [
+      `gh pr create --head ${branch} --base main --title x --body y`,
+      `gh pr create -H ${branch} --title x`,
+      `gh pr create --title x --head=${branch}`,
+      `gh pr create --head someone:${branch} --title x`,
+      `cd ${cwd} && gh pr create --title x --body y`,
+      `cd ${cwd}; gh pr create --fill`,
+      `cd ${cwd} && git push -u origin HEAD`,
+    ]) {
+      expect(decision(bash(dir, command)), command).toBe("ask");
+    }
+    const push = bash(dir, "git push origin HEAD");
+    expect(decision(push)).toBe("deny");
+    expect(reason(push)).toContain("no estack task for branch main; push the feature branch from its worktree");
+    expect(reason(push)).not.toMatch(/start one/);
+  });
+
+  test("the push check uses the pushed branch", () => {
+    const dir = repo();
+    execFileSync("git", ["branch", "feat/x"], { cwd: dir });
+    const e = openEngine(dir, deps);
+    const t = startTask(e, { title: "x", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, branch: "feat/x" });
+    e.db.prepare("UPDATE steps SET status='done' WHERE task_id=? AND name='verify'").run(t.task.id);
+    e.db.close();
+    expect(decision(bash(dir, "git push origin feat/x"))).toBe("ask");
+    expect(decision(bash(dir, "git push -u origin HEAD:refs/heads/feat/x"))).toBe("ask");
+    expect(decision(bash(dir, "git push origin +refs/heads/feat/x"))).toBe("ask");
+    const r = bash(dir, "git push origin main");
+    expect(decision(r)).toBe("deny");
+    expect(reason(r)).toContain("no estack task for branch main");
+    execFileSync("git", ["checkout", "-q", "feat/x"], { cwd: dir });
+    expect(decision(bash(dir, "git push"))).toBe("ask");
+    // Redirections are not refs.
+    expect(decision(bash(dir, "git push origin 2>&1"))).toBe("ask");
+    expect(decision(bash(dir, "git push origin > log"))).toBe("ask");
+    expect(decision(bash(dir, "git push origin >log 2> err"))).toBe("ask");
+    const other = repo();
+    execFileSync("git", ["worktree", "add", "-q", "-b", "elsewhere", join(other, "wt")], { cwd: other });
+    expect(reason(bash(other, `git -C ${join(other, "wt")} push origin`))).toContain("no estack task for branch elsewhere");
   });
 });

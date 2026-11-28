@@ -1,11 +1,11 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { tempDir } from "./helpers";
 import { TRANSCRIPT_TAIL_BYTES, contextRatio, contextTokens } from "../src/context";
 import { parsePolicy, DEFAULT_POLICY_YAML } from "../src/policy";
 
-const dir = mkdtempSync(join(tmpdir(), "estack-ctx-"));
+const dir = tempDir("estack-ctx-");
 let n = 0;
 function file(lines: unknown[] | string): string {
   const p = join(dir, `t${n++}.jsonl`);

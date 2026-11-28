@@ -132,7 +132,7 @@ The chat that receives `/poteto-mode` runs the playbook itself. Do not dispatch 
 
 **Match the seat to the job, and say when it does not fit.** Effort is a per-call parameter. When the hardest or subtlest work lands on a seat configured at `medium`, raise `effort` on that call, name the change in your reply, and offer `/{{estack:ns}}:setup-models` if it should stick. Do not silently accept a weak seat on hard work, and do not claim you raised its reasoning when the call did not carry the parameter.
 
-**No cloud, background by default.** Upstream pstack spawns workers as cloud agents on their own machines. This edition assumes none, so every seat runs on this machine. Seats that need an isolated working copy carry `isolation: worktree`, and `{{estack:ns}}:estack-panel-*`, `{{estack:ns}}:estack-verifier`, and the five enterprise engineering seats already set it, so Claude Code runs each in a temporary git worktree. For any other seat that writes, pass `isolation: "worktree"` on the `Agent` call. Subagents run in the background by default and notify you when they finish, so dispatch independent work in one message, keep working, and read each result when its notification arrives.
+**No cloud, background by default.** Upstream pstack spawns workers as cloud agents on their own machines. This edition assumes none, so every seat runs on this machine. No seat sets `isolation` itself. In an estack repository the engine makes a worktree per worker task (see "Parallel work in an estack repository"). Elsewhere, pass `isolation: "worktree"` on the `Agent` call for every seat that writes and every parallel dispatch. Subagents run in the background by default and notify you when they finish, so dispatch independent work in one message, keep working, and read each result when its notification arrives.
 
 **The wake loop is `/loop`.** Claude Code's `/loop` command re-runs a prompt on an interval, or self-paces when no interval is given, so an upstream playbook that arms a repeat-until-done loop works as written. A watcher subagent can also wake you on an event, since a background subagent's completion notifies this chat. A loop dies with the session, so a run that has to survive a closed laptop still ends in the resume note from `playbooks/pause-safely.md`. Say which wake you armed.
 
@@ -193,6 +193,22 @@ Workflow length matches the task. A chain is the longest one the task needs, not
 A delegated brief carries the knowledge slice and the rules relevant to that seat's responsibility, and never the whole store. Bulk loading fills the delegate's context with material it will not use and crowds out the material it will, which is the same failure **principle-guard-the-context-window** describes in one chat.
 
 Build each packet from four things. The goal and the done predicate. The knowledge entries the retrieval query matched for that responsibility. The rules and business cards that bind it. The fixed contracts or schema it has to conform to. Everything else stays here, and the packet names what was deliberately left out so the seat can ask instead of assuming.
+
+### Parallel work in an estack repository
+
+In a repository that opted in, the engine makes the worktrees and holds the files. Do not pass `isolation: "worktree"` to a seat there.
+
+1. **Start the feature.** From the main checkout, call `start_task` with `worktree: true` and no parent. That makes `feat/<id>-<slug>` under `.estack/worktrees/`. If you are already in a feature checkout, start the feature task there with no worktree.
+2. **Plan the workers.** Call `plan_tasks` with the feature as `parent_task_id` and one entry per worker (title, type, goal, done_check, area, and optionally `adds`, `depends_on` and `group`). Resolve each overlap it returns with `depends_on`, or with `accept_overlap` when the overlap is fine.
+3. **Start each worker.** Call `start_task` with its `task_id`. A worker always gets its own worktree, so it needs no `worktree` flag: the engine makes `task/<id>-<slug>` from the feature head.
+4. **Dispatch the seat.** Give it the worktree path, full paths for every file, and `git -C <worktree>` for git. A seat does not change directory.
+5. **Merge.** When the worker's verify and review pass, run `git -C <feature cwd> merge --no-ff <branch>`, then `complete_step` `merge` with evidence `{kind: "merged"}`.
+6. **Open the feature PR.** When the feature's own steps reach `pr`, push and open it from its worktree (`cd <feature cwd> && gh pr create`), or from the main checkout with `gh pr create --head <feature branch>`. The push gate reads the branch from `--head`, `git -C` or a leading `cd`.
+7. **A held file.** A worker whose edit is denied reports it to you. Check it with `claim_status`, then `allow_edit` or wait. A hold owned by another CTO is the owner's call: ask them to run `estack allow`. Workers never allow edits, accept overlaps or withdraw tasks.
+8. **Bakeoffs.** Give every candidate the same `group`, so they can touch the same files without blocking each other. This holds only for siblings under the same feature. Once the winner is picked and merged, retire each loser with `withdraw_task`.
+9. **Retire a worker you no longer need.** Call `withdraw_task` with its id. It is cancelled, its holds are released, and its worktree is removed, or kept and reported when it has uncommitted changes. A worker already merged into the feature is refused: record its `merge` step instead. The owner's `estack cancel` on a feature cancels every planned, starting and open worker under it the same way.
+
+Outside an estack repository there is no engine to make worktrees, so pass `isolation: "worktree"` on the `Agent` call yourself.
 
 ## Delivery pipeline
 

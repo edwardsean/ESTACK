@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const MIGRATION_1 = `
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -62,7 +62,21 @@ export const MIGRATION_4 = `
 ALTER TABLE handovers ADD COLUMN checkout TEXT;
 `;
 
-const MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4];
+/** Phase 6: parent and group on tasks, plan areas and dependencies, overlap accepts, file and helper claims with grants. */
+export const MIGRATION_5 = `
+ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN task_group TEXT;
+CREATE TABLE task_areas (task_id INTEGER NOT NULL REFERENCES tasks(id), path TEXT NOT NULL, PRIMARY KEY (task_id, path));
+CREATE TABLE task_deps (task_id INTEGER NOT NULL REFERENCES tasks(id), depends_on INTEGER NOT NULL REFERENCES tasks(id), PRIMARY KEY (task_id, depends_on));
+CREATE TABLE plan_items (task_id INTEGER NOT NULL REFERENCES tasks(id), adds TEXT NOT NULL, PRIMARY KEY (task_id, adds));
+CREATE TABLE overlap_accepts (a INTEGER NOT NULL REFERENCES tasks(id), b INTEGER NOT NULL REFERENCES tasks(id), reason TEXT NOT NULL, by TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (a, b));
+CREATE TABLE claims (id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, at TEXT NOT NULL, released_at TEXT);
+CREATE UNIQUE INDEX claims_active ON claims(kind, target) WHERE status = 'active';
+CREATE TABLE claim_grants (id INTEGER PRIMARY KEY, claim_id INTEGER NOT NULL REFERENCES claims(id), task_id INTEGER NOT NULL REFERENCES tasks(id), path TEXT NOT NULL, reason TEXT NOT NULL, by TEXT NOT NULL, at TEXT NOT NULL, outcome TEXT, outcome_at TEXT);
+CREATE INDEX claim_grants_task_path ON claim_grants(task_id, path);
+`;
+
+const MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5];
 
 /** Open (creating if needed) the state database, apply pragmas and pending migrations. */
 export function openDb(path: string): DatabaseSync {

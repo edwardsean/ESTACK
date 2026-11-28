@@ -4,7 +4,6 @@ description: Quality and governance family. Measures a change against a stated b
 model: opus
 effort: xhigh
 color: red
-isolation: worktree
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 disallowedTools: [Agent]
 ---

@@ -4,7 +4,6 @@ description: Engineering family. Implements the mobile client slice of a change 
 model: opus
 effort: high
 color: blue
-isolation: worktree
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 disallowedTools: [Agent]
 ---

@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
 import { initRepo } from "../src/policy";
-import { completeStep, getTask, startTask, type EvidenceInput } from "../src/tasks";
+import { bindWorker, completeStep, getTask, insertEvidence, ownsTask, startTask, type EvidenceInput } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
 import type { Exec, ExecResult } from "../src/exec";
 import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
@@ -24,7 +24,7 @@ function setup(gh: Record<string, Partial<ExecResult>> = {}) {
   const e = openEngine(dir, { exec: fakeExec(gh) });
   return { dir, e };
 }
-const git = (dir: string, ...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8" }).trim();
+const git = (dir: string, ...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const note = (text = "ok"): EvidenceInput => ({ kind: "note", text });
 const start = (e: Engine, dir: string, type = "feature") =>
   startTask(e, { title: "t", type, goal: "g", done_check: "d", actor: cto, cwd: dir });
@@ -381,5 +381,125 @@ describe("reuse_check with the code map", () => {
     const { e, id } = mapSetup(false);
     const v = done(e, id, "reuse_check", note("nothing"));
     expect(v.evidence.at(-1)?.payload).toEqual({ text: "nothing" });
+  });
+});
+
+describe("workers and the merge step", () => {
+  function pair() {
+    const { dir, e } = setup();
+    const f = startTask(e, { title: "Feat", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, worktree: true });
+    const w = startTask(e, { title: "Work", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: f.task.cwd, worktree: true, parent_task_id: f.task.id });
+    // Everything before the merge step is done, so merge is next.
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name != 'merge'").run(w.task.id);
+    return { dir, e, f, w };
+  }
+  const merge = (e: Engine, id: number, actor = cto) => completeStep(e, { task_id: id, step: "merge", evidence: { kind: "merged" }, actor });
+  const kinds = (e: Engine, kind: string) => e.db.prepare("SELECT payload_json p FROM events WHERE kind = ?").all(kind) as { p: string }[];
+
+  test("bindWorker binds an agent once as worker, and never a bare session", () => {
+    const { e, w } = pair();
+    bindWorker(e, w.task.id, cto);
+    bindWorker(e, w.task.id, worker);
+    bindWorker(e, w.task.id, worker);
+    const rows = e.db.prepare("SELECT agent_id, role FROM task_bindings WHERE task_id = ? ORDER BY rowid").all(w.task.id);
+    expect(rows).toEqual([{ agent_id: null, role: "cto" }, { agent_id: "w1", role: "worker" }]);
+  });
+
+  test("bindWorker binds only worker tasks, not a feature or a plain task", () => {
+    const { dir, e, f } = pair();
+    bindWorker(e, f.task.id, worker);
+    const plain = startTask(e, { title: "Plain", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir });
+    bindWorker(e, plain.task.id, worker);
+    const n = (id: number) => (e.db.prepare("SELECT COUNT(*) c FROM task_bindings WHERE task_id = ? AND agent_id IS NOT NULL").get(id) as { c: number }).c;
+    expect(n(f.task.id)).toBe(0);
+    expect(n(plain.task.id)).toBe(0);
+  });
+
+  test("a merge refuses a worker branch reset behind its implement commit", () => {
+    const { e, f, w } = pair();
+    git(w.task.cwd, "commit", "--allow-empty", "-m", "worker work");
+    const sha = git(w.task.cwd, "rev-parse", "HEAD");
+    insertEvidence(e, w.task.id, "implement", "commit", true, { sha }, cto);
+    git(w.task.cwd, "reset", "--hard", w.task.base_sha);
+    git(f.task.cwd, "merge", "--no-ff", "-m", "nothing", w.task.branch);
+    const err = code(() => merge(e, w.task.id));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toContain(`commit ${sha} from this task is not in ${f.task.branch}`);
+    expect(getTask(e, w.task.id).task.status).toBe("open");
+  });
+
+  test("a throw while removing the worktree after the merge is logged as kept", () => {
+    const { e, f, w } = pair();
+    git(w.task.cwd, "commit", "--allow-empty", "-m", "work");
+    git(f.task.cwd, "merge", "--no-ff", "-m", "m", w.task.branch);
+    const real = e.exec;
+    e.exec = { ...real, run: (file, args, opts) => file === "git" && args[0] === "worktree" && args[1] === "list"
+      ? { code: 1, stdout: "", stderr: "", timedOut: true, durationMs: 0 } : real.run(file, args, opts) };
+    expect(merge(e, w.task.id).task.status).toBe("done");
+    expect(existsSync(w.task.cwd)).toBe(true);
+    expect(kinds(e, "worktree_kept").map((r) => JSON.parse(r.p))).toEqual([{ path: w.task.cwd, reason: "gh/git timed out" }]);
+  });
+
+  test("ownsTask is true for the cto of the task or of its parent", () => {
+    const { e, f, w } = pair();
+    expect(ownsTask(e, "s1", w.task.id)).toBe(true);
+    expect(ownsTask(e, "s1", f.task.id)).toBe(true);
+    expect(ownsTask(e, "other", w.task.id)).toBe(false);
+    bindWorker(e, w.task.id, { session_id: "s2", agent_id: "x" });
+    expect(ownsTask(e, "s2", w.task.id)).toBe(false);
+    e.db.prepare("DELETE FROM task_bindings WHERE task_id = ? AND role = 'cto'").run(w.task.id);
+    expect(ownsTask(e, "s1", w.task.id)).toBe(true);
+  });
+
+  test("the merge step needs the worker merged into its feature", () => {
+    const { e, f, w } = pair();
+    git(w.task.cwd, "commit", "--allow-empty", "-m", "worker work");
+    const err = code(() => merge(e, w.task.id));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toBe(`${w.task.branch} is not merged into ${f.task.branch} yet; merge it there first (git -C ${f.task.cwd} merge --no-ff ${w.task.branch})`);
+    expect(getTask(e, w.task.id).task.status).toBe("open");
+    const head = git(w.task.cwd, "rev-parse", "HEAD");
+    git(f.task.cwd, "merge", "--no-ff", "-m", "merge worker", w.task.branch);
+    const v = merge(e, w.task.id);
+    expect(v.task.status).toBe("done");
+    expect(v.evidence.at(-1)).toMatchObject({ kind: "merged", ok: true, payload: { head, into: f.task.branch } });
+    expect(kinds(e, "task_merged").map((r) => JSON.parse(r.p))).toEqual([{ into: f.task.branch }]);
+  });
+
+  test("a merge step on a task with no parent is refused", () => {
+    const { dir, e } = setup();
+    const t = startTask(e, { title: "Solo", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, worktree: true });
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name != 'pr'").run(t.task.id);
+    e.db.prepare("UPDATE steps SET name = 'merge' WHERE task_id = ? AND name = 'pr'").run(t.task.id);
+    expect(code(() => merge(e, t.task.id)).message).toContain("no parent");
+  });
+
+  test("a merged worker's dirty worktree is kept, and its clean one is removed", () => {
+    const a = pair();
+    git(a.w.task.cwd, "commit", "--allow-empty", "-m", "work");
+    git(a.f.task.cwd, "merge", "--no-ff", "-m", "m", a.w.task.branch);
+    writeFileSync(join(a.w.task.cwd, "scratch.txt"), "wip");
+    expect(merge(a.e, a.w.task.id).task.status).toBe("done");
+    expect(existsSync(a.w.task.cwd)).toBe(true);
+    expect(kinds(a.e, "worktree_kept")).toHaveLength(1);
+
+    const b = pair();
+    git(b.w.task.cwd, "commit", "--allow-empty", "-m", "work");
+    git(b.f.task.cwd, "merge", "--no-ff", "-m", "m", b.w.task.branch);
+    expect(merge(b.e, b.w.task.id).task.status).toBe("done");
+    expect(existsSync(b.w.task.cwd)).toBe(false);
+    expect(git(b.dir, "branch", "--list", b.w.task.branch)).toBe("");
+    expect(kinds(b.e, "worktree_removed")).toHaveLength(1);
+  });
+
+  test("a feature's own steps run on the merged result", () => {
+    const { e, f, w } = pair();
+    git(w.task.cwd, "commit", "--allow-empty", "-m", "worker work");
+    git(f.task.cwd, "merge", "--no-ff", "-m", "merge worker", w.task.branch);
+    merge(e, w.task.id);
+    const sha = git(f.task.cwd, "rev-parse", "HEAD");
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name IN ('plan','reuse_check')").run(f.task.id);
+    const v = completeStep(e, { task_id: f.task.id, step: "implement", evidence: { kind: "commit", sha }, actor: cto });
+    expect(v.evidence.at(-1)).toMatchObject({ kind: "commit", ok: true, payload: { sha } });
   });
 });

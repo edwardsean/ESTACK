@@ -4,7 +4,6 @@ description: Verification seat and default swarm worker. Drives the real artifac
 model: sonnet
 effort: high
 color: green
-isolation: worktree
 tools: [Read, Grep, Glob, Bash, Write, Edit, WebFetch, WebSearch]
 disallowedTools: [Agent]
 ---

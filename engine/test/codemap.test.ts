@@ -1,11 +1,15 @@
 import { describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openEngine } from "../src/engine";
 import { initRepo } from "../src/policy";
 import { loadGraph } from "../src/graph";
-import { MAX_LIST, contextFor, descriptionWords, findExisting, runCodeQuery, whoUses } from "../src/codemap";
+import { MAX_LIST, contextFor, descriptionWords, findExisting, runCodeQuery, whoUses, type ContextResult, type FindResult, type WhoUsesResult } from "../src/codemap";
+import { MAX_IN_PROGRESS_TASKS, inProgressFunctions } from "../src/duplicates";
+import type { Engine } from "../src/engine";
+import type { Task } from "../src/types";
+import { startTask } from "../src/tasks";
 import { EngineError } from "../src/types";
 import { makeRepo, writeFakeGraph } from "./helpers";
 
@@ -183,5 +187,120 @@ describe("codemap", () => {
     const c = contextFor(g, "main", "src/utils.ts");
     expect(c.used_by).toHaveLength(MAX_LIST);
     expect(c.more.used_by).toBe(46 - MAX_LIST);
+  });
+});
+
+describe("code map across worktrees", () => {
+  const SA = { session_id: "sa" };
+  const SB = { session_id: "sb" };
+  const headOf = (cwd: string) => execFileSync("git", ["rev-parse", "HEAD"], { cwd }).toString().trim();
+  const row = (e: Engine, id: number) => e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as unknown as Task;
+  function two() {
+    const dir = makeRepo();
+    initRepo(dir);
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, readFileSync(p, "utf8").replace("enabled: false", "enabled: true"));
+    put(dir, "src/utils.ts", "export function formatInvoiceDate(d: Date) { return d; }\n");
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-m", "base"], { cwd: dir, stdio: "ignore" });
+    const e = openEngine(dir);
+    const mk = (title: string, actor: { session_id: string }) =>
+      startTask(e, { title, type: "feature", goal: "g", done_check: "d", actor, cwd: dir, worktree: true }).task;
+    const a = mk("Alpha", SA);
+    const b = mk("Beta", SB);
+    const base = [fileNode("u", "src/utils.ts"), fn("fmt", "formatInvoiceDate", "src/utils.ts", 1)];
+    writeFakeGraph(a.cwd, base, [link("u", "fmt", "contains", "src/utils.ts", 1)]);
+    // Beta adds a helper in its own worktree.
+    put(b.cwd, "src/totals.ts", "export function computeInvoiceTotal(items: number[]) {\n  return items.length;\n}\n");
+    execFileSync("git", ["add", "-A"], { cwd: b.cwd });
+    execFileSync("git", ["commit", "-m", "beta helper"], { cwd: b.cwd, stdio: "ignore" });
+    writeFakeGraph(b.cwd, [...base, fileNode("t", "src/totals.ts"), fn("tot", "computeInvoiceTotal", "src/totals.ts", 1)],
+      [link("u", "fmt", "contains", "src/utils.ts", 1), link("t", "tot", "contains", "src/totals.ts", 1)], headOf(b.cwd));
+    return { dir, e, a, b };
+  }
+
+  test("find_existing shows a helper another task is adding, labelled with the task", () => {
+    const { e, a, b } = two();
+    const r = runCodeQuery(e, { tool: "find_existing", arg: "compute the invoice total", actor: SA, cwd: a.cwd }) as FindResult;
+    expect(r.matches).toContainEqual({ symbol: "computeInvoiceTotal", file: `task #${b.id}: src/totals.ts`, line: 1, why: ["name"], task_id: b.id });
+  });
+
+  test("who_uses reports another task's new function as defined there", () => {
+    const { e, a, b } = two();
+    const r = runCodeQuery(e, { tool: "who_uses", arg: "computeInvoiceTotal", actor: SA, cwd: a.cwd }) as WhoUsesResult;
+    expect(r.defined_at).toEqual([{ symbol: "computeInvoiceTotal", file: `task #${b.id}: src/totals.ts`, line: 1, task_id: b.id }]);
+  });
+
+  test("a task's parent and children are not shown as other tasks", () => {
+    const { e, a, b } = two();
+    const w = startTask(e, { title: "Gamma", type: "feature", goal: "g", done_check: "d", actor: SA, cwd: a.cwd, worktree: true, parent_task_id: a.id }).task;
+    put(w.cwd, "src/gamma.ts", "export function computeGammaThing(x: number) {\n  return x;\n}\n");
+    execFileSync("git", ["add", "-A"], { cwd: w.cwd });
+    execFileSync("git", ["commit", "-m", "gamma"], { cwd: w.cwd, stdio: "ignore" });
+    writeFakeGraph(w.cwd, [fileNode("g", "src/gamma.ts"), fn("gt", "computeGammaThing", "src/gamma.ts", 1)], [link("g", "gt", "contains", "src/gamma.ts", 1)], headOf(w.cwd));
+    const fromA = runCodeQuery(e, { tool: "find_existing", arg: "gamma", actor: SA, cwd: a.cwd }) as FindResult;
+    expect(fromA.matches.filter((m) => m.task_id !== undefined)).toEqual([]);
+    const fromB = runCodeQuery(e, { tool: "find_existing", arg: "gamma", actor: SB, cwd: b.cwd }) as FindResult;
+    expect(fromB.matches.map((m) => m.task_id)).toEqual([w.id]);
+    const fromW = runCodeQuery(e, { tool: "find_existing", arg: "compute invoice total", actor: SA, cwd: w.cwd }) as FindResult;
+    expect(fromW.matches.filter((m) => m.task_id !== undefined).map((m) => m.task_id)).toEqual([b.id]);
+  });
+
+  test("a task whose graph is missing is skipped", () => {
+    const { e, a, b } = two();
+    rmSync(join(b.cwd, "graphify-out"), { recursive: true });
+    expect(inProgressFunctions(e, row(e, a.id))).toEqual([]);
+    expect(inProgressFunctions(e, null).map((x) => x.task_id)).toEqual([]);
+  });
+
+  test("a task whose graph is older than its branch head is skipped", () => {
+    const { e, a, b } = two();
+    expect(inProgressFunctions(e, row(e, a.id)).map((x) => x.task_id)).toEqual([b.id]);
+    writeFakeGraph(b.cwd, [fileNode("t", "src/totals.ts"), fn("tot", "computeInvoiceTotal", "src/totals.ts", 1)],
+      [link("t", "tot", "contains", "src/totals.ts", 1)], "0000000");
+    expect(inProgressFunctions(e, row(e, a.id))).toEqual([]);
+  });
+
+  test("at most MAX_IN_PROGRESS_TASKS open tasks are scanned, newest first", () => {
+    const { e, b } = two();
+    const ins = e.db.prepare(
+      `INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at)
+       SELECT title, type, goal, done_check, status, branch || '-' || ?, cwd, base_sha, created_by, created_at FROM tasks WHERE id = ?`);
+    for (let i = 0; i < MAX_IN_PROGRESS_TASKS; i++) ins.run(String(i), b.id);
+    const ids = new Set(inProgressFunctions(e, null).map((x) => x.task_id));
+    expect(ids.size).toBeLessThanOrEqual(MAX_IN_PROGRESS_TASKS);
+    expect(ids.has(b.id)).toBe(false);
+  });
+
+  test("a task whose worktree folder is gone is skipped", () => {
+    const { e, a, b } = two();
+    rmSync(b.cwd, { recursive: true, force: true });
+    expect(inProgressFunctions(e, row(e, a.id))).toEqual([]);
+    expect(runCodeQuery(e, { tool: "find_existing", arg: "invoice", actor: SA, cwd: a.cwd })).toBeTruthy();
+  });
+
+  test("context_for leaves out the caller's own and its family's claims", () => {
+    const { e, a, b } = two();
+    const w = startTask(e, { title: "Delta", type: "feature", goal: "g", done_check: "d", actor: SA, cwd: a.cwd, worktree: true, parent_task_id: a.id }).task;
+    const at = e.now().toISOString();
+    const ins = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', ?, 'active', ?)");
+    ins.run(a.id, "src/mine.ts", at);
+    ins.run(w.id, "src/child.ts", at);
+    ins.run(b.id, "src/theirs.ts", at);
+    const r = runCodeQuery(e, { tool: "context_for", arg: "src/", actor: SA, cwd: a.cwd }) as ContextResult;
+    expect(r.claims).toEqual([{ path: "src/theirs.ts", task_id: b.id }]);
+  });
+
+  test("context_for lists active claims in the area", () => {
+    const { e, a, b } = two();
+    const at = e.now().toISOString();
+    const ins = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, ?, ?, ?, ?)");
+    ins.run(b.id, "file", "src/totals.ts", "active", at);
+    ins.run(b.id, "file", "src/other/x.ts", "active", at);
+    ins.run(b.id, "file", "src/utils.ts", "released", at);
+    const r = runCodeQuery(e, { tool: "context_for", arg: "src/", actor: SA, cwd: a.cwd }) as ContextResult;
+    expect(r.claims).toEqual([{ path: "src/other/x.ts", task_id: b.id }, { path: "src/totals.ts", task_id: b.id }]);
+    const narrow = runCodeQuery(e, { tool: "context_for", arg: "src/totals.ts", actor: SA, cwd: a.cwd }) as ContextResult;
+    expect(narrow.claims).toEqual([{ path: "src/totals.ts", task_id: b.id }]);
   });
 });

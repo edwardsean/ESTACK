@@ -13,9 +13,7 @@ import {
 import { initRepo } from "../src/policy";
 import { completeStep, logEvent, startTask, type EvidenceInput } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
-import { makeRepo, fakeExec } from "./helpers";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { makeRepo, fakeExec, tempDir } from "./helpers";
 
 const cto: Actor = { session_id: "s1" };
 const worker: Actor = { session_id: "s1", agent_id: "w1" };
@@ -39,7 +37,7 @@ const code = (fn: () => unknown) => { try { fn(); } catch (x) { return (x as Eng
 
 describe("handover storage", () => {
   test("a version-1 database upgrades to 2 and keeps its rows", () => {
-    const dir = mkdtempSync(join(tmpdir(), "estack-mig-"));
+    const dir = tempDir("estack-mig-");
     const path = join(dir, "state.db");
     const old = new DatabaseSync(path);
     old.exec(MIGRATION_1);
@@ -54,7 +52,7 @@ describe("handover storage", () => {
     old.close();
     const db = openDb(path);
     expect((db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }).value).toBe(String(SCHEMA_VERSION));
-    expect(SCHEMA_VERSION).toBe(4);
+    expect(SCHEMA_VERSION).toBe(5);
     expect((db.prepare("SELECT COUNT(*) c FROM events").get() as { c: number }).c).toBe(1);
     expect((db.prepare("SELECT COUNT(*) c FROM handovers").get() as { c: number }).c).toBe(0);
     expect((db.prepare("SELECT COUNT(*) c FROM tasks").get() as { c: number }).c).toBe(1);
@@ -357,7 +355,7 @@ describe("handover scoping by checkout", () => {
   const M: Actor = { session_id: "sM" };
   function twoCheckouts() {
     const { dir, e } = setup();
-    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "a");
+    const wt = join(tempDir("estack-wt-"), "a");
     git(dir, "worktree", "add", "-q", wt, "-b", "feat-a");
     return { dir, e, wt: realpathSync(wt) };
   }

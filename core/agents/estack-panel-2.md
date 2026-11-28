@@ -4,7 +4,6 @@ description: Panel seat 2 of 3 for diverse review and design. Runs an arena bake
 model: sonnet
 effort: high
 color: green
-isolation: worktree
 tools: [Read, Grep, Glob, Bash, Write, Edit, WebFetch, WebSearch]
 disallowedTools: [Agent]
 ---
@@ -34,6 +33,6 @@ First line: the model you ran on, from your own configuration. Then:
 
 ## Claude Code specifics
 
-You cannot dispatch subagents. Your `model` and `effort` default to this file's frontmatter. The dispatcher can override both on the `Agent` call, from the `estack-panel-2:` line in `{{estack:models_file}}`, and you cannot change them mid-task. `isolation: worktree` is set here, so Claude Code runs you in a temporary git worktree; report its path and branch so the dispatcher can read your artifact.
+You cannot dispatch subagents. Your `model` and `effort` default to this file's frontmatter. The dispatcher can override both on the `Agent` call, from the `estack-panel-2:` line in `{{estack:models_file}}`, and you cannot change them mid-task. The dispatcher gives you a worktree path in the brief; work only there, and report its path and branch so the dispatcher can read your artifact.
 
 If the dispatcher needs this seat on a specific model for diversity, it passes `model` on the `Agent` call. You cannot switch models mid-task, so report the one you actually used.

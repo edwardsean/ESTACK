@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { main } from "../src/cli";
@@ -9,10 +8,10 @@ import { installGitHooks } from "../src/githooks";
 import { runHook } from "../src/hooks";
 import { recordOverride, skipStep } from "../src/owner";
 import { startTask } from "../src/tasks";
-import { makeRepo } from "./helpers";
+import { makeRepo, tempDir } from "./helpers";
 
 const root = resolve(__dirname, "../..");
-const shimDir = realpathSync(mkdtempSync(join(tmpdir(), "estack-shim-")));
+const shimDir = tempDir("estack-shim-");
 const shim = join(shimDir, "estack.mjs");
 writeFileSync(shim, `import { spawnSync } from "node:child_process";
 const r = spawnSync(${JSON.stringify(join(root, "node_modules/.bin/tsx"))}, [${JSON.stringify(join(root, "engine/src/cli.ts"))}, ...process.argv.slice(2)], { stdio: "inherit", env: { ...process.env, NODE_OPTIONS: "--no-warnings" } });
@@ -28,7 +27,7 @@ function setup() {
   const dir = makeRepo();
   const io = { cwd: dir, env: {}, out: () => {}, err: () => {} };
   expect(main(["init", "--engine", shim, "--code-map", "off"], io)).toBe(0);
-  const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-bare-")));
+  const bare = tempDir("estack-bare-");
   git(bare, "init", "--bare", "-b", "main");
   git(dir, "remote", "add", "origin", bare);
   return { dir };
@@ -84,7 +83,7 @@ describe("git hooks", { timeout: 60_000 }, () => {
 
   test("a commit returns without waiting for the map", () => {
     const dir = makeRepo();
-    const stubDir = realpathSync(mkdtempSync(join(tmpdir(), "estack-stub-")));
+    const stubDir = tempDir("estack-stub-");
     const stub = join(stubDir, "estack.mjs");
     const pidFile = join(stubDir, "pid");
     writeFileSync(stub, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nsetTimeout(() => {}, 3000);\n`);
@@ -101,7 +100,7 @@ describe("git hooks", { timeout: 60_000 }, () => {
   test("a missing engine makes a map hook exit 0 silently", () => {
     const dir = makeRepo();
     installGitHooks(dir, join(dir, "gone.mjs"));
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "estack-home-")));
+    const home = tempDir("estack-home-");
     const r = spawnSync("git", ["commit", "--allow-empty", "-m", "x"], { cwd: dir, env: { ...process.env, HOME: home, CLAUDECODE: "" }, encoding: "utf8" });
     expect(r.status).toBe(0);
     expect(r.stderr).not.toContain("engine not found");
@@ -252,11 +251,11 @@ describe("git hooks", { timeout: 60_000 }, () => {
 
   test("F9 a missing engine falls back to the newest plugin cache copy, else says re-run setup", () => {
     const dir = makeRepo();
-    const gone = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-gone-"))), "estack.mjs");
+    const gone = join(tempDir("estack-gone-"), "estack.mjs");
     copyFileSync(shim, gone);
     expect(main(["init", "--engine", gone, "--code-map", "off"], { cwd: dir, env: {}, out: () => {}, err: () => {} })).toBe(0);
     rmSync(gone);
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "estack-home-")));
+    const home = tempDir("estack-home-");
     const commit = () => spawnSync("git", ["commit", "-m", "a"], { cwd: dir, env: { ...process.env, CLAUDECODE: "1", HOME: home }, encoding: "utf8" });
     stage(dir, "src/a.ts");
     const none = commit();

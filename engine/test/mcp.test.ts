@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -9,7 +8,7 @@ import { describe, expect, test } from "vitest";
 import { runHook } from "../src/hooks";
 import { createServer } from "../src/mcp";
 import { initRepo } from "../src/policy";
-import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { fakeExec, makeRepo, writeFakeGraph, tempDir } from "./helpers";
 
 const PR = "https://github.com/o/r/pull/1";
 const A = { session_id: "s1", agent_id: "A" };
@@ -36,10 +35,10 @@ function initedRepo(): string {
 }
 
 describe("mcp server", () => {
-  test("lists exactly the ten tools", async () => {
+  test("lists exactly the sixteen tools", async () => {
     const { client } = await connect(initedRepo());
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(["complete_step", "context_for", "dismiss_duplicate", "find_existing", "handover", "resume", "run_check", "start_task", "status", "who_uses"]);
+    expect(names).toEqual(["accept_overlap", "allow_edit", "claim_status", "claim_symbol", "complete_step", "context_for", "dismiss_duplicate", "find_existing", "handover", "plan_tasks", "resume", "run_check", "start_task", "status", "who_uses", "withdraw_task"]);
   });
 
   test("dismiss_duplicate by the author is refused", async () => {
@@ -119,6 +118,22 @@ describe("mcp server", () => {
       expect(q[0]).toMatchObject({ task_id: out.task.id, auto: 1, ok: 1, recorded_by: "s1/A" });
     });
 
+    test("a planned worker started without an area gets the context of its first planned area", async () => {
+      const dir = mapRepo();
+      execFileSync("git", ["add", "-A", "-f"], { cwd: dir });
+      execFileSync("git", ["commit", "-q", "-m", "map"], { cwd: dir });
+      const { call } = await connect(dir);
+      const cto = { session_id: "s1" };
+      const f = JSON.parse((await call("start_task", { title: "F", type: "feature", goal: "g", done_check: "d", worktree: true, cwd: dir, actor: cto })).text);
+      const p = JSON.parse((await call("plan_tasks", { parent_task_id: f.task.id, actor: cto, tasks: [{ title: "W", type: "feature", goal: "g", done_check: "d", area: ["src", "lib"] }] })).text);
+      const r = await call("start_task", { task_id: p.tasks[0].task.id, cwd: dir, actor: cto });
+      expect(r.isError, r.text).toBe(false);
+      const out = JSON.parse(r.text);
+      expect(out.map_note).toBeUndefined();
+      expect(out.context.area).toBe("src");
+      expect(rows(dir).filter((q) => q.task_id === out.task.id)).toMatchObject([{ tool: "context_for", input: "src", auto: 1, ok: 1 }]);
+    });
+
     test("start_task without an area asks for context_for", async () => {
       const { call } = await connect(mapRepo());
       const out = JSON.parse((await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", actor: A })).text);
@@ -171,9 +186,19 @@ describe("mcp server", () => {
     expect(r.text.startsWith("OUT_OF_ORDER")).toBe(true);
   });
 
+  test("start_task with worktree returns the worktree path", async () => {
+    const dir = initedRepo();
+    const { call } = await connect(dir);
+    const r = await call("start_task", { title: "Totals", type: "feature", goal: "g", done_check: "d", worktree: true, area: ["src"], cwd: dir, actor: A });
+    expect(r.isError, r.text).toBe(false);
+    const out = JSON.parse(r.text);
+    expect(out.worktree_path).toBe(join(dir, ".estack", "worktrees", `${out.task.id}-totals`));
+    expect(out.task).toMatchObject({ cwd: out.worktree_path, branch: `feat/${out.task.id}-totals` });
+  });
+
   test("C6 start_task records the cwd it is given (a linked worktree)", async () => {
     const dir = initedRepo();
-    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    const wt = join(tempDir("estack-wt-"), "wt");
     execFileSync("git", ["worktree", "add", "-b", "feat", wt], { cwd: dir, stdio: "ignore" });
     const { call } = await connect(dir);
     const r = await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", actor: A, cwd: wt });
@@ -187,7 +212,7 @@ describe("mcp server", () => {
     const wts: string[] = [];
     const ids: number[] = [];
     for (const n of ["one", "two"]) {
-      const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+      const wt = join(tempDir("estack-wt-"), "wt");
       execFileSync("git", ["worktree", "add", "-b", `feat-${n}`, wt], { cwd: dir, stdio: "ignore" });
       const r = await call("start_task", { title: n, type: "feature", goal: `goal ${n}`, done_check: "d", actor: s1, cwd: wt });
       expect(r.isError, r.text).toBe(false);
@@ -213,9 +238,9 @@ describe("mcp server", () => {
     expect(out.instructions).toBe(
       `Re-read every file listed in the handover before changing anything; do not trust a summary of code. Goal: ship it. Next: #${ids[0]} reuse_check, #${ids[1]} plan.`);
 
-    for (const wt of wts) {
+    for (const [i, wt] of wts.entries()) {
       const ev = (sid: string) => ({
-        hook_event_name: "PreToolUse", session_id: sid, cwd: wt, tool_name: "Write", tool_input: { file_path: join(wt, "x.txt") },
+        hook_event_name: "PreToolUse", session_id: sid, cwd: wt, tool_name: "Write", tool_input: { file_path: join(wt, `x${i}.txt`) },
       });
       expect(runHook("pre-tool-use", ev("s2"), { exec: fakeExec({}) })).toBeNull();
       const denied = runHook("pre-tool-use", ev("s3"), { exec: fakeExec({}) }) as any;
@@ -254,5 +279,64 @@ describe("mcp server", () => {
     expect(out.instructions).toContain("Goal: A goal.");
     const again = await call("resume", { handover_id: older.id, actor: { session_id: "M" } });
     expect(again.text).toMatch(/^NO_TASK: /);
+  });
+
+  test("a worker is bound on its first edit, read or task tool call", async () => {
+    const dir = initedRepo();
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "estack"], { cwd: dir });
+    const { call } = await connect(dir);
+    const cto = { session_id: "s1" };
+    const f = JSON.parse((await call("start_task", { title: "Feat", type: "feature", goal: "g", done_check: "d", cwd: dir, worktree: true, actor: cto })).text).task;
+    const id = JSON.parse((await call("start_task", { title: "Work", type: "feature", goal: "g", done_check: "d", cwd: f.cwd, worktree: true, parent_task_id: f.id, actor: cto })).text).task.id;
+    const bindings = (task = id) => {
+      const db = new DatabaseSync(join(dir, ".estack", "state.db"));
+      try { return db.prepare("SELECT session_id, agent_id, role FROM task_bindings WHERE task_id = ? ORDER BY rowid").all(task); } finally { db.close(); }
+    };
+    expect(bindings()).toEqual([{ session_id: "s1", agent_id: null, role: "cto" }]);
+    expect((await call("status", { task_id: id, actor: A })).isError).toBe(false);
+    expect(bindings()).toEqual([{ session_id: "s1", agent_id: null, role: "cto" }, { session_id: "s1", agent_id: "A", role: "worker" }]);
+    await call("status", { actor: B });
+    expect(bindings()).toHaveLength(2);
+    // A failing call binds nothing; an unrelated session is never bound; a feature takes no helper.
+    expect((await call("status", { task_id: 999, actor: B })).text).toMatch(/^NO_TASK/);
+    expect((await call("complete_step", { task_id: id, step: "plan", evidence: { kind: "note", text: " " }, actor: B })).isError).toBe(true);
+    expect(bindings()).toHaveLength(2);
+    expect((await call("status", { task_id: id, actor: { session_id: "stranger", agent_id: "Z" } })).isError).toBe(false);
+    expect(bindings()).toHaveLength(2);
+    expect((await call("status", { task_id: f.id, actor: B })).isError).toBe(false);
+    expect(bindings(f.id)).toEqual([{ session_id: "s1", agent_id: null, role: "cto" }]);
+  });
+
+  test("claim_status, allow_edit and claim_symbol work through the server, and status lists claims", async () => {
+    const dir = initedRepo();
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "estack"], { cwd: dir });
+    const { call } = await connect(dir);
+    const cto = { session_id: "s1" };
+    const other = { session_id: "s2" };
+    const mk = async (title: string, actor: object) =>
+      JSON.parse((await call("start_task", { title, type: "feature", goal: `goal of ${title}`, done_check: "d", cwd: dir, worktree: true, actor })).text).task;
+    const t1 = await mk("One", cto);
+    const t2 = await mk("Two", other);
+    const t3 = await mk("Three", cto);
+    const db = new DatabaseSync(join(dir, ".estack", "state.db"));
+    try {
+      db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', 'src/a.ts', 'active', 'now')").run(t1.id);
+    } finally { db.close(); }
+    const st = JSON.parse((await call("claim_status", { path: "src/a.ts", actor: cto })).text);
+    expect(st.holder).toMatchObject({ task_id: t1.id, goal: "goal of One" });
+    const refused = await call("allow_edit", { task_id: t2.id, path: "src/a.ts", reason: "x", actor: other });
+    expect(refused.text).toMatch(new RegExp(`^OWNER_ONLY: .*estack allow --task ${t2.id} --path src/a.ts --reason <text>`));
+    expect((await call("allow_edit", { task_id: t3.id, path: "src/a.ts", reason: "needs it", actor: cto })).isError).toBe(false);
+    expect(JSON.parse((await call("claim_status", { path: "src/a.ts" })).text).grants).toHaveLength(1);
+    expect(JSON.parse((await call("claim_symbol", { task_id: t1.id, name: "parseMoney", file: "src/m.ts", actor: cto })).text)).toEqual({ status: "claimed" });
+    expect(JSON.parse((await call("claim_symbol", { task_id: t3.id, name: "parseMoney", file: "src/n.ts", actor: cto })).text)).toEqual({ status: "claimed_by", task_id: t1.id });
+    const all = JSON.parse((await call("status", {})).text);
+    expect(all.tasks.map((t: { task: { id: number } }) => t.task.id)).toEqual([t1.id, t2.id, t3.id]);
+    expect(all.claims).toEqual([
+      { kind: "file", target: "src/a.ts", task_id: t1.id, title: "One" },
+      { kind: "new_symbol", target: "parseMoney", task_id: t1.id, title: "One" }]);
+    expect(all.kept_worktrees).toEqual([]);
   });
 });

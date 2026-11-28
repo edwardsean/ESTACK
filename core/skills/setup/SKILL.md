@@ -38,7 +38,13 @@ Do this before writing anything. The edit and shell-command hooks fail closed wh
 | `protected_paths` | Paths nobody edits, such as `.env*` and the policy file itself |
 | `exempt_paths` | Paths editable with no task, such as markdown and `docs/` |
 | `commands.test`, `commands.verify` | What the engine itself runs for the test and verify steps. Set these to the real commands for this repository |
+| `commands.worktree_setup` | Optional. A command the engine runs in each new worktree, such as `npm ci`, so a worker starts with its dependencies installed |
+| `claims.exempt` | Paths that are never held by a task. The default covers `package.json` and the common lockfiles |
 | `handover.threshold`, `handover.window_tokens` | Optional. The engine suggests a handover once the session's context passes `threshold` (a fraction, default `0.5`) of `window_tokens` (default `200000`) |
+
+Parallel work puts worktrees under `.estack/worktrees/`. Tell the owner to exclude `.estack/` in any test runner or linter that scans the whole tree (for vitest, `exclude: [".estack/**"]`), or it will run the worktrees' copies too.
+
+The engine removes a worktree once its task is merged, cancelled or withdrawn. It keeps one with uncommitted changes, but git status does not show ignored files, so removing a worktree deletes any ignored files in it, such as a copied `.env` or local data. Tell the owner to keep such files outside the worktrees, or to have `commands.worktree_setup` recreate them.
 
 The `handover:` keys are optional and look like this:
 

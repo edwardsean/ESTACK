@@ -1,12 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { main } from "../src/cli";
 import { openEngine } from "../src/engine";
 import { saveSessionHandover, saveTaskHandover } from "../src/handover";
+import { allowEdit, checkEdit, claimSymbol } from "../src/claims";
+import { removeWorktree } from "../src/worktree";
 import { getTask, startTask } from "../src/tasks";
-import { HAS_GRAPHIFY, fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { planTasks } from "../src/plan";
+import { HAS_GRAPHIFY, fakeExec, makeRepo, tempDir, writeFakeGraph } from "./helpers";
 import { realExec, type Exec } from "../src/exec";
 
 // Graphify scripted as missing unless a test opts in, so init leaves the map off on any machine.
@@ -314,5 +317,132 @@ describe("cli init and the code map", () => {
     writeFileSync(join(dir, "dist", "a.js"), "x\n");
     execFileSync("git", ["add", "."], { cwd: dir });
     expect(run(dir, ["map", "suggest"]).out).toBe("dist/**  (named dist)\n");
+  });
+
+  describe("claims", { timeout: 60_000 }, () => {
+    function two() {
+      const dir = makeRepo();
+      expect(run(dir, ["init"]).status).toBe(0);
+      execFileSync("git", ["add", "-A"], { cwd: dir });
+      execFileSync("git", ["commit", "-q", "-m", "estack"], { cwd: dir });
+      const e = openEngine(dir);
+      const mk = (title: string, s: string) => startTask(e, { title, type: "feature", goal: `goal ${title}`, done_check: "d", actor: { session_id: s }, cwd: dir, worktree: true }).task;
+      return { dir, e, t1: mk("one", "sa"), t2: mk("two", "sb") };
+    }
+
+    test("estack allow is refused inside Claude Code and works from a terminal", () => {
+      const { dir, e, t1, t2 } = two();
+      checkEdit(e, t1, "src/a.ts");
+      const args = ["allow", "--task", String(t2.id), "--path", "src/a.ts", "--reason", "needs it"];
+      const refused = run(dir, args, { CLAUDECODE: "1" });
+      expect(refused.status).toBe(1);
+      expect(refused.err).toContain("owner-only");
+      expect(checkEdit(e, t2, "src/a.ts", undefined, false).ok).toBe(false);
+      const ok = run(dir, args);
+      expect(ok.status).toBe(0);
+      expect(ok.out).toBe(`allowed task ${t2.id} to edit src/a.ts\n`);
+      expect(checkEdit(e, t2, "src/a.ts").ok).toBe(true);
+    });
+
+    test("estack allow --with accepts an overlap across CTOs", () => {
+      const { dir, e, t1, t2 } = two();
+      const args = ["allow", "--task", String(t1.id), "--with", String(t2.id), "--reason", "different files"];
+      expect(run(dir, args, { CLAUDECODE: "1" }).status).toBe(1);
+      const ok = run(dir, args);
+      expect(ok.status).toBe(0);
+      expect(ok.out).toBe(`accepted the overlap between tasks ${t1.id} and ${t2.id}\n`);
+      expect(e.db.prepare("SELECT a, b, by FROM overlap_accepts").all()).toEqual([{ a: t1.id, b: t2.id, by: "owner" }]);
+      expect(run(dir, ["allow", "--task", "1", "--reason", "x"]).status).toBe(2);
+    });
+
+    test("estack release frees a stale hold", () => {
+      const { dir, e, t1, t2 } = two();
+      checkEdit(e, t1, "src/a.ts");
+      const args = ["release", "--path", "src/a.ts", "--reason", "stale"];
+      expect(run(dir, args, { CLAUDECODE: "1" }).status).toBe(1);
+      expect(checkEdit(e, t2, "src/a.ts", undefined, false).ok).toBe(false);
+      const ok = run(dir, args);
+      expect(ok.status).toBe(0);
+      expect(ok.out).toBe("released src/a.ts\n");
+      expect(checkEdit(e, t2, "src/a.ts").ok).toBe(true);
+    });
+
+    test("estack release --task frees every claim of a task, handing a file to its grant", () => {
+      const { dir, e, t1, t2 } = two();
+      checkEdit(e, t1, "src/a.ts");
+      checkEdit(e, t1, "src/b.ts");
+      claimSymbol(e, { task_id: t1.id, name: "parseMoney", file: "src/m.ts", actor: { session_id: "sa" } });
+      allowEdit(e, { task_id: t2.id, path: "src/b.ts", reason: "x", owner: true });
+      const args = ["release", "--task", String(t1.id), "--reason", "abandoned"];
+      expect(run(dir, args, { CLAUDECODE: "1" }).status).toBe(1);
+      expect(e.db.prepare("SELECT COUNT(*) c FROM claims WHERE task_id = ? AND status = 'active'").get(t1.id)).toEqual({ c: 3 });
+      const ok = run(dir, args);
+      expect(ok.status).toBe(0);
+      expect(ok.out).toBe(`released 3 claims of task ${t1.id}\n`);
+      expect(e.db.prepare("SELECT task_id, kind, target, status FROM claims ORDER BY id").all()).toEqual([
+        { task_id: t1.id, kind: "file", target: "src/a.ts", status: "released" },
+        { task_id: t1.id, kind: "file", target: "src/b.ts", status: "released" },
+        { task_id: t1.id, kind: "new_symbol", target: "parseMoney", status: "released" },
+        { task_id: t2.id, kind: "file", target: "src/b.ts", status: "active" },
+      ]);
+      const reasons = (e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'claim_released'").all() as { p: string }[]).map((r) => JSON.parse(r.p).reason);
+      expect(reasons).toEqual(["abandoned", "abandoned", "abandoned"]);
+      const again = run(dir, args);
+      expect(again.status).toBe(1);
+      expect(again.err).toContain(`task #${t1.id} holds nothing`);
+      expect(run(dir, ["release", "--task", "1", "--path", "x", "--reason", "x"]).status).toBe(2);
+      expect(run(dir, ["release", "--reason", "x"]).status).toBe(2);
+    });
+
+    test("estack cancel on a feature cancels its workers too and names any worktree it kept", () => {
+      const { dir, e, t1 } = two();
+      const item = (title: string) => ({ title, type: "feature", goal: "g", done_check: "d", area: [`src/${title}`] });
+      const [w1, w2] = planTasks(e, { parent_task_id: t1.id, actor: { session_id: "sa" }, tasks: [item("w1"), item("w2")] }).tasks.map((t) => t.task.id);
+      const open = startTask(e, { task_id: w1, actor: { session_id: "sa" }, cwd: dir }).task;
+      writeFileSync(join(open.cwd, "wip.txt"), "x");
+      const r = run(dir, ["cancel", "--task", String(t1.id), "--reason", "dropped"]);
+      expect(r.status).toBe(0);
+      expect(r.out).toBe([
+        `cancelled task ${t1.id}`, `cancelled task ${w1} (under #${t1.id})`, `cancelled task ${w2} (under #${t1.id})`,
+        `kept worktree: ${open.cwd} (#${w1} w1): uncommitted changes`, "",
+      ].join("\n"));
+      expect([t1.id, w1, w2].map((id) => getTask(e, id).task.status)).toEqual(["cancelled", "cancelled", "cancelled"]);
+    });
+
+    test("status lists claims and kept worktrees", () => {
+      const { dir, e, t1 } = two();
+      checkEdit(e, t1, "src/a.ts");
+      e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(t1.id);
+      writeFileSync(join(t1.cwd, "dirty.txt"), "x");
+      expect(removeWorktree(e, t1)).toBe("kept");
+      const text = run(dir, ["status"]).out;
+      expect(text).toContain(`claim: src/a.ts held by #${t1.id} one`);
+      expect(text).toContain(`kept worktree: ${t1.cwd} (#${t1.id} one): uncommitted changes`);
+      const json = JSON.parse(run(dir, ["status", "--json"]).out);
+      expect(json.claims).toEqual([{ kind: "file", target: "src/a.ts", task_id: t1.id, title: "one" }]);
+      expect(json.kept_worktrees).toEqual([{ task_id: t1.id, title: "one", path: t1.cwd, reason: "uncommitted changes" }]);
+      expect(json.tasks.map((t: { id: number }) => t.id)).toHaveLength(1);
+    });
+
+    test("status lists stray engine worktrees that no task accounts for, and never removes them", () => {
+      const { dir, e, t1, t2 } = two();
+      const leaked = join(dir, ".estack", "worktrees", "99-leaked");
+      execFileSync("git", ["worktree", "add", "-q", "-b", "task/99-leaked", leaked], { cwd: dir });
+      // Not stray: a start still making its worktree, and a worktree outside .estack/worktrees/. Stray: one nothing records, and one a cancelled task left.
+      const starting = Number(e.db.prepare("INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES ('Busy', 'feature', 'g', 'd', 'starting', '', '', '', 'sa/main', 'now')").run().lastInsertRowid);
+      e.db.prepare("INSERT INTO events (at, actor, kind, task_id, payload_json) VALUES (?, 'sa/main', 'task_claimed', ?, '{\"from\":\"new\"}')").run(new Date().toISOString(), starting);
+      execFileSync("git", ["worktree", "add", "-q", "-b", `feat/${starting}-busy`, join(dir, ".estack", "worktrees", `${starting}-busy`)], { cwd: dir });
+      execFileSync("git", ["worktree", "add", "-q", "-b", "mine", join(tempDir("estack-mine-"), "wt")], { cwd: dir });
+      e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(t2.id);
+      const text = run(dir, ["status"]).out;
+      expect(text).toContain(`stray worktree: ${leaked} (no task uses it; inspect it, then remove it by hand)`);
+      expect(text).toContain(`stray worktree: ${t2.cwd} `);
+      expect(text).not.toContain(`stray worktree: ${t1.cwd}`);
+      expect(text).not.toContain(`${starting}-busy (no task`);
+      expect(text).not.toContain("-mine");
+      const json = JSON.parse(run(dir, ["status", "--json"]).out);
+      expect(json.stray_worktrees.sort()).toEqual([leaked, t2.cwd].sort());
+      expect(existsSync(leaked)).toBe(true);
+    });
   });
 });

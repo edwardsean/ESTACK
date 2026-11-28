@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { checkEdit, heldMessage } from "./claims";
 import { contextRatio } from "./context";
 import { checkoutOf } from "./graph";
 import type { Engine } from "./engine";
@@ -11,8 +12,8 @@ import { openEngine } from "./engine";
 import type { Exec } from "./exec";
 import { READ_TOOLS, preRead } from "./mapfirst";
 import { classifyCommand, isExempt, isProtected } from "./match";
-import { HOOK_GIT_TIMEOUT_MS, listOpen, pushReadiness, runBounded, logEvent, tx, type TaskView } from "./tasks";
-import { EngineError, type Actor } from "./types";
+import { HOOK_GIT_TIMEOUT_MS, bindWorker, listOpen, pushReadiness, runBounded, logEvent, tx, type TaskView } from "./tasks";
+import { EngineError, type Actor, type Task } from "./types";
 
 export interface HookEvent {
   hook_event_name: string; session_id: string; cwd: string; agent_id?: string; agent_type?: string;
@@ -120,12 +121,66 @@ function preEdit(e: Engine, ev: HookEvent): HookOutput {
     `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
      WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ? LIMIT 1`,
   ).get(worktree, ev.session_id);
-  if (bound) return null;
+  if (bound) {
+    bindWorker(e, Number(bound.id), actorOf(ev));
+    const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(Number(bound.id)) as unknown as Task;
+    const verdict = checkEdit(e, task, rel, actorOf(ev));
+    return verdict.ok ? null : deny(heldMessage(rel, verdict.holder));
+  }
   return deny(`No open estack task for this session in ${worktree}. Start one with the start_task tool (title, type, goal, done_check) before editing ${rel}.`);
 }
 
 function recordAsk(e: Engine, ev: HookEvent, taskId: number | null, action: string, command: string): void {
   logEvent(e, actorOf(ev), "ask", taskId, { tool_use_id: ev.tool_use_id ?? null, action, command });
+}
+
+/**
+ * The branch a `git push` or `gh pr create` command is for: the ref `git push` names or the `--head`/`-H` `gh pr create`
+ * names, else the current branch of the checkout it runs in. A leading `cd <dir>` moves that checkout for the later
+ * segments, as `git -C <dir>` does for its own. `pr` says which command it was.
+ */
+function pushedBranch(e: Engine, cwd: string, command: string): { branch: string; pr: boolean } {
+  const current = (dir: string) =>
+    runBounded(e, dir, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  let here = cwd;
+  for (const segment of command.split(/[;&|\n]+/)) {
+    const words = (segment.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^(["'])(.*)\1$/, "$2"));
+    if (words[0] === "cd" && words[1] !== undefined && words[1] !== "-") {
+      here = resolve(here, words[1]);
+      continue;
+    }
+    const gh = words.findIndex((w) => /(^|\/)gh$/.test(w));
+    const pr = words.indexOf("pr", gh);
+    if (gh >= 0 && pr > gh && words[pr + 1] === "create") {
+      const args = words.slice(pr + 2);
+      for (const [i, w] of args.entries()) {
+        const head = w === "--head" || w === "-H" ? args[i + 1] : /^--head=(.+)$/.exec(w)?.[1] ?? /^-H(.+)$/.exec(w)?.[1];
+        // A fork head is owner:branch; the branch is the part after the colon.
+        if (head) return { branch: head.split(":").at(-1)!, pr: true };
+      }
+      return { branch: current(here), pr: true };
+    }
+    const git = words.findIndex((w) => /(^|\/)git$/.test(w));
+    const at = words.indexOf("push");
+    if (git < 0 || at < git) continue;
+    const c = words.indexOf("-C");
+    const dir = c >= 0 && c < at && words[c + 1] ? resolve(here, words[c + 1]) : here;
+    const args: string[] = [];
+    let skip = false;
+    for (const w of words.slice(at + 1)) {
+      if (skip) { skip = false; continue; }
+      if (/^\d*[<>]+$/.test(w)) { skip = true; continue; }   // a bare redirection operator takes the next word
+      if (/^\d*[<>]/.test(w) || w.startsWith("-")) continue;
+      args.push(w);
+    }
+    const ref = args[1];
+    if (ref !== undefined && ref !== "HEAD") {
+      const dst = ref.replace(/^\+/, "").split(":").at(-1)!.replace(/^refs\/heads\//, "");
+      if (dst !== "" && dst !== "HEAD") return { branch: dst, pr: false };
+    }
+    return { branch: current(dir), pr: false };
+  }
+  return { branch: current(here), pr: false };
 }
 
 function preBash(e: Engine, ev: HookEvent): HookOutput {
@@ -140,10 +195,13 @@ function preBash(e: Engine, ev: HookEvent): HookOutput {
     recordAsk(e, ev, null, v.action, command);
     return pre("ask", `${v.action} needs the owner's approval (pattern ${v.pattern})`);
   }
-  const branch = runBounded(e, ev.cwd, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  const { branch, pr } = pushedBranch(e, ev.cwd, command);
   const { task: t, verifySettled } = pushReadiness(e, branch);
+  const where = pr
+    ? "open the feature PR from its worktree (cd <feature cwd> && gh pr create) or pass --head <feature branch>"
+    : "push the feature branch from its worktree (git -C <feature cwd> push) or name it (git push origin <feature branch>)";
   const refusal = !t
-    ? `no estack task for branch ${branch}; start one, or the owner can run \`estack override git_push --reason …\` in a terminal`
+    ? `no estack task for branch ${branch}; ${where}; or the owner can run \`estack override git_push --reason …\` in a terminal`
     : !verifySettled
       ? `task #${t.id} has no verify evidence; run run_check with step verify first`
       : null;
@@ -330,7 +388,10 @@ export function stop(e: Engine, ev: HookEvent): HookOutput {
   if (ev.stop_hook_active) return null;
   const sub = ev.hook_event_name === "SubagentStop";
   const reasons: string[] = [];
-  for (const v of boundTasks(e, ev, sub)) {
+  // The main session's stop skips tasks a worker agent is bound to: they run in the background and SubagentStop checks them.
+  const worked = sub ? new Set<number>() : new Set((e.db.prepare("SELECT DISTINCT task_id FROM task_bindings WHERE agent_id IS NOT NULL").all() as
+    { task_id: number }[]).map((r) => r.task_id));
+  for (const v of boundTasks(e, ev, sub).filter((t) => !worked.has(t.task.id))) {
     const t = v.task;
     const work = v.steps.find((s) => s.name === "implement" || s.name === "fix");
     if (!work) continue;

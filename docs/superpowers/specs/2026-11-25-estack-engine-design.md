@@ -2,7 +2,8 @@
 
 Date: 2026-11-25
 Status: approved 2026-11-25; amendment 1 (2026-11-26, code map uses Graphify; revised
-2026-11-27 after the phase 5 spike) approved 2026-11-27
+2026-11-27 after the phase 5 spike) approved 2026-11-27; amendment 2 (2026-11-28, parallel
+work) approved 2026-11-28
 
 **Amendment 1 (2026-11-26, revised 2026-11-27).** The code map is no longer an indexer
 the engine builds. It is [Graphify](https://github.com/Graphify-Labs/graphify)
@@ -12,6 +13,15 @@ changes. The revision follows the spike on estack itself (section 9, Spike resul
 engine keeps generated and copied code out of the map, builds code-only every time,
 backs `find_existing` with a text search, and replaces Graphify's strict mode with its
 own "look at the map first" rule, kept per agent.
+
+**Amendment 2 (2026-11-28).** Phase 6, parallel work, settled in a design session with the
+owner. Section 10 is rewritten; sections 7, 8, 12, 13, 14 and 15 change. Each feature
+has one branch and one PR; its workers branch from it, each in a worktree the engine
+makes, and the CTO merges them back after `verify` and `review`. Files are held
+automatically by the first task to edit them, and "held" means "check first": the owning
+CTO, or the owner when two CTOs are involved, can allow another task's edit with a
+reason. A repository can have several CTO sessions at once, so everything is scoped by
+task and checkout. Each grant's outcome is recorded for a later learning step.
 
 ## 1. Intent
 
@@ -225,11 +235,11 @@ this one file. Default values ship with `/estack:setup`; the owner edits them.
 |---|---|---|---|
 | Session starts | `SessionStart` | `estack status --for-session` | Injects active tasks, next step per task, pending approvals, and any handover waiting for this session |
 | Owner sends a message | `UserPromptSubmit` | `estack status --brief` | Re-injects the current task and next step (a few lines) |
-| Edit / Write / MultiEdit / NotebookEdit | `PreToolUse` | Path in `exempt_paths`? Allow. Otherwise: is there an open task bound to this session or worktree? Is the path protected? Is the file claimed by another task? | **Deny** with a message saying what to do (`start_task`, or wait for the claim). Allow otherwise |
+| Edit / Write / MultiEdit / NotebookEdit | `PreToolUse` | Path in `exempt_paths`? Allow. Otherwise: is there an open task bound to this session or worktree? Is the path protected? Is the file held by another task, with no grant for this one (section 10)? The first edit of a free file makes this task its holder | **Deny** with a message saying what to do (`start_task`, or report the held file to the CTO). Allow otherwise |
 | Read / Grep | `PreToolUse` | Look at the map first (section 9): is the caller an agent on a task whose `reuse_check` is not done, reading a file in the map, with no code-map query of its own yet? | **Deny once** for that agent and task, naming the tool to call. Allow otherwise |
 | Bash | `PreToolUse` | Map command to an action via `patterns`. `deny` → deny. `ask` → check required steps for the task first (e.g. `verify` evidence exists before `git_push`), then return `ask` to the owner | Deny, ask, or allow |
 | Bash after an `ask` | `PostToolUse` | Record the approval and the command in `approvals` and `events` | Audit trail |
-| Main session ends its turn | `Stop` | Engine state only: a step left `in_progress` with no evidence, or a claim with no task progress. No reading of the transcript for "tests pass" claims (too many false positives); faked progress is prevented by evidence rules instead | **Block** the stop with the missing item named. Allowed through after one block per turn to avoid loops |
+| Main session ends its turn | `Stop` | Engine state only: a step left `in_progress` with no evidence. (A "claim with no task progress" check was dropped by amendment 2: with claims taken on first edit it would block almost every turn.) No reading of the transcript for "tests pass" claims (too many false positives); faked progress is prevented by evidence rules instead | **Block** the stop with the missing item named. Allowed through after one block per turn to avoid loops |
 | Worker finishes | `SubagentStop` | Worker's steps up to `test` have evidence; it ran no gated command (workers never push; see Roles below) |
 | Any engine MCP tool call | `PreToolUse` on `mcp__estack__*` | Stamp the real `session_id` and `agent_id` from the hook input onto the call (`updatedInput`), so the engine never trusts ids the agent typed | Ids are trustworthy for `recorded_by` and "reviewer is not author" | Block finishing with the missing item named |
 | Before compaction | `PreCompact` | Write a handover for each active task of this session | Handover saved (section 10) |
@@ -240,7 +250,9 @@ this one file. Default values ship with `/estack:setup`; the owner edits them.
   never push, open PRs or merge: background subagents can't reliably show the owner an
   `ask` prompt, so `git_push` and other `ask` actions are denied for workers.
 - **The verifier** (a different agent) records `verify` and `review` evidence.
-- **The CTO** pushes, opens PRs and merges, each through the owner's `ask` prompt.
+- **The CTO** pushes, opens PRs and merges, each through the owner's `ask` prompt. Merging
+  a worker's branch into its feature branch is local and reversible, so the CTO does it
+  without an approval (section 10); the feature PR into `main` is the owner's.
 
 ### Git hooks (agent-agnostic backstop)
 
@@ -249,8 +261,10 @@ Git hooks enforce only when the command comes from an agent. Claude Code sets
 equivalent marker, on the installed version); other adapters set their own marker. The
 owner's own commits and pushes from a normal terminal pass untouched.
 
-- `pre-commit`: protected paths untouched; the commit's worktree has an open task.
-- `pre-push`: the task's required steps up to `verify` have evidence. A push from a
+- `pre-commit`: protected paths untouched; the commit's worktree has an open task; no
+  staged file is held by another task without a grant for this one (section 10).
+- `pre-push`: the required steps up to `verify` of the task on the branch being pushed
+  (not the pushing session's current branch) have evidence. A push from a
   branch with no task is refused unless the owner runs `estack override push` (logged).
 - `post-commit`, `post-checkout`, `post-merge` and `post-rewrite`: managed by estack
   like the two above (not `graphify hook install`, which would write the same hook files
@@ -283,7 +297,9 @@ result itself. The agent cannot report a passing test that the engine did not se
 ### Overrides
 
 The owner can always proceed: `estack override <action> --reason "..."` and
-`estack skip <task> <step> --reason "..."`, run in a normal terminal. Both refuse to run
+`estack skip <task> <step> --reason "..."`, run in a normal terminal. Two more owner-only
+commands come with claims (section 10): `estack allow` (allow a held-file edit or an
+overlap across two CTOs) and `estack release` (release a stale claim). Both refuse to run
 when the agent marker (`CLAUDECODE=1` or equivalent) is set, so an agent's Bash call
 can't use them. Overrides are logged. `disable_hooks` is in `deny`.
 
@@ -311,13 +327,20 @@ committed, pushed or reported done. That limit is accepted for approach B.
 Tables (SQLite, WAL mode so parallel workers can write safely):
 
 ```text
-tasks        id, title, type, goal, done_check, status, parent_id, branch, worktree_path,
-             created_by, created_at
+tasks        id, title, type, goal, done_check, status(planned|open|done|cancelled),
+             parent_id (a worker's feature), task_group (bakeoff), branch, cwd (absolute
+             checkout), base_sha, created_by, created_at
+task_areas   task_id, path
+task_deps    task_id, depends_on        (finished: merged into the feature, or across features into main)
+plan_items   task_id, adds              (shared helper names a planned task expects to create)
 task_bindings task_id, session_id, agent_id, role(cto|worker|verifier), bound_at
 steps        task_id, name, ordinal, status(pending|in_progress|done|skipped), done_at
 evidence     id, task_id, step_name, kind, payload_json, recorded_by, recorded_at
 approvals    id, task_id, action, command, decision(approved|refused|override), by, at
-claims       id, task_id, kind(file|symbol|new_symbol), target, status(active|released), at
+claims       id, task_id, kind(file|new_symbol), target, status(active|released), at,
+             released_at                (one active claim per kind and target)
+claim_grants id, claim_id, task_id, reason, by (CTO actor or owner), at, outcome
+             (conflict|holder_failed|clean|null), outcome_at
 handovers    id, task_id, from_session, created_at, body_json, consumed_by, consumed_at
 code_queries id, task_id, tool(context_for|find_existing|who_uses), input, result_json,
              ok, graph_version, checkout, recorded_by, at
@@ -506,23 +529,152 @@ example jscpd) could be added later as a separate check.
 
 ## 10. Parallel work and claims
 
-- **Shared pieces first.** When the CTO plans several tasks, the engine's `plan_tasks`
-  tool asks for each task's expected touched areas. If two tasks touch the same
-  module or both expect to add something shared, the engine returns the overlap and
-  the CTO must either create a separate foundation task that the others depend on, or
-  record why the overlap is acceptable. Tasks with an unfinished dependency cannot start.
-  **"Finished" means merged into `main`** (owner's decision): dependent tasks start only
-  after the foundation task's PR is merged, so every task branches from approved code.
-  Stacked branches may be added later if waiting proves too slow. The engine learns of a
-  merge by checking `gh pr view` / `git branch --merged main` when `status` or
-  `start_task` runs; no background polling. GitHub is assumed as the host for now.
-- **Claims.** Before editing a file another active task has claimed, the `PreToolUse`
-  edit hook denies with "claimed by task 14". Before adding a new symbol to a shared
-  file, the worker calls `claim(new_symbol, "utils.ts#formatInvoiceDate")`; if it exists
-  or is claimed, the tool returns the existing one instead. Claims are released when the
-  task's PR merges or the task is cancelled.
-- **Worktrees.** Each worker task gets a worktree and branch created by `start_task`.
-  The engine records the path, so hooks can map `cwd` to a task.
+*Rewritten by amendment 2 (2026-11-28). The original section's ideas stand: shared pieces
+first, claims, engine-made worktrees. Two decisions changed in the design session: "held"
+means "check first", not "no"; and work inside a feature merges into the feature's branch,
+with one PR per feature, instead of one PR per task into `main`.*
+
+### Features, workers and CTOs
+
+- **A feature** is a CTO's main task. It has its own branch (`feat/<id>-<slug>`), its own
+  checkout and, at the end, one PR into `main`, which the owner reviews and merges. A CTO
+  session already sitting in a feature checkout (estack studio's way) starts its feature
+  task there, as today. A CTO in the main checkout calls `start_task` with
+  `worktree: true` and no parent, and the engine makes the feature's branch and worktree.
+- **A worker task** belongs to a feature: `start_task` with `worktree: true`,
+  `parent_task_id` (the feature) and `area` (one or more paths). It branches from the
+  feature's branch as it is now, so it starts on top of everything already merged into
+  the feature. Its last step is `merge` instead of `pr`: when its `verify` and `review`
+  are done, the CTO merges the worker's branch into the feature branch locally (a normal,
+  reversible `git merge`, not an owner approval), and the engine checks that the worker's
+  head is now part of the feature branch.
+- **The feature's own steps** run on the merged result: its `implement` evidence is a
+  commit on the feature branch (the merges count), `test` and `verify` run in the
+  feature's checkout, `review` is by the verifier, and `pr` is the feature PR.
+- **Several CTOs, one repository.** A repository can have several CTO sessions at once,
+  each owning its own features (estack studio runs one per feature). Nothing in the engine
+  assumes one CTO per repository: overlap checks, claims and approvals are worked out
+  from each task's parent link, and handovers are scoped by checkout (section 11). "The
+  same CTO" means the same session owns both tasks; a session owns a task when it is bound
+  with role `cto` to the task or to its parent. After a handover the new session is bound
+  to the old one's tasks (phase 4), so ownership moves with it.
+- **Bakeoffs.** Competing attempts at the same job (arena candidates) are worker tasks in
+  one group (`task_group` on the task). Tasks in a group never hold files against each other;
+  only the chosen one is merged.
+
+### Worktrees
+
+- **Where.** Every worktree the engine makes goes under the CTO session's own checkout:
+  `<CTO checkout>/.estack/worktrees/<id>-<slug>`, recorded as the task's absolute `cwd`.
+  Claude Code only lets Bash reach the session's own project folder, and a worktree next
+  to it could not be worked in reliably (the phase 6 spike). `.estack/` is already left
+  out of the code map, and the engine adds `.estack/worktrees/` to the repository's local
+  `.git/info/exclude`, so git ignores it without a change to any tracked file.
+- **Making one.** The engine checks overlaps and dependencies (below) and refuses with the
+  reason if one is open; creates the branch and worktree; runs the policy's optional
+  `commands.worktree_setup` there (for example `npm ci`), time-limited, so `test` and
+  `verify` can run, reporting a failure rather than hiding it; builds the worktree's code
+  map (section 9); and returns the path and `context_for` the task's area.
+- **Workers in them.** The CTO sends the worker (a subagent) to that path. The worker uses
+  full paths under it for every file tool and `git -C <path>` for git; the edit gate
+  refuses edits outside an open task's checkout. A worker is bound to its task (role
+  `worker`, its own `agent_id`) the first time it calls an engine tool for the task, reads
+  in its worktree, or edits there, so the "map first" rule, `SubagentStop` and "reviewer is
+  not author" all see it.
+- **Other writing subagents.** A subagent with no worker task of its own may still edit in
+  the CTO's checkout, as part of the CTO's task, the way small direct work does today.
+  Writers running in parallel must each get a worker task; the orchestrator instructions
+  say so.
+- **No second worktree.** The engineering seats, the verifier and the panel seats drop
+  Claude Code's own `isolation: worktree`, which would make a second, unused worktree. In
+  a repository not set up for estack the orchestrator still passes `isolation:
+  "worktree"` itself.
+- **Cleanup.** A worker's worktree and local branch are removed once its `merge` step is
+  done; a feature's, once its PR is merged into `main`. The engine never removes
+  uncommitted work: it leaves that worktree and says so in `status`.
+
+### Planning, overlaps and dependencies
+
+- **`plan_tasks`.** The CTO submits a batch of worker tasks for one feature: for each a
+  title, type, goal, done_check, `area` (paths), and optionally `adds` (names of shared
+  helpers it expects to create) and `depends_on` (tasks in the batch or open tasks). The
+  engine records each as a task with status `planned` under the feature and returns every
+  overlap:
+  - two areas overlap when one path is the other or contains it (whole path segments);
+  - two tasks overlap when both list the same `adds` name;
+  - an `adds` name that already exists in the code map is returned as "reuse this
+    instead", with its file and line.
+  Overlaps are checked within the batch and against every open or planned task in the
+  repository, other CTOs' included. The CTO can withdraw a planned task it owns that
+  never started.
+- **Resolving an overlap.** Either one task `depends_on` the other (usually a foundation
+  task that builds the shared piece), or the overlap is accepted with a reason. The CTO
+  may accept an overlap between two tasks it owns; accepting one with another CTO's task
+  is the owner's decision (`estack allow`, below). Depending on another CTO's task needs no
+  approval: it only waits.
+- **When a dependency is finished.** Inside one feature: when the dependency's `merge`
+  step is done, so it is part of the feature branch. Across features: when the other
+  feature's PR is merged into `main`. A task whose dependency is not finished cannot
+  start; the refusal names the dependency. Starting from the feature branch's current head
+  means a dependent worker starts on top of the merged foundation.
+- **Starting without a plan.** `start_task` repeats the overlap check, so starting a task
+  without `plan_tasks` does not skip it.
+- **Learning of merges into `main`.** The engine runs `git fetch` and checks `gh pr view` /
+  `git branch --merged origin/main` when `status`, `plan_tasks` or `start_task` runs,
+  never inside the per-edit hooks; no background polling. GitHub is assumed as the host.
+
+### Claims
+
+- **Files, automatically.** The first task to edit a file holds it, by path relative to
+  its checkout. Editing through Bash or a code generator does not skip this: the
+  `pre-commit` hook takes claims on staged files nobody holds yet. Files in the policy's
+  `claims.exempt` (default: `package.json` and the usual lockfiles) are never held, and
+  neither are `exempt_paths`.
+- **Who holds what over time.** A worker's claims pass to its feature when the worker's
+  `merge` step is done; a feature's claims are released when its PR is merged into `main`
+  or it is cancelled. A task never blocks its own workers, and tasks in one bakeoff group
+  never block each other. When a claim is released, a task that held a grant on that file
+  becomes its holder.
+- **A held file.** Another task's edit is denied: "`<path>` is held by task #14 (goal:
+  ...); report to your CTO, which can check it with claim_status and allow it with
+  allow_edit". A worker cannot ask the owner, so it reports back and waits.
+- **Deciding.** `claim_status(path)` shows the holder, its goal, and exactly what it has
+  changed in that file so far, committed and not. If the same CTO owns both tasks, it
+  calls `allow_edit(task_id, path, reason)`. If different CTOs own them, `allow_edit`
+  refuses and names the owner's command: `estack allow --task <id> --path <path>
+  --reason <text>`, owner-only like `estack override`. Either way the grant is recorded
+  with its reason and who gave it, and from then on that task edits that file freely.
+  Git merges the two changes later; overlapping lines become an ordinary conflict for
+  whichever branch is merged second.
+- **New helpers.** Before adding a shared helper, a worker can call
+  `claim_symbol(name, file)`. If the name exists in the code map, the engine returns it
+  instead; if another active task claimed it, the engine returns that task. The
+  post-commit duplicate check (section 9) backs this up for helpers nobody claimed.
+- **Across worktrees.** `find_existing` and `who_uses` also look at the functions other
+  open tasks have added in their worktrees, labelled "being added by task #14", and
+  `context_for` lists active claims in the area. The duplicate check compares a task's
+  new functions with other open tasks' new functions too.
+- **Backstop.** The `pre-commit` git hook refuses an agent's commit that touches a file
+  held by another task without a grant for the committing checkout's task.
+- **Stale holds.** `status` lists every active claim. The owner can release one with
+  `estack release --path <path>`, or cancel the task.
+
+### Grant outcomes (recorded now, learned from later)
+
+Every grant is followed until both tasks are merged or cancelled. The engine records an
+outcome when it can see one: `conflict` if a merge of either task into its feature, or a
+feature PR into `main`, conflicts in the granted file; `holder_failed` if the holder's
+`test` or `verify` fails after the grant on a change that includes the granted file;
+`clean` when both are merged without either. This is the episode record for a later
+learning step (lessons the owner approves, shown to the CTO at the next similar
+decision, then warnings, then rules); phase 6 only records.
+
+### New event kinds
+
+`task_planned`, `task_withdrawn`, `overlap_found`, `overlap_accepted`,
+`dependency_finished`, `worktree_created`, `worktree_setup_failed`, `worktree_removed`,
+`worktree_kept`, `task_merged`, `claim_taken`, `claim_denied`, `claim_granted`,
+`claim_passed`, `claim_released`, `symbol_claimed`, `grant_outcome`.
 
 ## 11. Handover
 
@@ -557,8 +709,10 @@ the listed files. The new session does not trust a summary of code; it reads the
 
 ## 12. The CTO session
 
-- It is the one Claude Code session the owner works in per project. There is no
-  separate agent above the orchestrator; one loop, one owner of the plan.
+- It is a Claude Code session the owner works in. There is no separate agent above the
+  orchestrator: one loop per CTO session, one owner of each plan. A repository can have
+  several CTO sessions at once, each in its own checkout, each owning its own tasks
+  (section 10).
 - On start it gets `.estack/brief.md` and engine status (via `SessionStart`).
 - It plans with `plan_tasks`, starts workers with `start_task` plus a subagent dispatch,
   reviews results, and asks the owner for approvals. For small tasks it may do the work
@@ -578,7 +732,7 @@ Each phase is usable on its own and ends in a check.
 | 3 | Claude Code hooks + git hooks wired to the engine, replacing the current gate scripts | Recorded-event tests (like today's `test-gates.py`) for every row of the hook table; a live session check that an edit with no task is denied |
 | 4 | Handover | A task interrupted mid-run is resumed in a fresh session from the handover alone |
 | 5 | Code map. Spike done 2026-11-27 on estack itself (section 9, Spike results). Then: the engine's Graphify adapter (code-only builds, exclude list, version pin, worktree builds), `context_for` / `find_existing` (with the text search) / `who_uses`, `code_queries` as `reuse_check` evidence, the "map first" Read/Grep rule, the post-commit duplicate check, setup checking for Graphify and proposing the exclude list, estack's own post-commit/checkout/merge/rewrite git hooks | On a fixture repo reproducing the `utils.ts` failure, with a generated copy of the code in it: the second task is shown the helper, never its copy; its worker is sent to the map once and its reviewer never; the duplicate is flagged if written anyway, holds back `verify` until a different agent dismisses it, and nothing is matched against the copy; with `code_map.enabled: false` every task type still runs end to end |
-| 6 | Parallel: `plan_tasks` overlap detection, claims, worktree creation | Two workers on overlapping tasks: the shared helper is built once; a claimed file edit is denied |
+| 6 | Parallel (section 10): features with their own branch and worktree; worker tasks branching from the feature with a `merge` step; `plan_tasks` with overlaps, foundations and dependencies; worker binding; file and helper claims with `claim_status` / `allow_edit` / `estack allow` / `estack release`, passed to the feature on merge; bakeoff groups; claims across worktrees in the code-map tools and the duplicate check; the `pre-commit` backstop; grant outcomes; seats without Claude Code isolation; the push check on the pushed branch | Two workers on one feature, one building a shared helper the other needs: the dependent worker cannot start until the foundation is merged into the feature, then starts on top of it, and the helper is built once; an edit to a held file is denied until the owning CTO allows it, and across two CTOs until the owner does; the grant and its outcome are recorded; the feature ends in one PR containing both workers' work |
 | 7 | Second adapter (Cursor or OpenCode) | Same engine, same policy, the core flows work in that agent |
 
 ## 14. Left to the builder
@@ -597,6 +751,11 @@ Each phase is usable on its own and ends in a check.
 - Exact CLI command names and MCP tool parameter shapes, within the meaning above.
 - The default contents of `policy.yaml` and `brief.md` templates.
 - How the generator in phase 1 maps current pstack files into `core/`.
+- The branch and worktree name slug, the default `claims.exempt` list, and how
+  `claim_status` caps a long diff.
+- How the engine checks a worker's `merge` step (the worker's head is an ancestor of the
+  feature branch) and how a task type's `pr` step becomes `merge` for worker tasks.
+- How a grant outcome is detected in detail, within the three outcomes in section 10.
 
 ## 15. Risks
 
@@ -629,6 +788,22 @@ Each phase is usable on its own and ends in a check.
   open-source CLI, always with `GRAPHIFY_BACKEND=none`. Graphify also logs every query to
   `~/.cache/graphify-queries.log`; the engine sets `GRAPHIFY_QUERY_LOG_DISABLE=1`, since
   its own `code_queries` table is the record.
+- **Tests and linters scanning worktrees.** Worker worktrees live inside the main
+  checkout, so a test runner or linter run in the main checkout that scans the whole tree
+  (vitest and jest do by default) would also pick up the workers' copies. Mitigation:
+  setup tells the owner to exclude `.estack/` in those tools, and the engine's own
+  `test` and `verify` always run in the task's own checkout. estack's own test config
+  excludes it.
+- **Disk and setup time per worktree.** Each worktree is a full working copy, and most
+  need dependencies installed (`commands.worktree_setup`). Mitigation: worktrees are
+  removed after merge; the setup command is the owner's to choose.
+- **Building on unreviewed code inside a feature.** Workers build on foundations the
+  verifier and reviewer passed but the owner has not seen; the owner reviews the whole
+  feature in its one PR (the owner's decision, 2026-11-28). Across features, dependents
+  still wait for `main`.
+- **Wrong grants.** A CTO can allow an edit that breaks the holder. Mitigation: the
+  grant shows the holder's actual changes first; outcomes are recorded for the later
+  learning step; git still reports overlapping lines as a conflict.
 - **"Map first" friction.** One denial per agent per task, only before `reuse_check`, and
   never for the verifier or reviewer. If it still proves annoying, it can be turned into
   a reminder instead of a denial; the `reuse_check` step still enforces the part that

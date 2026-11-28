@@ -1,5 +1,6 @@
 import { ensureDuplicateCheck, openDuplicates } from "./duplicates";
 import type { Engine } from "./engine";
+import { recordOutcomes } from "./outcomes";
 import { finishStep, getTask, insertEvidence, logEvent, runBounded, tx } from "./tasks";
 import { EngineError, STEP_EVIDENCE, type Actor } from "./types";
 
@@ -55,9 +56,10 @@ export function runCheck(e: Engine, input: { task_id: number; step: string; acto
     insertEvidence(e, input.task_id, input.step, "command", result.ok, { command, ...result, head_sha }, input.actor);
     logEvent(e, input.actor, "evidence", input.task_id, { step: input.step, kind: "command", ok: result.ok });
     if (result.ok) {
-      const closed = finishStep(e, input.task_id, input.step);
+      const closed = finishStep(e, input.task_id, input.step, input.actor);
       logEvent(e, input.actor, "step_done", input.task_id, { step: input.step, closed });
     }
   });
+  recordOutcomes(e, { remote: false });
   return result;
 }

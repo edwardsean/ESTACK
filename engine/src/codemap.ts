@@ -2,14 +2,16 @@ import { existsSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Engine } from "./engine";
 import { START_TASK_BUILD_TIMEOUT_MS, buildGraph, checkoutLabel, checkoutOf, loadGraph, type Graph, type GraphEdge, type GraphNode } from "./graph";
+import { inProgressFunctions, taskLabel } from "./duplicates";
 import { HOOK_GIT_TIMEOUT_MS, runBounded, type TaskView } from "./tasks";
-import { EngineError, actorId, type Actor } from "./types";
+import { EngineError, actorId, type Actor, type Task } from "./types";
 
 export const MAX_LIST = 40;
 export const MAX_MATCHES = 15;
 
-export interface Hit { symbol: string; file: string; line: number; relation?: string; confidence?: string; why?: ("name" | "text")[] }
-export interface ContextResult { graph: string; area: string; defines: Hit[]; uses: Hit[]; used_by: Hit[]; more: Record<string, number>; note?: string }
+export interface Hit { symbol: string; file: string; line: number; task_id?: number; relation?: string; confidence?: string; why?: ("name" | "text")[] }
+export interface ClaimHit { path: string; task_id: number }
+export interface ContextResult { graph: string; area: string; claims: ClaimHit[]; defines: Hit[]; uses: Hit[]; used_by: Hit[]; more: Record<string, number>; note?: string }
 export interface FindResult { graph: string; description: string; words: string[]; matches: Hit[] }
 export interface WhoUsesResult { graph: string; symbol: string; defined_at: Hit[]; callers: Hit[]; ambiguous?: Hit[]; more?: Record<string, number> }
 
@@ -17,6 +19,9 @@ const USES = new Set(["calls", "indirect_call", "imports", "imports_from", "inhe
 const USED_BY = new Set(["calls", "indirect_call", "imports", "inherits", "references"]);
 const CALLERS = new Set(["calls", "indirect_call", "imports", "references", "inherits"]);
 const FILLER = new Set("the and for with from into this that some any are its function helper method code thing way something".split(" "));
+
+export type OtherFn = { task_id: number; node: GraphNode };
+const otherHit = (o: OtherFn): Hit => ({ symbol: o.node.name, file: `${taskLabel(o.task_id)}${o.node.file}`, line: o.node.line, task_id: o.task_id });
 
 const hitOf = (n: GraphNode): Hit => ({ symbol: n.name, file: n.file, line: n.line });
 
@@ -37,7 +42,7 @@ export function mapPath(g: Graph, path: string): string {
   return rel;
 }
 
-export function contextFor(g: Graph, label: string, area: string): ContextResult {
+export function contextFor(g: Graph, label: string, area: string, claims: ClaimHit[] = []): ContextResult {
   const a = mapPath(g, area);
   const inArea = (n: GraphNode) => a === "" || n.file === a || n.file.startsWith(a + "/");
   const defines = [...g.nodes.values()].filter((n) => inArea(n) && n.kind !== "file").map(hitOf);
@@ -58,6 +63,7 @@ export function contextFor(g: Graph, label: string, area: string): ContextResult
   const uniqueDefines = defines.filter((h) => !seen.has(`${h.symbol}\0${h.file}`) && seen.add(`${h.symbol}\0${h.file}`));
   const result: ContextResult = {
     graph: label, area: a || ".",
+    claims: claims.filter((c) => a === "" || c.path === a || c.path.startsWith(a + "/")),
     defines: capped(uniqueDefines, "defines", more),
     uses: capped([...uses.values()], "uses", more),
     used_by: capped([...usedBy.values()], "used_by", more),
@@ -67,12 +73,12 @@ export function contextFor(g: Graph, label: string, area: string): ContextResult
   return result;
 }
 
-export function whoUses(g: Graph, label: string, symbol: string): WhoUsesResult {
+export function whoUses(g: Graph, label: string, symbol: string, others: OtherFn[] = []): WhoUsesResult {
   const at = symbol.lastIndexOf("::");
   const path = at >= 0 ? mapPath(g, symbol.slice(0, at)) : null;
   const name = at >= 0 ? symbol.slice(at + 2) : symbol;
   const found = [...g.nodes.values()].filter((n) => n.name === name && (path === null || n.file === path));
-  const defined_at = found.map(hitOf);
+  const defined_at = [...found.map(hitOf), ...others.filter((o) => o.node.name === name && (path === null || o.node.file === path)).map(otherHit)];
   const result: WhoUsesResult = { graph: label, symbol, defined_at, callers: [] };
   if (path === null && new Set(found.map((n) => n.file)).size > 1) {
     result.ambiguous = defined_at;
@@ -112,7 +118,7 @@ function textHits(e: Engine, g: Graph, words: string[]): { file: string; line: n
   return hits;
 }
 
-export function findExisting(e: Engine, g: Graph, label: string, description: string): FindResult {
+export function findExisting(e: Engine, g: Graph, label: string, description: string, others: OtherFn[] = []): FindResult {
   const words = descriptionWords(description);
   const result: FindResult = { graph: label, description, words, matches: [] };
   if (words.length === 0) return result;
@@ -152,8 +158,33 @@ export function findExisting(e: Engine, g: Graph, label: string, description: st
     ...hitOf(s.node),
     why: [...(s.name.size ? ["name" as const] : []), ...(s.text.size ? ["text" as const] : [])],
   }));
+  // Other open tasks' new helpers follow, matched by name only (their text is not searched), within the same cap.
+  const elsewhere = others
+    .map((o) => ({ o, total: words.filter((w) => o.node.name.toLowerCase().includes(w)).length }))
+    .filter((r) => r.total > 0)
+    .sort((x, y) => y.total - x.total || x.o.task_id - y.o.task_id || x.o.node.file.localeCompare(y.o.node.file) || x.o.node.line - y.o.node.line);
+  for (const { o } of elsewhere.slice(0, Math.max(0, MAX_MATCHES - result.matches.length))) result.matches.push({ ...otherHit(o), why: ["name"] });
   return result;
 }
+
+function callerTask(e: Engine, taskId: number | null): Task | null {
+  return taskId === null ? null : (e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as unknown as Task | undefined) ?? null;
+}
+
+/** Active file claims, leaving out the caller's own task, its parent's and its children's. */
+function activeClaims(e: Engine, caller: Task | null): ClaimHit[] {
+  const rows = e.db.prepare(
+    `SELECT c.target AS path, c.task_id FROM claims c
+     WHERE c.kind = 'file' AND c.status = 'active' ORDER BY c.target, c.task_id`,
+  ).all() as unknown as ClaimHit[];
+  if (!caller) return rows;
+  const family = new Set<number>([caller.id]);
+  if (caller.parent_id !== null) family.add(caller.parent_id);
+  for (const c of e.db.prepare("SELECT id FROM tasks WHERE parent_id = ?").all(caller.id) as { id: number }[]) family.add(c.id);
+  return rows.filter((c) => !family.has(c.task_id));
+}
+
+const othersWork = (e: Engine, caller: Task | null): OtherFn[] => inProgressFunctions(e, caller);
 
 export type CodeTool = "context_for" | "find_existing" | "who_uses";
 const RESULT_CAP = 20000;
@@ -191,10 +222,11 @@ export function runCodeQuery(e: Engine, input: { tool: CodeTool; arg: string; ac
     const label = checkoutLabel(e, checkout);
     const g = loadGraph(checkout);
     if (!g) throw new EngineError("MAP_BROKEN", `no code map for ${label} yet: run "estack map update" there, or start a task in it`);
+    const caller = callerTask(e, taskId);
     version = `${g.graphify_version}@${g.built_at_commit}`;
-    const result = input.tool === "context_for" ? contextFor(g, label, input.arg)
-      : input.tool === "who_uses" ? whoUses(g, label, input.arg)
-      : findExisting(e, g, label, input.arg);
+    const result = input.tool === "context_for" ? contextFor(g, label, input.arg, activeClaims(e, caller))
+      : input.tool === "who_uses" ? whoUses(g, label, input.arg, othersWork(e, caller))
+      : findExisting(e, g, label, input.arg, othersWork(e, caller));
     log(true, JSON.stringify(result));
     return result;
   } catch (x) {

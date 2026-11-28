@@ -14,13 +14,16 @@ A repository is opted in when `.estack/policy.yaml` exists. `/estack:setup` crea
 |---|---|---|
 | Editing source files | Needs an open task bound to this session. Start one with the `start_task` tool (title, type, goal, done_check) | Work that no task owns has no steps and no evidence |
 | Editing protected paths | Always denied, such as `.env*`, secrets folders, `.git`, and the policy file | These are the controls themselves |
-| `git push`, `gh pr create` | Needs verify evidence on the task for the branch, then the owner's approval | A push is outward-facing and hard to take back |
+| `git push`, `gh pr create` | Needs verify evidence on the task for the branch, then the owner's approval. The branch is the one `--head` names for `gh pr create`, else the current branch where the command runs (after a leading `cd` or `git -C`) | A push is outward-facing and hard to take back |
 | Merge, deploy, database migration | The owner's approval, every time | Same reason, with a bigger blast radius |
 | Force push to a protected branch | Denied | Not recoverable |
 | Reading code before `reuse_check` | The first Read or Grep is denied once. Call `context_for` or `find_existing` first | Existing code is found by searching the map, not by wandering |
 | `reuse_check` | Needs your own `find_existing` or `context_for` search, plus a one-line conclusion as the note | A reuse check with no search proves nothing |
 | `verify` with an open possible duplicate | Held back until the copy is removed, or a reviewer calls `dismiss_duplicate` | You do not dismiss your own duplicate |
-| Anything that touches `.estack/state.db`, runs `estack skip`, `cancel` or `override`, uses `--no-verify` or `git commit -n`, changes `core.hooksPath` or git hooks config, or mentions `CLAUDECODE` | Always denied, and not configurable | These would switch the gates off |
+| Editing a file another task holds | Denied with "`<path>` is held by task #N". Report it to your CTO, who checks it with `claim_status` and allows it with `allow_edit`. Across CTOs the owner runs `estack allow` | Two tasks building the same file is two answers to one question. Holds never block the same checkout, a parent, a child, or a group sibling under the same feature |
+| Starting a task with an `OVERLAP` refusal | For a planned task, resolve each listed overlap with `accept_overlap`. Across CTOs the owner runs `estack allow --task <a> --with <b> --reason <text>`. `depends_on` can only be set when the work is planned with `plan_tasks`; otherwise pick a different area | Overlapping work gets planned, not discovered at merge |
+| Starting a task with a `DEPENDENCY` refusal | Wait until each dependency is finished: merged into the feature for a task under the same feature, otherwise its feature merged into main. A cancelled dependency never finishes, so withdraw the task or plan it again | The work it builds on is not there yet |
+| Anything that touches `.estack/state.db`, runs `estack skip`, `cancel`, `override`, `allow` or `release`, uses `--no-verify` or `git commit -n`, changes `core.hooksPath` or git hooks config, or mentions `CLAUDECODE` | Always denied, and not configurable | These would switch the gates off |
 
 Markdown, `docs/` and the project brief are exempt from the task rule. Read-only commands are not gated.
 

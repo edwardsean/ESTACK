@@ -1,15 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { MIGRATION_1, MIGRATION_2, MIGRATION_3, openDb } from "../src/db";
+import { MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, openDb } from "../src/db";
 import { realExec } from "../src/exec";
 import { DEFAULT_POLICY_YAML, initRepo, loadPolicy, parsePolicy } from "../src/policy";
 import { findRepo } from "../src/repo";
-import { makeRepo } from "./helpers";
+import { makeRepo, tempDir } from "./helpers";
 
 const codeOf = (fn: () => unknown) => {
   try { fn(); } catch (e) { return e as { code?: string; message: string }; }
@@ -17,13 +17,13 @@ const codeOf = (fn: () => unknown) => {
 };
 
 test("findRepo outside git throws NOT_A_REPO", () => {
-  const dir = mkdtempSync(join(tmpdir(), "estack-nogit-"));
+  const dir = tempDir("estack-nogit-");
   expect(codeOf(() => findRepo(dir)).code).toBe("NOT_A_REPO");
 });
 
 test("findRepo from a linked worktree resolves the main checkout", () => {
   const main = makeRepo();
-  const wt = join(mkdtempSync(join(tmpdir(), "estack-wt-")), "wt");
+  const wt = join(tempDir("estack-wt-"), "wt");
   execFileSync("git", ["worktree", "add", wt, "-b", "side"], { cwd: main, stdio: "ignore" });
   expect(findRepo(wt).root).toBe(realpathSync(main));
 });
@@ -68,16 +68,16 @@ test("a task type naming an inherited property such as toString is POLICY_INVALI
 });
 
 test("openDb twice is idempotent and sets WAL", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "estack-db-")), "state.db");
+  const path = join(tempDir("estack-db-"), "state.db");
   openDb(path).close();
   const db = openDb(path);
   expect((db.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("wal");
-  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "4" });
+  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "5" });
   db.close();
 });
 
 test("two connections writing at once both succeed", async () => {
-  const path = join(mkdtempSync(join(tmpdir(), "estack-db-")), "state.db");
+  const path = join(tempDir("estack-db-"), "state.db");
   const a = openDb(path);
   a.exec("BEGIN IMMEDIATE");
   const code = `
@@ -101,7 +101,7 @@ test("two connections writing at once both succeed", async () => {
 });
 
 test("a version-2 database upgrades to 3 and keeps its rows", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "estack-mig3-")), "state.db");
+  const path = join(tempDir("estack-mig3-"), "state.db");
   const old = new DatabaseSync(path);
   old.exec(MIGRATION_1);
   old.exec(MIGRATION_2);
@@ -111,7 +111,7 @@ test("a version-2 database upgrades to 3 and keeps its rows", () => {
   old.prepare("INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json) VALUES ('k', 1, 's1', 't', 0, '{}')").run();
   old.close();
   const db = openDb(path);
-  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "4" });
+  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "5" });
   for (const t of ["code_queries", "duplicates"]) {
     expect(db.prepare("SELECT COUNT(*) c FROM " + t).get()).toMatchObject({ c: 0 });
   }
@@ -122,7 +122,7 @@ test("a version-2 database upgrades to 3 and keeps its rows", () => {
 });
 
 test("a version-3 database upgrades to 4: handovers gain a checkout, old rows keep null", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "estack-mig4-")), "state.db");
+  const path = join(tempDir("estack-mig4-"), "state.db");
   const old = new DatabaseSync(path);
   old.exec(MIGRATION_1);
   old.exec(MIGRATION_2);
@@ -131,12 +131,14 @@ test("a version-3 database upgrades to 4: handovers gain a checkout, old rows ke
   old.prepare("INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json) VALUES ('session', NULL, 's1', 't', 0, '{}')").run();
   old.close();
   const db = openDb(path);
-  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "4" });
+  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "5" });
   expect(db.prepare("SELECT checkout FROM handovers").get()).toMatchObject({ checkout: null });
   db.close();
 });
 
 const PHASE_5_INDEXES = [
+  { name: "claim_grants_task_path", tbl_name: "claim_grants" },
+  { name: "claims_active", tbl_name: "claims" },
   { name: "code_queries_task_actor", tbl_name: "code_queries" },
   { name: "events_kind_task_actor", tbl_name: "events" },
 ];
@@ -144,7 +146,7 @@ const indexes = (db: DatabaseSync) =>
   db.prepare("SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name").all();
 
 test("a new database has the indexes the map-first and reuse_check look-ups use", () => {
-  const db = openDb(join(mkdtempSync(join(tmpdir(), "estack-idx-")), "state.db"));
+  const db = openDb(join(tempDir("estack-idx-"), "state.db"));
   expect(indexes(db)).toEqual(PHASE_5_INDEXES);
   const plan = (sql: string) => (db.prepare("EXPLAIN QUERY PLAN " + sql).all() as { detail: string }[]).map((r) => r.detail).join("\n");
   expect(plan("SELECT 1 FROM events WHERE kind = 'map_first_denied' AND task_id = 1 AND actor = 'a' LIMIT 1")).toContain("events_kind_task_actor");
@@ -167,4 +169,56 @@ test("initRepo writes code_map from its options", () => {
 test("exec run passes extra env", () => {
   const r = realExec.run("sh", ["-c", 'printf %s "$X"'], { cwd: tmpdir(), env: { X: "y" } });
   expect(r.stdout).toBe("y");
+});
+
+const NEW_TASK = `INSERT INTO tasks (id, title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at)
+  VALUES (?, 't', 'feature', 'g', 'd', 'open', 'main', '/x', 'abc', 's1/main', 't')`;
+
+test("a version-4 database upgrades to 5 and keeps its rows", () => {
+  const path = join(tempDir("estack-mig5-"), "state.db");
+  const old = new DatabaseSync(path);
+  for (const m of [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4]) old.exec(m);
+  old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '4')").run();
+  old.prepare(NEW_TASK).run(1);
+  old.prepare("INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json) VALUES ('k', 1, 's1', 't', 0, '{}')").run();
+  old.close();
+  const db = openDb(path);
+  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "5" });
+  expect(db.prepare("SELECT parent_id, task_group FROM tasks").get()).toMatchObject({ parent_id: null, task_group: null });
+  expect(db.prepare("SELECT COUNT(*) c FROM handovers").get()).toMatchObject({ c: 1 });
+  for (const t of ["task_areas", "task_deps", "plan_items", "overlap_accepts", "claims", "claim_grants"]) {
+    expect(db.prepare("SELECT COUNT(*) c FROM " + t).get()).toMatchObject({ c: 0 });
+  }
+  db.close();
+});
+
+test("claims allow one active holder per target", () => {
+  const db = openDb(join(tempDir("estack-claims-"), "state.db"));
+  db.prepare(NEW_TASK).run(1);
+  db.prepare(NEW_TASK).run(2);
+  const ins = db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', 'a.ts', ?, 't')");
+  ins.run(1, "active");
+  expect(() => ins.run(2, "active")).toThrow(/UNIQUE/);
+  ins.run(2, "released");
+  db.prepare("UPDATE claims SET status = 'released' WHERE task_id = 1").run();
+  ins.run(2, "active");
+  db.close();
+});
+
+test("policy has claims.exempt and worktree_setup defaults", () => {
+  const p = parsePolicy(DEFAULT_POLICY_YAML);
+  expect(p.claims.exempt).toEqual(["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb",
+    "Cargo.lock", "poetry.lock", "uv.lock", "go.sum", "Gemfile.lock", "composer.lock"]);
+  expect(p.commands.worktree_setup).toBeUndefined();
+  expect(DEFAULT_POLICY_YAML).toContain("# worktree_setup:");
+  const noClaims = DEFAULT_POLICY_YAML.replace(/^claims:.*\n(?:  .*\n)+/m, "");
+  expect(noClaims).not.toContain("claims:");
+  expect(parsePolicy(noClaims).claims.exempt).toContain("package-lock.json");
+  const set = DEFAULT_POLICY_YAML.replace("# worktree_setup:", "worktree_setup:");
+  expect(parsePolicy(set).commands.worktree_setup).toBeTruthy();
+});
+
+test("merge is a known step", () => {
+  const yaml = DEFAULT_POLICY_YAML.replace(/^task_types:\n(?:  .*\n)+/m, "task_types:\n  worker: [implement, merge]\n");
+  expect(parsePolicy(yaml).task_types.worker).toEqual(["implement", "merge"]);
 });

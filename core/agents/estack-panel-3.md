@@ -4,7 +4,6 @@ description: Panel seat 3 of 3 for diverse review and design. Runs an arena bake
 model: inherit
 effort: high
 color: orange
-isolation: worktree
 tools: [Read, Grep, Glob, Bash, Write, Edit, WebFetch, WebSearch]
 disallowedTools: [Agent]
 ---
@@ -36,4 +35,4 @@ First line: the model you ran on, from your own configuration. Then:
 
 You cannot dispatch subagents. Your `model` defaults to `inherit`, the session model, unless the dispatcher passes another on the `Agent` call from the `estack-panel-3:` line in `{{estack:models_file}}`. Every model Claude Code can run is one vendor's, so this seat adds a third model, not a third vendor, and leaving it on `inherit` collapses the panel to two distinct models whenever the session runs `opus` or `sonnet`. You cannot switch models mid-task, so report the one you actually used.
 
-`isolation: worktree` is set here, so Claude Code runs you in a temporary git worktree; report its path and branch so the dispatcher can read your artifact.
+The dispatcher gives you a worktree path in the brief; work only there, and report its path and branch so the dispatcher can read your artifact.
