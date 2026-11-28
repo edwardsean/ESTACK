@@ -464,7 +464,7 @@ describe("hooks", () => {
         withEngine(dir, (e) => startTask(e, { title: "b", type: "feature", goal: "g2", done_check: "d", actor: { session_id: "A" }, cwd: wt }));
         withEngine(dir, (e) => consumeHandover(e, { session_id: "B" }));
         expect(edit(wt, join(wt, "x.ts"), { session_id: "B" })).toBeNull();
-        expect(edit(dir, join(dir, "x.ts"), { session_id: "B" })).toBeNull();
+        expect(edit(dir, join(dir, "y.ts"), { session_id: "B" })).toBeNull();
       });
 
       test("I3 a handover with no later activity from its session auto-resumes", () => {

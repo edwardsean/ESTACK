@@ -1,0 +1,253 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, test } from "vitest";
+import { checkEdit, hasGrant, holderOf, isClaimExempt, passClaims, releaseClaims } from "../src/claims";
+import { openEngine, type Engine } from "../src/engine";
+import { preCommit } from "../src/githooks";
+import { runHook, type HookEvent } from "../src/hooks";
+import { cancelTask } from "../src/owner";
+import { initRepo } from "../src/policy";
+import { existsSync } from "node:fs";
+import { syncMerged } from "../src/claims";
+import { completeStep, insertEvidence, startTask } from "../src/tasks";
+import type { Actor, Task } from "../src/types";
+import { fakeExec, makeRepo } from "./helpers";
+
+const A: Actor = { session_id: "sa" };
+const B: Actor = { session_id: "sb" };
+const deps = { exec: fakeExec({}) };
+const git = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
+
+function repo(extra = ""): string {
+  const dir = makeRepo();
+  initRepo(dir);
+  if (extra) {
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, readFileSync(p, "utf8") + extra);
+  }
+  git(dir, "add", "-A");
+  git(dir, "commit", "-m", "estack");
+  return dir;
+}
+function feature(e: Engine, dir: string, actor: Actor, title: string, goal = "g"): Task {
+  return startTask(e, { title, type: "feature", goal, done_check: "d", actor, cwd: dir, worktree: true }).task;
+}
+function worker(e: Engine, f: Task, actor: Actor, title: string, group?: string): Task {
+  return startTask(e, { title, type: "feature", goal: "g", done_check: "d", actor, cwd: f.cwd, worktree: true, parent_task_id: f.id, group }).task;
+}
+const ev = (cwd: string, o: Partial<HookEvent>): HookEvent => ({ hook_event_name: "PreToolUse", session_id: "sa", cwd, ...o });
+const edit = (t: Task, file: string, o: Partial<HookEvent> = {}) =>
+  runHook("pre-tool-use", ev(t.cwd, { tool_name: "Edit", tool_input: { file_path: join(t.cwd, file) }, ...o }), deps) as any;
+const reason = (r: any) => r?.hookSpecificOutput?.permissionDecisionReason as string | undefined;
+const claims = (e: Engine) => e.db.prepare("SELECT task_id, target, status FROM claims ORDER BY id").all() as any[];
+const kinds = (e: Engine, kind: string) => e.db.prepare("SELECT task_id, payload_json p FROM events WHERE kind = ? ORDER BY id").all(kind) as any[];
+
+describe("file claims", { timeout: 60_000 }, () => {
+  test("the first edit holds a file and another task's edit is denied with the CTO hint", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one", "do the first thing");
+    const t2 = feature(e, dir, B, "two");
+    expect(edit(t1, "src/a.ts")).toBeNull();
+    expect(claims(e)).toEqual([{ task_id: t1.id, target: "src/a.ts", status: "active" }]);
+    expect(kinds(e, "claim_taken")).toHaveLength(1);
+    const r = edit(t2, "src/a.ts", { session_id: "sb" });
+    expect(reason(r)).toBe(`src/a.ts is held by task #${t1.id} (goal: do the first thing); report to your CTO, which can check it with claim_status and allow it with allow_edit.`);
+    expect(kinds(e, "claim_denied")).toHaveLength(1);
+    expect(edit(t1, "src/a.ts")).toBeNull();
+    expect(edit(t2, "src/other.ts", { session_id: "sb" })).toBeNull();
+    expect(holderOf(e, "src/a.ts")?.task.id).toBe(t1.id);
+  });
+
+  test("exempt files and exempt_paths are never held", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, B, "two");
+    for (const f of ["package-lock.json", "web/yarn.lock", "docs/guide.txt", "README.md"]) {
+      expect(isClaimExempt(e, f)).toBe(true);
+      expect(edit(t1, f)).toBeNull();
+      expect(edit(t2, f, { session_id: "sb" })).toBeNull();
+    }
+    expect(claims(e)).toEqual([]);
+    expect(isClaimExempt(e, "src/a.ts")).toBe(false);
+  });
+
+  test("claims.exempt from policy is honoured", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    e.policy.claims.exempt = ["generated/**"];
+    expect(isClaimExempt(e, "generated/x.ts")).toBe(true);
+    expect(isClaimExempt(e, "package-lock.json")).toBe(false);
+  });
+
+  test("a task's own workers and its group are never blocked", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = feature(e, dir, A, "feat");
+    const w1 = worker(e, f, A, "w1", "g1");
+    const w2 = worker(e, f, A, "w2", "g1");
+    const w3 = worker(e, f, A, "w3", "other");
+    expect(checkEdit(e, f, "src/f.ts")).toEqual({ ok: true });
+    expect(checkEdit(e, w1, "src/f.ts")).toEqual({ ok: true });        // child of the holder
+    expect(checkEdit(e, w1, "src/w.ts")).toEqual({ ok: true });
+    expect(checkEdit(e, f, "src/w.ts")).toEqual({ ok: true });         // parent of the holder
+    expect(checkEdit(e, w2, "src/w.ts")).toEqual({ ok: true });        // same group
+    const v = checkEdit(e, w3, "src/w.ts");
+    expect(v).toMatchObject({ ok: false, holder: { id: w1.id } });
+  });
+
+  test("a grant lets another task edit", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, B, "two");
+    checkEdit(e, t1, "src/a.ts");
+    expect(hasGrant(e, t2.id, "src/a.ts")).toBe(false);
+    const c = holderOf(e, "src/a.ts")!.claim_id;
+    e.db.prepare("INSERT INTO claim_grants (claim_id, task_id, path, reason, by, at) VALUES (?, ?, 'src/a.ts', 'r', 'cto', 'now')").run(c, t2.id);
+    expect(hasGrant(e, t2.id, "src/a.ts")).toBe(true);
+    expect(checkEdit(e, t2, "src/a.ts")).toEqual({ ok: true });
+  });
+
+  test("two tasks racing for a free file: one holds it", () => {
+    const dir = repo();
+    const e1 = openEngine(dir, deps);
+    const e2 = openEngine(dir, deps);
+    const t1 = feature(e1, dir, A, "one");
+    const t2 = feature(e1, dir, B, "two");
+    const r1 = checkEdit(e1, t1, "src/a.ts");
+    const r2 = checkEdit(e2, t2, "src/a.ts");
+    expect(r1).toEqual({ ok: true });
+    expect(r2).toMatchObject({ ok: false, holder: { id: t1.id } });
+    expect(claims(e1)).toHaveLength(1);
+  });
+
+  test("a lost insert race re-reads the holder instead of failing", () => {
+    const dir = repo();
+    const e1 = openEngine(dir, deps);
+    const e2 = openEngine(dir, deps);
+    const t1 = feature(e1, dir, A, "one");
+    const t2 = feature(e1, dir, B, "two");
+    // e2 saw no holder; e1 takes the file just before e2's write begins.
+    const real = e2.db.exec.bind(e2.db);
+    let raced = false;
+    (e2.db as any).exec = (sql: string) => {
+      if (!raced && /BEGIN IMMEDIATE/.test(sql)) {
+        raced = true;
+        checkEdit(e1, t1, "src/a.ts");
+      }
+      return real(sql);
+    };
+    const v = checkEdit(e2, t2, "src/a.ts");
+    expect(raced).toBe(true);
+    expect(v).toMatchObject({ ok: false, holder: { id: t1.id } });
+    expect(claims(e1)).toHaveLength(1);
+  });
+
+  test("a worker's edit outside its worktree is denied", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = feature(e, dir, A, "feat");
+    const w = worker(e, f, A, "work");
+    const r = runHook("pre-tool-use", ev(w.cwd, { tool_name: "Edit", agent_id: "W", tool_input: { file_path: join(dir, "src/a.ts") } }), deps) as any;
+    expect(reason(r)).toContain("No open estack task for this session");
+    expect(claims(e)).toEqual([]);
+  });
+
+  test("pre-commit takes claims for files edited through Bash and refuses held ones", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, B, "two");
+    const stage = (t: Task, file: string) => {
+      mkdirSync(join(t.cwd, file, ".."), { recursive: true });
+      writeFileSync(join(t.cwd, file), "x\n");
+      git(t.cwd, "add", file);
+    };
+    stage(t1, "src/shell.ts");
+    expect(preCommit(e, t1.cwd)).toBeNull();
+    expect(claims(e)).toEqual([{ task_id: t1.id, target: "src/shell.ts", status: "active" }]);
+    expect(kinds(e, "claim_taken")[0].p).toContain("src/shell.ts");
+    stage(t2, "src/shell.ts");
+    stage(t2, "src/free.ts");
+    const msg = preCommit(e, t2.cwd);
+    expect(msg).toBe(`src/shell.ts is held by task #${t1.id} (goal: g); report to your CTO, which can check it with claim_status and allow it with allow_edit.`);
+  });
+
+  test("merge passes the worker's claims to the feature, and a cancelled task releases them", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = feature(e, dir, A, "feat");
+    const w = worker(e, f, A, "work");
+    expect(checkEdit(e, w, "src/w.ts")).toEqual({ ok: true });
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name != 'merge'").run(w.id);
+    git(w.cwd, "commit", "--allow-empty", "-m", "work");
+    git(f.cwd, "merge", "--no-ff", "-m", "m", w.branch);
+    completeStep(e, { task_id: w.id, step: "merge", evidence: { kind: "merged" }, actor: A });
+    expect(claims(e)).toEqual([{ task_id: f.id, target: "src/w.ts", status: "active" }]);
+    expect(kinds(e, "claim_passed")).toHaveLength(1);
+    // Another task still can't take it; the feature holds it.
+    const other = feature(e, dir, B, "other");
+    expect(checkEdit(e, other, "src/w.ts")).toMatchObject({ ok: false, holder: { id: f.id } });
+    // Cancelling the feature releases it.
+    cancelTask(e, { task_id: f.id, reason: "x" }, {});
+    expect(claims(e)).toEqual([{ task_id: f.id, target: "src/w.ts", status: "released" }]);
+    expect(kinds(e, "claim_released")).toHaveLength(1);
+    expect(checkEdit(e, other, "src/w.ts")).toEqual({ ok: true });
+  });
+
+  test("a release hands the file to the task holding a grant", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, B, "two");
+    const t3 = feature(e, dir, B, "three");
+    checkEdit(e, t1, "src/a.ts");
+    const c = holderOf(e, "src/a.ts")!.claim_id;
+    const grant = (task: number) => Number(e.db.prepare("INSERT INTO claim_grants (claim_id, task_id, path, reason, by, at) VALUES (?, ?, 'src/a.ts', 'r', 'cto', 'now')").run(c, task).lastInsertRowid);
+    grant(t2.id);
+    const newest = grant(t3.id);
+    e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(t3.id);   // not open: skipped
+    const g2 = grant(t2.id);
+    releaseClaims(e, t1, A);
+    expect(claims(e)).toEqual([
+      { task_id: t1.id, target: "src/a.ts", status: "released" },
+      { task_id: t2.id, target: "src/a.ts", status: "active" },
+    ]);
+    expect(newest).toBeLessThan(g2);
+    expect(JSON.parse(kinds(e, "claim_taken").at(-1).p)).toMatchObject({ from_grant: g2 });
+    expect(holderOf(e, "src/a.ts")?.task.id).toBe(t2.id);
+  });
+
+  test("passClaims moves only active claims", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = feature(e, dir, A, "feat");
+    const w = worker(e, f, A, "work");
+    checkEdit(e, w, "x.ts");
+    releaseClaims(e, w, A);
+    passClaims(e, w, f);
+    expect(claims(e)).toEqual([{ task_id: w.id, target: "x.ts", status: "released" }]);
+  });
+
+  test("a feature merged into main gives up its claims and its engine-made worktree, at start_task time", () => {
+    const dir = repo();
+    const gh = (state: string) => ({ exec: fakeExec({ "pr view feat/1-feat --json state": { code: 0, stdout: JSON.stringify({ state }) } }) });
+    const e = openEngine(dir, gh("OPEN"));
+    const f = feature(e, dir, A, "feat");
+    expect(f.branch).toBe("feat/1-feat");
+    const other = feature(e, dir, B, "other");
+    checkEdit(e, f, "src/a.ts");
+    insertEvidence(e, f.id, "implement", "commit", true, { sha: git(f.cwd, "rev-parse", "HEAD") }, A);
+    syncMerged(e);
+    expect(claims(e)).toEqual([{ task_id: f.id, target: "src/a.ts", status: "active" }]);
+    expect(existsSync(f.cwd)).toBe(true);
+    e.exec = gh("MERGED").exec;
+    startTask(e, { title: "later", type: "feature", goal: "g", done_check: "d", actor: B, cwd: dir });
+    expect(claims(e)).toEqual([{ task_id: f.id, target: "src/a.ts", status: "released" }]);
+    expect(existsSync(f.cwd)).toBe(false);
+    expect(existsSync(other.cwd)).toBe(true);
+  });
+});

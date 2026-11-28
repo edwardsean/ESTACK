@@ -3,9 +3,10 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { join, resolve } from "node:path";
 import type { Engine } from "./engine";
 import { consumeOverride } from "./hooks";
+import { checkEdit, heldMessage } from "./claims";
 import { isExempt, isProtected } from "./match";
 import { HOOK_GIT_TIMEOUT_MS, pushReadiness, runBounded } from "./tasks";
-import { EngineError } from "./types";
+import { EngineError, type Task } from "./types";
 
 export const MANAGED_MARK = "# estack-managed-hook";
 export const MAP_HOOKS = ["post-commit", "post-checkout", "post-merge", "post-rewrite"] as const;
@@ -109,8 +110,18 @@ export function preCommit(e: Engine, cwd: string): string | null {
   const paths = staged.stdout.split("\0").filter(Boolean);
   for (const p of paths) if (isProtected(p, e.policy)) return `commit touches protected ${p}`;
   if (paths.every((p) => isExempt(p, e.policy))) return null;
-  const open = e.db.prepare("SELECT id FROM tasks WHERE status = 'open' AND cwd = ? LIMIT 1").get(toplevel);
-  return open ? null : `no open estack task for ${toplevel}`;
+  // Several tasks can be open in one checkout: the most recently bound one is the one committing.
+  const open = e.db.prepare(
+    `SELECT t.* FROM tasks t LEFT JOIN task_bindings b ON b.task_id = t.id
+     WHERE t.status = 'open' AND t.cwd = ? GROUP BY t.id ORDER BY MAX(b.bound_at) DESC, t.id DESC LIMIT 1`,
+  ).get(toplevel) as unknown as Task | undefined;
+  if (!open) return `no open estack task for ${toplevel}`;
+  const refused: string[] = [];
+  for (const p of paths) {
+    const verdict = checkEdit(e, open, p, { session_id: "git" });
+    if (!verdict.ok) refused.push(heldMessage(p, verdict.holder));
+  }
+  return refused.length > 0 ? refused.join("\n") : null;
 }
 
 const ZEROS = /^0+$/;

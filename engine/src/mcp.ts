@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { syncMerged } from "./claims";
 import { runCheck } from "./checks";
 import { openEngine, type Engine } from "./engine";
 import type { Exec } from "./exec";
@@ -129,7 +130,10 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
   server.registerTool("status", {
     description: "Show one task (with task_id) or all open tasks.",
     inputSchema: { task_id: z.number().int().optional(), actor: actorSchema },
-  }, tool((e, a: { task_id?: number; actor?: Actor }) => (a.task_id !== undefined ? getTask(e, a.task_id) : listOpen(e))));
+  }, tool((e, a: { task_id?: number; actor?: Actor }) => {
+    syncMerged(e);
+    return a.task_id !== undefined ? getTask(e, a.task_id) : listOpen(e);
+  }));
 
   server.registerTool("complete_step", {
     description: "Complete the task's next step with evidence of the kind that step requires.",

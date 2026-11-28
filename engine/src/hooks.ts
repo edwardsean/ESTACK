@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { checkEdit, heldMessage } from "./claims";
 import { contextRatio } from "./context";
 import { checkoutOf } from "./graph";
 import type { Engine } from "./engine";
@@ -12,7 +13,7 @@ import type { Exec } from "./exec";
 import { READ_TOOLS, preRead } from "./mapfirst";
 import { classifyCommand, isExempt, isProtected } from "./match";
 import { HOOK_GIT_TIMEOUT_MS, bindWorker, listOpen, pushReadiness, runBounded, logEvent, tx, type TaskView } from "./tasks";
-import { EngineError, type Actor } from "./types";
+import { EngineError, type Actor, type Task } from "./types";
 
 export interface HookEvent {
   hook_event_name: string; session_id: string; cwd: string; agent_id?: string; agent_type?: string;
@@ -122,7 +123,9 @@ function preEdit(e: Engine, ev: HookEvent): HookOutput {
   ).get(worktree, ev.session_id);
   if (bound) {
     bindWorker(e, Number(bound.id), actorOf(ev));
-    return null;
+    const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(Number(bound.id)) as unknown as Task;
+    const verdict = checkEdit(e, task, rel, actorOf(ev));
+    return verdict.ok ? null : deny(heldMessage(rel, verdict.holder));
   }
   return deny(`No open estack task for this session in ${worktree}. Start one with the start_task tool (title, type, goal, done_check) before editing ${rel}.`);
 }

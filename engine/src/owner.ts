@@ -1,3 +1,4 @@
+import { releaseClaims } from "./claims";
 import type { Engine } from "./engine";
 import { getTask, logEvent, tx, type TaskView } from "./tasks";
 import { EngineError, type Actor } from "./types";
@@ -44,6 +45,7 @@ export function cancelTask(e: Engine, input: { task_id: number; reason: string }
     const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status IN ('open','planned','starting')").run(input.task_id);
     if (r.changes !== 1) throw new EngineError("TASK_CLOSED", `task ${v.task.id} changed while it was being cancelled`);
     logEvent(e, OWNER, "task_cancelled", input.task_id, { reason: input.reason });
+    releaseClaims(e, v.task, OWNER);
     return getTask(e, input.task_id);
   });
 }

@@ -1,3 +1,4 @@
+import { passClaims, syncMerged } from "./claims";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
 import { areaPath, claimInfo, gateStart, releaseStale } from "./plan";
@@ -156,6 +157,7 @@ export function startTask(e: Engine, input: {
   worktree?: boolean; parent_task_id?: number; area?: string[]; group?: string; task_id?: number;
 }): StartResult {
   releaseStale(e);
+  syncMerged(e);
   // A planned task is promoted in place: its stored title, type, goal and parent win over the call's.
   let planned: Task | undefined;
   if (input.task_id !== undefined) {
@@ -421,6 +423,10 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
     }
     const closed = finishStep(e, v.task.id, input.step);
     logEvent(e, input.actor, "step_done", v.task.id, { step: input.step, kind: required, closed });
+    if (input.step === "merge" && v.task.parent_id !== null) {
+      const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task;
+      passClaims(e, v.task, feature, input.actor);
+    }
     return view(e, v.task.id);
   });
   if (!result) return bad(rejected ?? "evidence rejected");

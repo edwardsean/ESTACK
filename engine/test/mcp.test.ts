@@ -223,9 +223,9 @@ describe("mcp server", () => {
     expect(out.instructions).toBe(
       `Re-read every file listed in the handover before changing anything; do not trust a summary of code. Goal: ship it. Next: #${ids[0]} reuse_check, #${ids[1]} plan.`);
 
-    for (const wt of wts) {
+    for (const [i, wt] of wts.entries()) {
       const ev = (sid: string) => ({
-        hook_event_name: "PreToolUse", session_id: sid, cwd: wt, tool_name: "Write", tool_input: { file_path: join(wt, "x.txt") },
+        hook_event_name: "PreToolUse", session_id: sid, cwd: wt, tool_name: "Write", tool_input: { file_path: join(wt, `x${i}.txt`) },
       });
       expect(runHook("pre-tool-use", ev("s2"), { exec: fakeExec({}) })).toBeNull();
       const denied = runHook("pre-tool-use", ev("s3"), { exec: fakeExec({}) }) as any;
