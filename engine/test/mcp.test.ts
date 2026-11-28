@@ -171,6 +171,16 @@ describe("mcp server", () => {
     expect(r.text.startsWith("OUT_OF_ORDER")).toBe(true);
   });
 
+  test("start_task with worktree returns the worktree path", async () => {
+    const dir = initedRepo();
+    const { call } = await connect(dir);
+    const r = await call("start_task", { title: "Totals", type: "feature", goal: "g", done_check: "d", worktree: true, area: ["src"], cwd: dir, actor: A });
+    expect(r.isError, r.text).toBe(false);
+    const out = JSON.parse(r.text);
+    expect(out.worktree_path).toBe(join(dir, ".estack", "worktrees", `${out.task.id}-totals`));
+    expect(out.task).toMatchObject({ cwd: out.worktree_path, branch: `feat/${out.task.id}-totals` });
+  });
+
   test("C6 start_task records the cwd it is given (a linked worktree)", async () => {
     const dir = initedRepo();
     const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");

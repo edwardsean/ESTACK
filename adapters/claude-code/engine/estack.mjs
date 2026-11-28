@@ -14594,7 +14594,7 @@ var require_dist2 = __commonJS({
 
 // engine/src/cli.ts
 import { readFileSync as readFileSync5, realpathSync as realpathSync4, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join8, resolve as resolve4 } from "node:path";
+import { join as join9, resolve as resolve4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // engine/src/engine.ts
@@ -34626,8 +34626,8 @@ function openEngine(cwd, deps = {}) {
 }
 
 // engine/src/hooks.ts
-import { existsSync as existsSync5, realpathSync as realpathSync2 } from "node:fs";
-import { dirname as dirname2, isAbsolute, join as join5, relative as relative2, resolve, sep as sep2 } from "node:path";
+import { existsSync as existsSync6, realpathSync as realpathSync2 } from "node:fs";
+import { dirname as dirname2, isAbsolute, join as join6, relative as relative2, resolve, sep as sep2 } from "node:path";
 
 // engine/src/context.ts
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
@@ -34682,8 +34682,34 @@ function contextRatio(transcriptPath, windowTokens) {
 }
 
 // engine/src/graph.ts
-import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { basename, join as join4 } from "node:path";
+import { appendFileSync, existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { basename, join as join5 } from "node:path";
+
+// engine/src/worktree.ts
+import { existsSync as existsSync3 } from "node:fs";
+import { join as join4 } from "node:path";
+var WORKTREES_DIR = ".estack/worktrees";
+var WORKTREE_SETUP_TIMEOUT_MS = 6e5;
+function slug(title) {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
+}
+function ensureWorktreeExclude(e) {
+  appendExclude(e, e.repo.root, [`${WORKTREES_DIR}/`]);
+}
+function createWorktree(e, input2) {
+  const path = join4(input2.under, WORKTREES_DIR, input2.name);
+  const r = runBounded(e, input2.under, "git", ["worktree", "add", "-b", input2.branch, path, input2.base]);
+  if (r.code !== 0) throw new EngineError("NOT_A_REPO", (r.stderr || r.stdout).trim() || "git worktree add failed");
+  return path;
+}
+function runWorktreeSetup(e, cwd) {
+  const command = e.policy.commands.worktree_setup;
+  if (!command) return null;
+  const r = e.exec.shell(command, { cwd, timeoutMs: WORKTREE_SETUP_TIMEOUT_MS });
+  const tail = (r.stdout + r.stderr).trim().slice(-500);
+  return { ok: r.code === 0 && !r.timedOut, output_tail: r.timedOut ? `${tail}
+timed out`.trim() : tail };
+}
 
 // engine/src/tasks.ts
 var iso = (e) => e.now().toISOString();
@@ -34730,31 +34756,116 @@ function pushReadiness(e, branch) {
   const verify = e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'verify'").get(task.id);
   return { task, verifySettled: verify?.status === "done" || verify?.status === "skipped" };
 }
+var workerSteps = (steps) => steps.map((s) => s === "pr" ? "merge" : s);
+function insertSteps(e, id, steps) {
+  steps.forEach((name, i) => e.db.prepare("INSERT INTO steps (task_id, name, ordinal, status) VALUES (?, ?, ?, 'pending')").run(id, name, i));
+}
+function bind(e, id, actor) {
+  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso(e));
+}
+function insertAreas(e, id, area) {
+  for (const path of area ?? []) e.db.prepare("INSERT OR IGNORE INTO task_areas (task_id, path) VALUES (?, ?)").run(id, path);
+}
+function featureBase(e, checkout) {
+  const remote = runBounded(e, checkout, "git", ["remote", "get-url", "origin"]);
+  if (remote.code === 0) {
+    runBounded(e, checkout, "git", ["fetch", "origin", "main"], HOOK_FETCH_TIMEOUT_MS);
+    const o = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"]);
+    if (o.code === 0) return { ref: "origin/main", sha: o.stdout.trim() };
+  }
+  const m = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"]);
+  if (m.code !== 0) throw new EngineError("POLICY_INVALID", "no main branch to start a feature from");
+  return { ref: "main", sha: m.stdout.trim() };
+}
+var HOOK_FETCH_TIMEOUT_MS = 2e4;
 function startTask(e, input2) {
-  const steps = e.policy.task_types[input2.type];
-  if (!steps) throw new EngineError("POLICY_INVALID", `unknown task type "${input2.type}"`);
+  let planned;
+  if (input2.task_id !== void 0) {
+    planned = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input2.task_id);
+    if (!planned) throw new EngineError("NO_TASK", `no task with id ${input2.task_id}`);
+    if (planned.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${planned.id} is ${planned.status}, not planned`);
+  }
+  const title = planned?.title ?? input2.title;
+  const type = planned?.type ?? input2.type;
+  const goal = planned?.goal ?? input2.goal;
+  const done_check = planned?.done_check ?? input2.done_check;
+  const parentId = planned?.parent_id ?? input2.parent_task_id ?? null;
+  const group = planned?.task_group ?? input2.group ?? null;
+  const typeSteps = e.policy.task_types[type];
+  if (!typeSteps) throw new EngineError("POLICY_INVALID", `unknown task type "${type}"`);
   if (input2.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input2.branch}`);
+  let parent = null;
+  if (parentId !== null && input2.worktree) {
+    parent = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(parentId) ?? null;
+    if (!parent) throw new EngineError("NO_TASK", `no task with id ${parentId}`);
+    if (parent.status !== "open") throw new EngineError("TASK_CLOSED", `parent task ${parent.id} is ${parent.status}`);
+  }
   const top = runBounded(e, input2.cwd ?? e.cwd, "git", ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0) throw new EngineError("NOT_A_REPO", `not a git repository: ${input2.cwd ?? e.cwd}`);
-  const cwd = top.stdout.trim();
-  const branch = input2.branch ?? runBounded(e, cwd, "git", ["branch", "--show-current"]).stdout.trim();
-  if (input2.branch === void 0 && !branch) {
-    throw new EngineError("POLICY_INVALID", `${cwd} is not on a branch (detached HEAD): pass a branch`);
-  }
-  const head = runBounded(e, cwd, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
-  if (!branch || head.code !== 0) throw new EngineError("POLICY_INVALID", `no such branch: "${branch}"`);
-  const base_sha = head.stdout.trim();
-  const now = iso(e);
+  const checkout = top.stdout.trim();
   const by = actorId(input2.actor);
+  const now = iso(e);
+  if (!input2.worktree) {
+    const branch2 = input2.branch ?? runBounded(e, checkout, "git", ["branch", "--show-current"]).stdout.trim();
+    if (input2.branch === void 0 && !branch2) {
+      throw new EngineError("POLICY_INVALID", `${checkout} is not on a branch (detached HEAD): pass a branch`);
+    }
+    const head = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch2}^{commit}`]);
+    if (!branch2 || head.code !== 0) throw new EngineError("POLICY_INVALID", `no such branch: "${branch2}"`);
+    const base_sha2 = head.stdout.trim();
+    return tx(e, () => {
+      let id2;
+      if (planned) {
+        id2 = planned.id;
+        e.db.prepare("UPDATE tasks SET status = 'open', branch = ?, cwd = ?, base_sha = ? WHERE id = ?").run(branch2, checkout, base_sha2, id2);
+      } else {
+        id2 = Number(e.db.prepare(
+          "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)"
+        ).run(title, type, goal, done_check, branch2, checkout, base_sha2, by, now, parentId, group).lastInsertRowid);
+        insertAreas(e, id2, input2.area);
+      }
+      insertSteps(e, id2, typeSteps);
+      bind(e, id2, input2.actor);
+      logEvent(e, input2.actor, "task_started", id2, { type, title, branch: branch2 });
+      return view(e, id2);
+    });
+  }
+  const from = parent ? (() => {
+    const h = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${parent.branch}^{commit}`]);
+    if (h.code !== 0) throw new EngineError("POLICY_INVALID", `no such branch: "${parent.branch}"`);
+    return { ref: parent.branch, sha: h.stdout.trim() };
+  })() : featureBase(e, checkout);
+  let id;
+  if (planned) {
+    id = planned.id;
+    e.db.prepare("UPDATE tasks SET status = 'open', cwd = ?, base_sha = ? WHERE id = ?").run(checkout, from.sha, id);
+  } else {
+    id = Number(e.db.prepare(
+      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'open', '', ?, ?, ?, ?, ?, ?)"
+    ).run(title, type, goal, done_check, checkout, from.sha, by, now, parentId, group).lastInsertRowid);
+  }
+  const name = `${id}-${slug(title)}`;
+  const branch = `${parent ? "task" : "feat"}/${name}`;
+  let path;
+  try {
+    path = createWorktree(e, { under: checkout, name, branch, base: from.ref });
+  } catch (x) {
+    e.db.prepare("UPDATE tasks SET status = ? WHERE id = ?").run(planned ? "planned" : "cancelled", id);
+    logEvent(e, input2.actor, "worktree_failed", id, { error: x instanceof Error ? x.message : String(x) });
+    throw x;
+  }
+  ensureWorktreeExclude(e);
+  logEvent(e, input2.actor, "worktree_created", id, { path, branch, base: from.ref });
+  const setup = runWorktreeSetup(e, path);
+  if (setup && !setup.ok) logEvent(e, input2.actor, "worktree_setup_failed", id, { output_tail: setup.output_tail });
+  const base_sha = runBounded(e, path, "git", ["rev-parse", "HEAD"]).stdout.trim() || from.sha;
   return tx(e, () => {
-    const r = e.db.prepare(
-      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)"
-    ).run(input2.title, input2.type, input2.goal, input2.done_check, branch, cwd, base_sha, by, now);
-    const id = Number(r.lastInsertRowid);
-    steps.forEach((name, i) => e.db.prepare("INSERT INTO steps (task_id, name, ordinal, status) VALUES (?, ?, ?, 'pending')").run(id, name, i));
-    e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(id, input2.actor.session_id, input2.actor.agent_id ?? null, input2.actor.agent_id ? "worker" : "cto", now);
-    logEvent(e, input2.actor, "task_started", id, { type: input2.type, title: input2.title, branch });
-    return view(e, id);
+    e.db.prepare("UPDATE tasks SET cwd = ?, branch = ?, base_sha = ? WHERE id = ?").run(path, branch, base_sha, id);
+    if (!planned) insertAreas(e, id, input2.area);
+    insertSteps(e, id, parent ? workerSteps(typeSteps) : typeSteps);
+    bind(e, id, input2.actor);
+    logEvent(e, input2.actor, "task_started", id, { type, title, branch });
+    return { ...view(e, id), worktree_path: path, ...setup ? { setup } : {} };
   });
 }
 function insertEvidence(e, task_id, step, kind, ok, payload, actor) {
@@ -34890,15 +35001,18 @@ function checkoutLabel(e, checkout) {
 }
 function writeIgnore(e, checkout) {
   const lines2 = [".estack/", ...e.policy.code_map.exclude];
-  writeFileSync2(join4(checkout, ".graphifyignore"), lines2.map((l) => l + "\n").join(""));
+  writeFileSync2(join5(checkout, ".graphifyignore"), lines2.map((l) => l + "\n").join(""));
+  appendExclude(e, checkout, [`${OUT_DIR}/`, ".graphifyignore"]);
+}
+function appendExclude(e, checkout, wanted) {
   const r = e.exec.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: checkout, timeoutMs: 1e4 });
   if (r.code !== 0) return;
-  const info = join4(r.stdout.trim(), "info");
-  const file2 = join4(info, "exclude");
+  const info = join5(r.stdout.trim(), "info");
+  const file2 = join5(info, "exclude");
   mkdirSync2(info, { recursive: true });
-  const have = existsSync3(file2) ? readFileSync2(file2, "utf8") : "";
+  const have = existsSync4(file2) ? readFileSync2(file2, "utf8") : "";
   const present = new Set(have.split("\n"));
-  const missing = [`${OUT_DIR}/`, ".graphifyignore"].filter((l) => !present.has(l));
+  const missing = wanted.filter((l) => !present.has(l));
   if (missing.length) appendFileSync(file2, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
 }
 function sleep(ms) {
@@ -34926,7 +35040,7 @@ function takeLock(lock, timeoutMs) {
 }
 var readRaw = (checkout) => {
   try {
-    return JSON.parse(readFileSync2(join4(checkout, OUT_DIR, "graph.json"), "utf8"));
+    return JSON.parse(readFileSync2(join5(checkout, OUT_DIR, "graph.json"), "utf8"));
   } catch {
     return null;
   }
@@ -34957,7 +35071,7 @@ function loadGraph(checkout) {
 }
 function mappedFiles(checkout) {
   try {
-    const j = JSON.parse(readFileSync2(join4(checkout, OUT_DIR, "estack-files.json"), "utf8"));
+    const j = JSON.parse(readFileSync2(join5(checkout, OUT_DIR, "estack-files.json"), "utf8"));
     return new Set(j.files ?? []);
   } catch {
     return null;
@@ -34998,10 +35112,10 @@ function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
   if (v === null || !versionSupported(v)) {
     return fail(`Graphify ${v === null ? "is not installed" : `${v} is not supported`}; install it with: ${INSTALL_HINT}`);
   }
-  const lock = join4(checkout, OUT_DIR, ".estack-build.lock");
+  const lock = join5(checkout, OUT_DIR, ".estack-build.lock");
   let locked;
   try {
-    mkdirSync2(join4(checkout, OUT_DIR), { recursive: true });
+    mkdirSync2(join5(checkout, OUT_DIR), { recursive: true });
     locked = takeLock(lock, timeoutMs);
   } catch (x) {
     return fail(`could not take the map build lock: ${x instanceof Error ? x.message : String(x)}`);
@@ -35020,7 +35134,7 @@ function buildGraph(e, checkout, timeoutMs = BUILD_TIMEOUT_MS) {
     }
     const g = loadGraph(checkout);
     const files = [...g.files].sort();
-    const out = join4(checkout, OUT_DIR, "estack-files.json");
+    const out = join5(checkout, OUT_DIR, "estack-files.json");
     writeFileSync2(out + ".tmp", JSON.stringify({ built_at_commit: g.built_at_commit, graphify_version: g.graphify_version, files }));
     renameSync(out + ".tmp", out);
     return finish({ ok: true, nodes: g.nodes.size, files: files.length });
@@ -35045,7 +35159,7 @@ function suggestExcludes(e, root) {
     }
   }
   try {
-    for (const line of readFileSync2(join4(root, ".gitattributes"), "utf8").split("\n")) {
+    for (const line of readFileSync2(join5(root, ".gitattributes"), "utf8").split("\n")) {
       const [pattern, ...attrs] = line.trim().split(/\s+/);
       if (!pattern || pattern.startsWith("#")) continue;
       for (const a of attrs) {
@@ -35060,7 +35174,7 @@ function suggestExcludes(e, root) {
     if (!CODE_EXT.test(f)) continue;
     let head;
     try {
-      head = readFileSync2(join4(root, f), "utf8").slice(0, 4096).split("\n").slice(0, 5).join("\n");
+      head = readFileSync2(join5(root, f), "utf8").slice(0, 4096).split("\n").slice(0, 5).join("\n");
     } catch {
       continue;
     }
@@ -35251,7 +35365,7 @@ function savedIn(e, h) {
   if (h.checkout) return h.checkout;
   return h.kind === "task" ? h.body.task.cwd : e.repo.root;
 }
-function bind(e, task_id, actor) {
+function bind2(e, task_id, actor) {
   const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id IS ?").get(task_id, actor.session_id, actor.agent_id ?? null);
   if (dup) return;
   e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso2(e));
@@ -35305,7 +35419,7 @@ function consumeHandover(e, actor, sel = {}, cwd) {
     for (const id of ids) {
       const v = getTask(e, id);
       if (v.task.status !== "open") continue;
-      bind(e, id, actor);
+      bind2(e, id, actor);
       views.push(v);
     }
     logEvent(e, actor, "resumed", handover?.task_id ?? task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });
@@ -35321,7 +35435,7 @@ function consumeHandover(e, actor, sel = {}, cwd) {
 }
 
 // engine/src/mapfirst.ts
-import { existsSync as existsSync4, statSync as statSync2 } from "node:fs";
+import { existsSync as existsSync5, statSync as statSync2 } from "node:fs";
 import { relative, sep } from "node:path";
 var READ_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep"]);
 function preRead(e, ev) {
@@ -35332,7 +35446,7 @@ function preRead(e, ev) {
     const raw = isRead ? input2.file_path : input2.path ?? ev.cwd;
     if (typeof raw !== "string" || raw === "") return null;
     const abs = resolveReal(ev.cwd, raw);
-    const top = runBounded(e, existsSync4(abs) && statSync2(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
+    const top = runBounded(e, existsSync5(abs) && statSync2(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
     if (top.code !== 0) return null;
     const checkout = top.stdout.trim();
     const task = e.db.prepare(
@@ -35480,17 +35594,17 @@ function resolveReal(cwd, p) {
   const abs = resolve(cwd, p);
   let d = abs;
   const rest = [];
-  while (!existsSync5(d)) {
+  while (!existsSync6(d)) {
     const up = dirname2(d);
     if (up === d) return abs;
     rest.unshift(d.slice(up.length + 1));
     d = up;
   }
-  return join5(realpathSync2(d), ...rest);
+  return join6(realpathSync2(d), ...rest);
 }
 function nearestDir(p) {
   let d = dirname2(p);
-  while (!existsSync5(d)) {
+  while (!existsSync6(d)) {
     const up = dirname2(d);
     if (up === d) break;
     d = up;
@@ -35769,7 +35883,7 @@ function runHook(name, ev, deps = {}) {
 
 // engine/src/duplicates.ts
 import { readFileSync as readFileSync3 } from "node:fs";
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 var NAME_PREFIXES = ["get", "make", "build", "create", "compute", "calculate", "calc", "do"];
 var MAP_ACTOR2 = { session_id: "map" };
 var TEST_PATTERNS = ["**/*.test.*", "**/*.spec.*", "**/test/**", "**/tests/**", "**/__tests__/**"];
@@ -35781,7 +35895,7 @@ function normaliseName(name) {
 function paramCount(checkout, file2, line) {
   let src;
   try {
-    src = readFileSync3(join6(checkout, file2), "utf8").split("\n").slice(Math.max(0, line - 1), line + 4).join("\n");
+    src = readFileSync3(join7(checkout, file2), "utf8").split("\n").slice(Math.max(0, line - 1), line + 4).join("\n");
   } catch {
     return null;
   }
@@ -45656,7 +45770,7 @@ var StdioServerTransport = class {
 };
 
 // engine/src/codemap.ts
-import { existsSync as existsSync6, realpathSync as realpathSync3 } from "node:fs";
+import { existsSync as existsSync7, realpathSync as realpathSync3 } from "node:fs";
 import { isAbsolute as isAbsolute2, relative as relative3, resolve as resolve2, sep as sep3 } from "node:path";
 var MAX_LIST = 40;
 var MAX_MATCHES = 15;
@@ -45669,7 +45783,7 @@ function capped(hits, key, more) {
   if (hits.length > MAX_LIST) more[key] = hits.length - MAX_LIST;
   return hits.slice(0, MAX_LIST);
 }
-var real = (p) => existsSync6(p) ? realpathSync3(p) : p;
+var real = (p) => existsSync7(p) ? realpathSync3(p) : p;
 function mapPath(g, path) {
   const root = real(g.checkout);
   const rel = relative3(root, real(resolve2(root, path))).split(sep3).join("/");
@@ -45878,13 +45992,31 @@ function createServer(cwd, deps = {}) {
       goal: external_exports.string(),
       done_check: external_exports.string(),
       branch: external_exports.string().optional(),
-      area: external_exports.string().optional().describe("the folder or file you will change; with the code map on, its context is returned"),
+      area: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).optional().describe("the folders or files you will change; with the code map on, the first one's context is returned"),
+      worktree: external_exports.boolean().optional().describe("make the task its own branch and git worktree (a feature, or a worker when parent_task_id is given)"),
+      parent_task_id: external_exports.number().int().optional().describe("the feature this task is a worker of"),
+      group: external_exports.string().optional(),
+      task_id: external_exports.number().int().optional().describe("start this planned task instead of making a new one"),
       cwd: external_exports.string().optional().describe("the caller's working directory; its worktree becomes the task's (stamped by the hook)"),
       actor: actorSchema
     }
   }, tool((e, a, actor) => {
-    const v = startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor });
-    return { ...v, ...taskContext(e, v, a.area, actor) };
+    const area = typeof a.area === "string" ? [a.area] : a.area;
+    const v = startTask(e, {
+      title: a.title,
+      type: a.type,
+      goal: a.goal,
+      done_check: a.done_check,
+      branch: a.branch,
+      cwd: a.cwd,
+      actor,
+      worktree: a.worktree,
+      parent_task_id: a.parent_task_id,
+      area,
+      group: a.group,
+      task_id: a.task_id
+    });
+    return { ...v, ...taskContext(e, v, area?.[0], actor) };
   }));
   const codeTool = (name, argName, description, argHelp) => server.registerTool(name, {
     description,
@@ -46016,8 +46148,8 @@ function recordOverride(e, input2, env) {
 
 // engine/src/githooks.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { chmodSync, existsSync as existsSync7, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join7, resolve as resolve3 } from "node:path";
+import { chmodSync, existsSync as existsSync8, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join8, resolve as resolve3 } from "node:path";
 var MANAGED_MARK = "# estack-managed-hook";
 var MAP_HOOKS = ["post-commit", "post-checkout", "post-merge", "post-rewrite"];
 var HOOKS = ["pre-commit", "pre-push", ...MAP_HOOKS];
@@ -46078,10 +46210,10 @@ function installGitHooks(repoRoot, enginePath) {
   mkdirSync3(dir, { recursive: true });
   const installed = [], chained = [];
   for (const name of HOOKS) {
-    const p = join7(dir, name);
-    if (existsSync7(p) && !readFileSync4(p, "utf8").includes(MANAGED_MARK)) {
+    const p = join8(dir, name);
+    if (existsSync8(p) && !readFileSync4(p, "utf8").includes(MANAGED_MARK)) {
       let dest = `${p}.estack-prev`;
-      for (let n = 2; existsSync7(dest); n++) dest = `${p}.estack-prev.${n}`;
+      for (let n = 2; existsSync8(dest); n++) dest = `${p}.estack-prev.${n}`;
       renameSync2(p, dest);
       chained.push(name);
     }
@@ -46279,7 +46411,7 @@ function dispatch(cmd, rest, io) {
             const checkout = e.repo.root;
             const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
             if (fresh && (!r.ok || r.files === 0)) {
-              writeFileSync4(join8(e.repo.estackDir, "policy.yaml"), defaultPolicyYaml({ codeMap: false, exclude }));
+              writeFileSync4(join9(e.repo.estackDir, "policy.yaml"), defaultPolicyYaml({ codeMap: false, exclude }));
               io.out(`code map off: ${r.ok ? "Graphify mapped no files" : r.error}; nothing to map yet. Turn it on later by editing the code_map block in .estack/policy.yaml.
 `);
             } else {

@@ -51,6 +51,11 @@ export function checkoutLabel(e: Engine, checkout: string): string {
 export function writeIgnore(e: Engine, checkout: string): void {
   const lines = [".estack/", ...e.policy.code_map.exclude];
   writeFileSync(join(checkout, ".graphifyignore"), lines.map((l) => l + "\n").join(""));
+  appendExclude(e, checkout, [`${OUT_DIR}/`, ".graphifyignore"]);
+}
+
+/** Append lines missing from `<git common dir>/info/exclude`, so git ignores them without a tracked change. */
+export function appendExclude(e: Engine, checkout: string, wanted: string[]): void {
   const r = e.exec.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: checkout, timeoutMs: 10_000 });
   if (r.code !== 0) return;
   const info = join(r.stdout.trim(), "info");
@@ -58,7 +63,7 @@ export function writeIgnore(e: Engine, checkout: string): void {
   mkdirSync(info, { recursive: true });
   const have = existsSync(file) ? readFileSync(file, "utf8") : "";
   const present = new Set(have.split("\n"));
-  const missing = [`${OUT_DIR}/`, ".graphifyignore"].filter((l) => !present.has(l));
+  const missing = wanted.filter((l) => !present.has(l));
   if (missing.length) appendFileSync(file, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
 }
 

@@ -47,13 +47,20 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
     inputSchema: {
       title: z.string(), type: z.string(), goal: z.string(), done_check: z.string(),
       branch: z.string().optional(),
-      area: z.string().optional().describe("the folder or file you will change; with the code map on, its context is returned"),
+      area: z.union([z.string(), z.array(z.string())]).optional().describe("the folders or files you will change; with the code map on, the first one's context is returned"),
+      worktree: z.boolean().optional().describe("make the task its own branch and git worktree (a feature, or a worker when parent_task_id is given)"),
+      parent_task_id: z.number().int().optional().describe("the feature this task is a worker of"),
+      group: z.string().optional(), task_id: z.number().int().optional().describe("start this planned task instead of making a new one"),
       cwd: z.string().optional().describe("the caller's working directory; its worktree becomes the task's (stamped by the hook)"),
       actor: actorSchema,
     },
-  }, tool((e, a: { title: string; type: string; goal: string; done_check: string; branch?: string; area?: string; cwd?: string; actor?: Actor }, actor) => {
-    const v = startTask(e, { title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor });
-    return { ...v, ...taskContext(e, v, a.area, actor) };
+  }, tool((e, a: { title: string; type: string; goal: string; done_check: string; branch?: string; area?: string | string[]; cwd?: string; worktree?: boolean; parent_task_id?: number; group?: string; task_id?: number; actor?: Actor }, actor) => {
+    const area = typeof a.area === "string" ? [a.area] : a.area;
+    const v = startTask(e, {
+      title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor,
+      worktree: a.worktree, parent_task_id: a.parent_task_id, area, group: a.group, task_id: a.task_id,
+    });
+    return { ...v, ...taskContext(e, v, area?.[0], actor) };
   }));
 
   const codeTool = (name: CodeTool, argName: string, description: string, argHelp: string) =>
