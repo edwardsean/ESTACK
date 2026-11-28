@@ -1,5 +1,5 @@
 import { passClaims, releaseClaims, syncMerged } from "./claims";
-import { recordOutcomes } from "./outcomes";
+import { recordMergeConflicts, recordOutcomes } from "./outcomes";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
 import { areaPath, claimInfo, gateStart, releaseStale } from "./plan";
@@ -453,6 +453,9 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
   });
   if (!result) return bad(rejected ?? "evidence rejected");
   if (input.step === "merge") {
+    // Paths that conflicted in this merge make their grants conflicts, before the clean check below can call them clean.
+    const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task | undefined;
+    if (feature && typeof payload.head === "string") recordMergeConflicts(e, v.task, feature, payload.head);
     // The worker is merged: its worktree goes (kept if dirty). The step is already recorded, so a failure here does not undo it.
     try { removeWorktree(e, v.task); } catch (x) {
       logEvent(e, { session_id: "engine" }, "worktree_kept", v.task.id, { path: v.task.cwd, reason: x instanceof Error ? x.message : String(x) });

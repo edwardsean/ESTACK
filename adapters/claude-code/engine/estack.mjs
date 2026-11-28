@@ -35126,6 +35126,47 @@ function judge(e, c, g) {
   if (holderFailed(e, g, holder)) return "holder_failed";
   return finished(e, c, grantee, holder) ? "clean" : null;
 }
+function setOutcome(e, g, outcome) {
+  tx(e, () => {
+    const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL").run(outcome, e.now().toISOString(), g.id);
+    if (r.changes === 1) logEvent(e, ENGINE, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
+  });
+}
+function mergeConflicts(e, cwd, branch, head) {
+  const run = (args) => e.exec.run("git", args, { cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  const merges = run(["rev-list", "--merges", "--parents", `${head}..refs/heads/${branch}`]);
+  if (merges.code !== 0) return [];
+  const merge2 = merges.stdout.split("\n").map((l) => l.trim().split(" ")).filter((p) => p.slice(2).includes(head)).at(-1);
+  if (!merge2) return [];
+  const [sha, first] = merge2;
+  const tree = run(["merge-tree", "--write-tree", "--name-only", "--no-messages", first, head]);
+  if (tree.code === 0) return [];
+  if (tree.code === 1) return tree.stdout.split("\n").slice(1).map((l) => l.trim()).filter(Boolean);
+  const msg = run(["log", "-1", "--format=%B", sha]);
+  if (msg.code !== 0) return [];
+  const lines2 = msg.stdout.split("\n");
+  const at = lines2.findIndex((l) => /^#?\s*Conflicts:\s*$/.test(l));
+  const out = [];
+  for (const l of at < 0 ? [] : lines2.slice(at + 1)) {
+    const m = /^#?\t(.+)$/.exec(l);
+    if (!m) break;
+    out.push(m[1].trim());
+  }
+  return out;
+}
+function recordMergeConflicts(e, worker, feature, head) {
+  try {
+    const paths = new Set(mergeConflicts(e, feature.cwd && existsSync4(feature.cwd) ? feature.cwd : e.repo.root, feature.branch, head));
+    if (paths.size === 0) return;
+    const involved = /* @__PURE__ */ new Set([worker.id, feature.id]);
+    const grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all().filter((g) => paths.has(g.path));
+    for (const g of grants) {
+      const holder = holderAtGrant(e, g);
+      if (involved.has(g.task_id) || holder !== void 0 && involved.has(holder)) setOutcome(e, g, "conflict");
+    }
+  } catch {
+  }
+}
 function recordOutcomes(e, opts = {}) {
   const budget = opts.budget_ms ?? OUTCOME_BUDGET_MS;
   const c = { remote: opts.remote ?? true, deadline: Date.now() + budget, check: mergeCheck(budget), mergeable: /* @__PURE__ */ new Map(), merged: /* @__PURE__ */ new Map() };
@@ -35139,11 +35180,7 @@ function recordOutcomes(e, opts = {}) {
     if (Date.now() >= c.deadline) return;
     try {
       const outcome = judge(e, c, g);
-      if (!outcome) continue;
-      tx(e, () => {
-        const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL").run(outcome, e.now().toISOString(), g.id);
-        if (r.changes === 1) logEvent(e, ENGINE, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
-      });
+      if (outcome) setOutcome(e, g, outcome);
     } catch {
     }
   }
@@ -35582,6 +35619,8 @@ function completeStep(e, input2) {
   });
   if (!result) return bad(rejected ?? "evidence rejected");
   if (input2.step === "merge") {
+    const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id);
+    if (feature && typeof payload.head === "string") recordMergeConflicts(e, v.task, feature, payload.head);
     try {
       removeWorktree(e, v.task);
     } catch (x) {

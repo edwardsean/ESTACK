@@ -121,6 +121,63 @@ function judge(e: Engine, c: Ctx, g: Grant): Outcome | null {
   return finished(e, c, grantee, holder) ? "clean" : null;
 }
 
+/** Record one grant's outcome, once. */
+function setOutcome(e: Engine, g: Grant, outcome: Outcome): void {
+  tx(e, () => {
+    const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL")
+      .run(outcome, e.now().toISOString(), g.id);
+    if (r.changes === 1) logEvent(e, ENGINE, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
+  });
+}
+
+/**
+ * The paths that conflicted when `head` was merged into `branch`: git merge-tree replays the merge commit (its first
+ * parent with `head`) and lists them; a git without `merge-tree --write-tree` falls back to the "Conflicts:" block git
+ * writes into the merge commit's message. No merge commit (a fast-forward) means no conflict.
+ */
+export function mergeConflicts(e: Engine, cwd: string, branch: string, head: string): string[] {
+  const run = (args: string[]) => e.exec.run("git", args, { cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  const merges = run(["rev-list", "--merges", "--parents", `${head}..refs/heads/${branch}`]);
+  if (merges.code !== 0) return [];
+  // The oldest merge commit with `head` as a merged (not first) parent.
+  const merge = merges.stdout.split("\n").map((l) => l.trim().split(" ")).filter((p) => p.slice(2).includes(head)).at(-1);
+  if (!merge) return [];
+  const [sha, first] = merge;
+  const tree = run(["merge-tree", "--write-tree", "--name-only", "--no-messages", first, head]);
+  if (tree.code === 0) return [];
+  if (tree.code === 1) return tree.stdout.split("\n").slice(1).map((l) => l.trim()).filter(Boolean);
+  const msg = run(["log", "-1", "--format=%B", sha]);
+  if (msg.code !== 0) return [];
+  const lines = msg.stdout.split("\n");
+  const at = lines.findIndex((l) => /^#?\s*Conflicts:\s*$/.test(l));
+  const out: string[] = [];
+  for (const l of at < 0 ? [] : lines.slice(at + 1)) {
+    const m = /^#?\t(.+)$/.exec(l);
+    if (!m) break;
+    out.push(m[1].trim());
+  }
+  return out;
+}
+
+/**
+ * A worker's merge into its feature just completed: every open grant on a path that conflicted in that merge, held by or
+ * granted to the worker or the feature, is a conflict, even though the CTO resolved and committed it before the step.
+ * Runs before any clean check; never throws.
+ */
+export function recordMergeConflicts(e: Engine, worker: Task, feature: Task, head: string): void {
+  try {
+    const paths = new Set(mergeConflicts(e, feature.cwd && existsSync(feature.cwd) ? feature.cwd : e.repo.root, feature.branch, head));
+    if (paths.size === 0) return;
+    const involved = new Set([worker.id, feature.id]);
+    const grants = (e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all() as unknown as Grant[])
+      .filter((g) => paths.has(g.path));
+    for (const g of grants) {
+      const holder = holderAtGrant(e, g);
+      if (involved.has(g.task_id) || (holder !== undefined && involved.has(holder))) setOutcome(e, g, "conflict");
+    }
+  } catch { /* left for recordOutcomes */ }
+}
+
 /**
  * Record what became of each shared-edit grant: a merge conflict in the file, the holder's failing test or verify on a
  * change including it, or both tasks merged cleanly. Recorded once; never throws; a grant that cannot be judged now is
@@ -139,12 +196,7 @@ export function recordOutcomes(e: Engine, opts: { remote?: boolean; budget_ms?: 
     if (Date.now() >= c.deadline) return;
     try {
       const outcome = judge(e, c, g);
-      if (!outcome) continue;
-      tx(e, () => {
-        const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL")
-          .run(outcome, e.now().toISOString(), g.id);
-        if (r.changes === 1) logEvent(e, ENGINE, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
-      });
+      if (outcome) setOutcome(e, g, outcome);
     } catch { /* tried again next time */ }
   }
 }

@@ -120,6 +120,45 @@ describe("grant outcomes", { timeout: 60_000 }, () => {
     expect(logged(e)).toEqual([{ grant_id: g, outcome: "clean" }]);
   });
 
+  /** Two workers of one feature add src/a.ts differently; w1 holds it and w2 is allowed in. w1 merges cleanly, then w2's merge conflicts and is resolved and committed. */
+  function resolvedConflict(e: Engine, dir: string) {
+    const f = feature(e, dir, "feat");
+    const w1 = worker(e, f, "w1");
+    const w2 = worker(e, f, "w2");
+    const g = grant(e, w1, w2);
+    commitFile(w1, "src/a.ts", "one\n");
+    commitFile(w2, "src/a.ts", "two\n");
+    for (const w of [w1, w2]) e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name != 'merge'").run(w.id);
+    git(f.cwd, "merge", "--no-ff", "-m", "m1", w1.branch);
+    completeStep(e, { task_id: w1.id, step: "merge", evidence: { kind: "merged" }, actor: A });
+    expect(outcome(e, g).outcome).toBeNull();
+    expect(() => git(f.cwd, "merge", "--no-ff", "-m", "m2", w2.branch)).toThrow();
+    writeFileSync(join(f.cwd, "src/a.ts"), "one and two\n");
+    git(f.cwd, "add", "src/a.ts");
+    git(f.cwd, "commit", "--no-edit");
+    return { f, w1, w2, g };
+  }
+
+  test("a conflict resolved and committed before the merge step is recorded as conflict, not clean", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const { w2, g } = resolvedConflict(e, dir);
+    completeStep(e, { task_id: w2.id, step: "merge", evidence: { kind: "merged" }, actor: A });
+    expect(outcome(e, g)).toEqual({ outcome: "conflict", outcome_at: expect.any(String) });
+    expect(logged(e)).toEqual([{ grant_id: g, outcome: "conflict" }]);
+    recordOutcomes(e, { remote: true });
+    expect(outcome(e, g).outcome).toBe("conflict");
+  });
+
+  test("without git merge-tree --write-tree the merge commit's Conflicts: block is read instead", () => {
+    const dir = repo();
+    const base = fakeExec({});
+    const e = openEngine(dir, { exec: { run: (f, a, o) => (f === "git" && a[0] === "merge-tree" ? { code: 129, stdout: "", stderr: "usage: git merge-tree", timedOut: false, durationMs: 0 } : base.run(f, a, o)), shell: base.shell } });
+    const { w2, g } = resolvedConflict(e, dir);
+    completeStep(e, { task_id: w2.id, step: "merge", evidence: { kind: "merged" }, actor: A });
+    expect(outcome(e, g).outcome).toBe("conflict");
+  });
+
   test("outcomes are recorded once", () => {
     const dir = repo();
     const e = openEngine(dir, deps);
