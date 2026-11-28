@@ -4,7 +4,6 @@ description: Engineering family. Implements the glue between services, the adapt
 model: opus
 effort: high
 color: blue
-isolation: worktree
 tools: [Read, Grep, Glob, Bash, Write, Edit, WebFetch, WebSearch]
 disallowedTools: [Agent]
 ---

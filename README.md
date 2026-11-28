@@ -161,6 +161,16 @@ failed.
 an agent session (when `CLAUDECODE=1`), as a guard against accidental use; it
 is not a security boundary. Run them from a normal terminal.
 
+**Features and workers.** A feature is a task with `worktree: true` and no parent:
+the engine makes `feat/<id>-<slug>` under `.estack/worktrees/`. The CTO splits it
+with `plan_tasks`, which reports overlaps to resolve with `depends_on` or
+`accept_overlap`, then starts each worker (`worktree: true`, `parent_task_id`) on
+`task/<id>-<slug>`. A worker's last step is `merge`, which the CTO does into the
+feature. Editing a file another task holds is denied, and the CTO sees it with
+`claim_status` and allows it with `allow_edit`. `status` lists planned, starting
+and kept items, and `estack cancel` takes planned and starting tasks too. Policy
+keys: `commands.worktree_setup` (for example `npm ci`) and `claims.exempt`.
+
 ### Handover
 
 Long sessions fill their context. The engine measures it and, past
@@ -271,7 +281,7 @@ estack is being built in phases, each one usable on its own
 | 3 | Hooks and git hooks that enforce the engine | Done |
 | 4 | Handover: continue a task in a fresh session from recorded state | Done |
 | 5 | Code map on [Graphify](https://github.com/Graphify-Labs/graphify): agents see existing code before writing new code, and reuse searches count as evidence | Done |
-| 6 | Parallel workers in their own worktrees, with claims so two never build the same thing | Planned |
+| 6 | Parallel workers in their own worktrees, with claims so two never build the same thing | Done |
 | 7 | A second coding agent (Cursor or OpenCode) from the same `core/` | Planned |
 
 ## More detail

@@ -4,7 +4,6 @@ description: Engineering family. Implements the web surface of a change against 
 model: opus
 effort: high
 color: blue
-isolation: worktree
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 disallowedTools: [Agent]
 ---

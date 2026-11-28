@@ -4,7 +4,6 @@ description: Engineering family. Implements one service's slice of a change agai
 model: opus
 effort: high
 color: blue
-isolation: worktree
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 disallowedTools: [Agent]
 ---

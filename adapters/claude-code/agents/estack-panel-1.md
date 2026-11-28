@@ -4,7 +4,6 @@ description: Panel seat 1 of 3 for diverse review and design. Runs an arena bake
 model: opus
 effort: high
 color: blue
-isolation: worktree
 tools: [Read, Grep, Glob, Bash, Write, Edit, WebFetch, WebSearch]
 disallowedTools: [Agent]
 ---
@@ -34,4 +33,4 @@ First line: the model you ran on, from your own configuration. Then:
 
 ## Claude Code specifics
 
-You cannot dispatch subagents. Your `model` and `effort` default to this file's frontmatter. The dispatcher can override both on the `Agent` call, from the `estack-panel-1:` line in `~/.claude/rules/estack-models.md`, and you cannot change them mid-task. `isolation: worktree` is set here, so Claude Code runs you in a temporary git worktree; report its path and branch so the dispatcher can read your artifact.
+You cannot dispatch subagents. Your `model` and `effort` default to this file's frontmatter. The dispatcher can override both on the `Agent` call, from the `estack-panel-1:` line in `~/.claude/rules/estack-models.md`, and you cannot change them mid-task. The dispatcher gives you a worktree path in the brief; work only there, and report its path and branch so the dispatcher can read your artifact.

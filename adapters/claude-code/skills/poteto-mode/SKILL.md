@@ -194,6 +194,20 @@ A delegated brief carries the knowledge slice and the rules relevant to that sea
 
 Build each packet from four things. The goal and the done predicate. The knowledge entries the retrieval query matched for that responsibility. The rules and business cards that bind it. The fixed contracts or schema it has to conform to. Everything else stays here, and the packet names what was deliberately left out so the seat can ask instead of assuming.
 
+### Parallel work in an estack repository
+
+In a repository that opted in, the engine makes the worktrees and holds the files. Do not pass `isolation: "worktree"` to a seat there.
+
+1. **Start the feature.** From the main checkout, call `start_task` with `worktree: true` and no parent. That makes `feat/<id>-<slug>` under `.estack/worktrees/`. If you are already in a feature checkout, start the feature task there with no worktree.
+2. **Plan the workers.** Call `plan_tasks` with the feature as `parent_task_id` and one entry per worker (title, type, goal, done_check, area, and optionally `adds`, `depends_on` and `group`). Resolve each overlap it returns with `depends_on`, or with `accept_overlap` when the overlap is fine.
+3. **Start each worker.** Call `start_task` with its `task_id` and `worktree: true`. The engine makes `task/<id>-<slug>` from the feature head.
+4. **Dispatch the seat.** Give it the worktree path, full paths for every file, and `git -C <worktree>` for git. A seat does not change directory.
+5. **Merge.** When the worker's verify and review pass, run `git -C <feature cwd> merge --no-ff <branch>`, then `complete_step` `merge` with evidence `{kind: "merged"}`.
+6. **A held file.** A worker whose edit is denied reports it to you. Check it with `claim_status`, then `allow_edit` or wait. A hold owned by another CTO is the owner's call: ask them to run `estack allow`. Workers never allow edits, accept overlaps or withdraw tasks.
+7. **Bakeoffs.** Give every candidate the same `group`, so they can touch the same files without blocking each other.
+
+Outside an estack repository there is no engine to make worktrees, so pass `isolation: "worktree"` on the `Agent` call yourself.
+
 ## Delivery pipeline
 
 Work is not done when the code is written. These fourteen steps are the path from an implementation to a change running in production, and the chain playbooks hand off here rather than ending at a green test run.
