@@ -44,6 +44,8 @@ Do this before writing anything. The edit and shell-command hooks fail closed wh
 
 Parallel work puts worktrees under `.estack/worktrees/`. Tell the owner to exclude `.estack/` in any test runner or linter that scans the whole tree (for vitest, `exclude: [".estack/**"]`), or it will run the worktrees' copies too.
 
+The engine removes a worktree once its task is merged, cancelled or withdrawn. It keeps one with uncommitted changes, but git status does not show ignored files, so removing a worktree deletes any ignored files in it, such as a copied `.env` or local data. Tell the owner to keep such files outside the worktrees, or to have `commands.worktree_setup` recreate them.
+
 The `handover:` keys are optional and look like this:
 
 ```yaml

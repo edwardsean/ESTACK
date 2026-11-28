@@ -106,7 +106,7 @@ A long chat accumulates context from the last task. When you change subjects, sa
 
 ## Give parallel work its own worktree
 
-If you run several agents against one repository on one computer, they will fight over the working tree, the ports, and the build output. Upstream solved this with a cloud subagent that got its own VM and branch, so it could install dependencies and run your app without touching your machine. This port assumes no cloud agent and no second machine, so the isolation on offer is a git worktree, one directory per agent sharing this machine's disk and CPU. Claude Code makes one per subagent when the dispatch passes `isolation: "worktree"`. Ask for the worktree up front:
+If you run several agents against one repository on one computer, they will fight over the working tree, the ports, and the build output. Upstream solved this with a cloud subagent that got its own VM and branch, so it could install dependencies and run your app without touching your machine. This port assumes no cloud agent and no second machine, so the isolation on offer is a git worktree, one directory per agent sharing this machine's disk and CPU. In an estack repository the engine makes one for every worker task under a feature (see "Parallel work in an estack repository" in [poteto-mode](../../skills/poteto-mode/SKILL.md)), so a dispatch there does not pass `isolation`. Elsewhere, Claude Code makes one per subagent when the dispatch passes `isolation: "worktree"`. Ask for the worktree up front:
 
 ```text
 /poteto-mode new task. branch off <base> in a fresh worktree, then port the parser change there.

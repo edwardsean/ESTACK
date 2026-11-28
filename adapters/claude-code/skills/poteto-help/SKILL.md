@@ -144,7 +144,7 @@ Principles are one-rule skills that `/poteto-mode` reads and cites in its replie
 | A new model choice had no effect | The rule from `/setup-models` applies to new chats. Start one. |
 | Runs cost more than expected | See the cost paragraph under Get set up. |
 | A skill didn't load on its own | Only `/setup-models` loads from the user's words. The others load when the user types them or when `/poteto-mode` runs them, and it doesn't run every skill. |
-| Parallel agents overwrote each other | Give each agent its own worktree, or dispatch with `isolation: "worktree"` so Claude Code makes one per subagent. |
+| Parallel agents overwrote each other | Give each agent its own worktree. In an estack repository, make each agent a worker task under a feature, and the engine makes its worktree. Elsewhere, dispatch with `isolation: "worktree"` so Claude Code makes one per subagent. |
 | An overnight run moved but finished nothing | A `/loop` re-enters a run only while its session is open, and a duration is not a finish condition. A long job needs a check that can pass or fail plus a ceiling stated up front. See [guide page 7](../../docs/guide/07-overnight.md). |
 | The reply claims success from a green build | Ask for the real command, flow, stored value, or profile. That's the prove-it-works principle. |
 
