@@ -102,3 +102,25 @@ describe("F2 conflict outcome is written with the merge step", { timeout: 60_000
     expect(outcome(e, g)).toBe("conflict");
   });
 });
+
+describe("F3 conflict involvement", { timeout: 60_000 }, () => {
+  test("a cross-feature grant stays open when a sibling's change conflicts; the same-feature grant is a conflict", () => {
+    const dir = repo();
+    const e = openEngine(dir, { exec: fakeExec({}) });
+    const f = feature(e, dir, "feat");
+    const other = feature(e, dir, "other");
+    const w1 = worker(e, f, "w1");
+    const w2 = worker(e, f, "w2");
+    const cross = grant(e, w2, other, "src/a.ts");   // w2 holds a.ts, another feature is allowed in
+    const same = grant(e, w1, w2, "src/b.ts");       // w1 holds b.ts, its sibling w2 is allowed in
+    for (const w of [w1, w2]) { commitFile(w, "src/a.ts", `${w.id}\n`); commitFile(w, "src/b.ts", `${w.id}\n`); stepsDone(e, w); }
+    git(f.cwd, "merge", "--no-ff", "-m", "m1", w1.branch);
+    mergeStep(e, w1);
+    expect(() => git(f.cwd, "merge", "--no-ff", "-m", "m2", w2.branch)).toThrow();
+    for (const p of ["src/a.ts", "src/b.ts"]) { writeFileSync(join(f.cwd, p), "both\n"); git(f.cwd, "add", p); }
+    git(f.cwd, "commit", "--no-edit");
+    mergeStep(e, w2);
+    expect(outcome(e, same)).toBe("conflict");
+    expect(outcome(e, cross)).toBeNull();
+  });
+});
