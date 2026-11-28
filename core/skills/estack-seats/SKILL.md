@@ -33,7 +33,7 @@ Every `Agent` call that dispatches a seat follows the same three steps.
 
 1. Find the seat's line in `{{estack:models_file}}`, written by `/{{estack:ns}}:setup-models` as `<seat>: <model> <effort>`. Claude Code loads that file into every new session, so the line is usually already in context. If it is not, read the file.
 2. With a line, pass its model as `model` and its effort as `effort` on the call. `inherit` means the chat's model: pass the alias of the model this chat runs on, or omit `model` when you do not know it and say so. With no line, pass neither, and the seat's frontmatter decides.
-3. Add `isolation: "worktree"` on the call when the work writes and the seat does not already carry `isolation: worktree` in its frontmatter.
+3. Add `isolation: "worktree"` on the call when the work writes or runs in parallel and the repository is not an estack repository. In one, the engine makes the worktree (see poteto-mode).
 
 Subagents run in the background by default and notify the dispatcher when they finish. Dispatch independent seats in one message so they run concurrently, then wait for every notification before reading results.
 

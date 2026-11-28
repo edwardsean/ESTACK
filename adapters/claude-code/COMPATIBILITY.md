@@ -62,7 +62,7 @@ file the dispatcher reads at call time:
 | Beaten by | Nothing documented | `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`, `CLAUDE_CODE_EFFORT_LEVEL` |
 
 The seats stay. Each one carries a contract as well as a model: a read-only tool
-list, `isolation: worktree`, or `disallowedTools: [Agent]`. Claude Code registers
+list or `disallowedTools: [Agent]`. Claude Code registers
 them as `estack:<seat>`, and every dispatch reference in the tree was scoped to
 that name.
 

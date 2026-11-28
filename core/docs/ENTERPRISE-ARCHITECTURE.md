@@ -146,8 +146,7 @@ frontmatter. An agent never controls the overall workflow and never self-approve
 so every seat carries `disallowedTools: [Agent]`, the reviewing seats carry no
 `Write` or `Edit`, and every seat reports the model it ran on so an independence
 check can be verified after the fact. And concurrency is the orchestrator's
-decision, never the agent's, which is why the five engineering seats carry
-`isolation: worktree` and nothing inside a seat decides what runs beside it.
+decision, never the agent's, which is why worktrees come from the engine (or the dispatcher's `isolation: "worktree"` outside an estack repository) and nothing inside a seat decides what runs beside it.
 
 Tools are least-privilege per responsibility rather than uniform. Only
 `{{estack:ns}}:ent-integration-engineer` gets `WebFetch` and `WebSearch`, because its job is

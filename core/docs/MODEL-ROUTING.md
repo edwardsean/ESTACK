@@ -12,7 +12,7 @@ Claude Code can do the same. The `Agent` tool takes `model` and `effort` on each
 call, and a per-call value wins over the subagent's frontmatter. So this edition
 routes in two layers:
 
-1. **The seat** picks the brief, the tool list, the isolation, and a default
+1. **The seat** picks the brief, the tool list, and a default
    `model` and `effort`, from its file under `agents/`. Claude Code registers each
    one as `{{estack:ns}}:<seat>`.
 2. **The call** picks the model and effort that actually run, from the seat's line
@@ -34,7 +34,7 @@ estack-judge: sonnet high
 
 The seats survive from the Qoder edition, which needed one agent per model,
 because each one also carries a contract: read-only tools for a reviewer,
-`isolation: worktree` for a panel arm, `disallowedTools: [Agent]` for every
+`disallowedTools: [Agent]` for every
 enterprise seat. Panel width is still three seats, and because the model is a
 call parameter a dispatcher can also run one seat twice on two models.
 
@@ -58,8 +58,8 @@ the `Agent` tool has no per-call readonly flag, so the restriction lives in the
 agent definition and cannot be relaxed at dispatch time.
 
 `{{estack:ns}}:estack-verifier` does carry `Write` and `Edit`, because a verifier that
-cannot build a repro cannot prove much. It runs under `isolation: worktree`, so
-Claude Code gives it a temporary git worktree and the verdict stays attributable.
+cannot build a repro cannot prove much. It works in a worktree (the engine's in an estack repository,
+otherwise one the dispatcher passes with `isolation: "worktree"`), so the verdict stays attributable.
 Its contract forbids editing the code under review.
 
 ### The enterprise roster
@@ -204,7 +204,7 @@ minimum. Then:
   `skills/interrogate/SKILL.md`, as `{{estack:ns}}:<name>`, or it will never be reached.
 - Add a row to the seat table in `skills/estack-seats/SKILL.md`.
 - Add it to the `expected` map in `check_workflow()` in `scripts/selftest.py`.
-- Give it `isolation: worktree` if it writes, and `disallowedTools: [Agent]`
+- Pass `isolation: "worktree"` when dispatching it outside an estack repository if it writes, and give it `disallowedTools: [Agent]`
   unless it genuinely needs to fan out.
 
 Do not set `hooks`, `mcpServers`, `permissionMode`, or `initialPrompt`. Claude
