@@ -260,7 +260,8 @@ describe("file claims", { timeout: 60_000 }, () => {
     const f = feature(e, dir, A, "feat");
     const w = worker(e, f, A, "work");
     checkEdit(e, w, "src/w.ts");
-    cancelTask(e, { task_id: f.id, reason: "x" }, {});
+    // The owner's cancel now cancels the open worker too; a feature closed by other means (or before that) leaves it open.
+    e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(f.id);
     e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name != 'merge'").run(w.id);
     git(w.cwd, "commit", "--allow-empty", "-m", "work");
     git(f.cwd, "merge", "--no-ff", "-m", "m", w.branch);

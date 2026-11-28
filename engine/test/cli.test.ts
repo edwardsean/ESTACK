@@ -8,6 +8,7 @@ import { saveSessionHandover, saveTaskHandover } from "../src/handover";
 import { allowEdit, checkEdit, claimSymbol } from "../src/claims";
 import { removeWorktree } from "../src/worktree";
 import { getTask, startTask } from "../src/tasks";
+import { planTasks } from "../src/plan";
 import { HAS_GRAPHIFY, fakeExec, makeRepo, writeFakeGraph } from "./helpers";
 import { realExec, type Exec } from "../src/exec";
 
@@ -391,6 +392,21 @@ describe("cli init and the code map", () => {
       expect(again.err).toContain(`task #${t1.id} holds nothing`);
       expect(run(dir, ["release", "--task", "1", "--path", "x", "--reason", "x"]).status).toBe(2);
       expect(run(dir, ["release", "--reason", "x"]).status).toBe(2);
+    });
+
+    test("estack cancel on a feature cancels its workers too and names any worktree it kept", () => {
+      const { dir, e, t1 } = two();
+      const item = (title: string) => ({ title, type: "feature", goal: "g", done_check: "d", area: [`src/${title}`] });
+      const [w1, w2] = planTasks(e, { parent_task_id: t1.id, actor: { session_id: "sa" }, tasks: [item("w1"), item("w2")] }).tasks.map((t) => t.task.id);
+      const open = startTask(e, { task_id: w1, actor: { session_id: "sa" }, cwd: dir }).task;
+      writeFileSync(join(open.cwd, "wip.txt"), "x");
+      const r = run(dir, ["cancel", "--task", String(t1.id), "--reason", "dropped"]);
+      expect(r.status).toBe(0);
+      expect(r.out).toBe([
+        `cancelled task ${t1.id}`, `cancelled task ${w1} (under #${t1.id})`, `cancelled task ${w2} (under #${t1.id})`,
+        `kept worktree: ${open.cwd} (#${w1} w1): uncommitted changes`, "",
+      ].join("\n"));
+      expect([t1.id, w1, w2].map((id) => getTask(e, id).task.status)).toEqual(["cancelled", "cancelled", "cancelled"]);
     });
 
     test("status lists claims and kept worktrees", () => {

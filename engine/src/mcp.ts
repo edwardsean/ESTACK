@@ -124,11 +124,11 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
   }));
 
   server.registerTool("withdraw_task", {
-    description: "Cancel a planned task you own that has not started.",
+    description: "Cancel a planned task you own that has not started, or retire an open worker of yours that will not be merged (a bakeoff loser, a worker no longer needed): it is cancelled, its claims are released and its worktree is removed, unless it has uncommitted changes (then it is kept).",
     inputSchema: { task_id: z.number().int(), actor: actorSchema },
   }, tool((e, a: { task_id: number; actor?: Actor }, actor) => {
-    withdrawTask(e, a.task_id, actor);
-    return getTask(e, a.task_id);
+    const { worktree } = withdrawTask(e, a.task_id, actor);
+    return { ...getTask(e, a.task_id), worktree };
   }));
 
   server.registerTool("status", {

@@ -283,8 +283,10 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       const { opt } = parse(rest, ["task", "reason"]);
       const a = { task_id: num(need(opt, "task"), "--task"), reason: need(opt, "reason") };
       assertOwner(io.env);
-      cancelTask(openEngine(io.cwd), a, io.env);
+      const r = cancelTask(openEngine(io.cwd), a, io.env);
       io.out(`cancelled task ${a.task_id}\n`);
+      for (const id of r.cancelled.filter((x) => x !== a.task_id)) io.out(`cancelled task ${id} (under #${a.task_id})\n`);
+      for (const k of r.kept_worktrees) io.out(`kept worktree: ${k.path} (#${k.task_id} ${k.title}): ${k.reason}\n`);
       return 0;
     }
     case "override": {

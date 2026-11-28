@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
 import { initRepo } from "../src/policy";
 import { acceptOverlap, overlapsFor, planTasks, startingTasks, withdrawTask, type PlanTaskInput } from "../src/plan";
-import { getTask, insertEvidence, startTask, STALE_CLAIM_MS } from "../src/tasks";
+import { completeStep, getTask, insertEvidence, startTask, STALE_CLAIM_MS } from "../src/tasks";
+import { checkEdit } from "../src/claims";
 import { EngineError, type Actor } from "../src/types";
 import { realExec } from "../src/exec";
 import { cancelTask } from "../src/owner";
@@ -524,6 +525,95 @@ describe("review fixes", () => {
       expect(e.db.prepare("SELECT COUNT(*) c FROM events WHERE kind = 'task_cancelled'").get()).toEqual({ c: 2 });
       expect(code(() => cancelTask(e, { task_id: a, reason: "again" }, {})).code).toBe("TASK_CLOSED");
     });
+  });
+});
+
+describe("retiring work that will never merge", () => {
+  const claims = (e: Engine) => e.db.prepare("SELECT task_id, target, status FROM claims ORDER BY id").all();
+  const status = (e: Engine, id: number) => getTask(e, id).task.status;
+
+  test("cancelling a feature cancels its planned, starting and open workers, releases their claims and keeps a dirty worktree", () => {
+    const { dir, e } = setup();
+    const f = feature(e, dir, cto);
+    const [w1, w2, w3, w4] = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [
+      item("W1", ["src/w1"]), item("W2", ["src/w2"]), item("W3", ["src/w3"]), item("W4", ["src/w4"]),
+    ] }).tasks.map((t) => t.task.id);
+    const dirty = begin(e, f, w1).task;
+    const clean = begin(e, f, w4).task;
+    e.db.prepare("UPDATE tasks SET status = 'starting' WHERE id = ?").run(w3);
+    checkEdit(e, dirty, "src/w1/a.ts");
+    checkEdit(e, clean, "src/w4/a.ts");
+    writeFileSync(join(dirty.cwd, "wip.txt"), "unfinished");
+    const r = cancelTask(e, { task_id: f.task.id, reason: "dropped" }, {});
+    expect([f.task.id, w1, w2, w3, w4].map((id) => status(e, id))).toEqual(["cancelled", "cancelled", "cancelled", "cancelled", "cancelled"]);
+    expect(r.cancelled).toEqual([f.task.id, w1, w2, w3, w4]);
+    expect((e.db.prepare("SELECT task_id FROM events WHERE kind = 'task_cancelled' ORDER BY id").all() as { task_id: number }[]).map((x) => x.task_id))
+      .toEqual([f.task.id, w1, w2, w3, w4]);
+    expect(claims(e)).toEqual([
+      { task_id: w1, target: "src/w1/a.ts", status: "released" },
+      { task_id: w4, target: "src/w4/a.ts", status: "released" },
+    ]);
+    // The dirty worker's worktree stays, with its work; the clean one is gone; both are reported or logged.
+    expect(readFileSync(join(dirty.cwd, "wip.txt"), "utf8")).toBe("unfinished");
+    expect(existsSync(clean.cwd)).toBe(false);
+    expect(r.kept_worktrees).toContainEqual(expect.objectContaining({ task_id: w1, path: dirty.cwd, reason: "uncommitted changes" }));
+    expect(r.kept_worktrees.map((k) => k.task_id)).not.toContain(w4);
+    // A planned or starting worker's placeholder cwd is its feature's: it is never removed for them.
+    expect(r.kept_worktrees.map((k) => k.task_id)).not.toContain(w2);
+  });
+
+  test("the cascade is atomic: a failure cancels nothing", () => {
+    const { dir, e } = setup();
+    const f = feature(e, dir, cto);
+    const [w1, w2] = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [item("W1", ["src/w1"]), item("W2", ["src/w2"])] }).tasks.map((t) => t.task.id);
+    begin(e, f, w1);
+    e.db.exec(`CREATE TRIGGER boom BEFORE UPDATE OF status ON tasks WHEN NEW.id = ${w2} BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+    expect(() => cancelTask(e, { task_id: f.task.id, reason: "dropped" }, {})).toThrow(/boom/);
+    expect([f.task.id, w1, w2].map((id) => status(e, id))).toEqual(["open", "open", "planned"]);
+    expect(e.db.prepare("SELECT COUNT(*) c FROM events WHERE kind = 'task_cancelled'").get()).toEqual({ c: 0 });
+  });
+
+  test("withdraw_task retires an open worker the CTO owns: cancelled, claims released, a dirty worktree kept", () => {
+    const { dir, e } = setup();
+    const f = feature(e, dir, cto);
+    const [a, b] = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [item("A", ["src/a"], { group: "bake" }), item("B", ["src/a"], { group: "bake" })] }).tasks.map((t) => t.task.id);
+    const loser = begin(e, f, a).task;
+    const other = begin(e, f, b).task;
+    checkEdit(e, loser, "src/a/x.ts");
+    writeFileSync(join(other.cwd, "wip.txt"), "unfinished");
+    expect(code(() => withdrawTask(e, a, { session_id: cto.session_id, agent_id: "W" })).code).toBe("OWNER_ONLY");
+    expect(code(() => withdrawTask(e, a, cto2)).code).toBe("OWNER_ONLY");
+    expect(code(() => withdrawTask(e, f.task.id, cto)).code).toBe("TASK_CLOSED");
+    expect(withdrawTask(e, a, cto)).toEqual({ worktree: "removed" });
+    expect(status(e, a)).toBe("cancelled");
+    expect(existsSync(loser.cwd)).toBe(false);
+    expect(claims(e)).toEqual([{ task_id: a, target: "src/a/x.ts", status: "released" }]);
+    expect(e.db.prepare("SELECT kind, payload_json p FROM events WHERE task_id = ? AND kind = 'task_withdrawn'").get(a)).toEqual({ kind: "task_withdrawn", p: JSON.stringify({ from: "open" }) });
+    expect(withdrawTask(e, b, cto)).toEqual({ worktree: "kept" });
+    expect(readFileSync(join(other.cwd, "wip.txt"), "utf8")).toBe("unfinished");
+    expect(code(() => withdrawTask(e, a, cto)).code).toBe("TASK_CLOSED");
+  });
+
+  test("withdraw_task refuses a worker that is merged", () => {
+    const { dir, e } = setup();
+    const f = feature(e, dir, cto);
+    const [a, b] = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [item("A", ["src/a"]), item("B", ["src/b"])] }).tasks.map((t) => t.task.id);
+    const wa = begin(e, f, a).task;
+    const wb = begin(e, f, b).task;
+    // Merged by git but its merge step not recorded yet: its holds must pass to the feature, not be dropped.
+    git(wa.cwd, "commit", "--allow-empty", "-m", "a's work");
+    git(f.task.cwd, "merge", "--no-ff", "-m", "m", wa.branch);
+    const err = code(() => withdrawTask(e, a, cto));
+    expect(err.code).toBe("TASK_CLOSED");
+    expect(err.message).toContain(`merged into ${f.task.branch}`);
+    expect(status(e, a)).toBe("open");
+    // Merged and recorded: the worker is done.
+    git(wb.cwd, "commit", "--allow-empty", "-m", "b's work");
+    git(f.task.cwd, "merge", "--no-ff", "-m", "m", wb.branch);
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name != 'merge'").run(b);
+    completeStep(e, { task_id: b, step: "merge", evidence: { kind: "merged" }, actor: cto });
+    expect(code(() => withdrawTask(e, b, cto)).code).toBe("TASK_CLOSED");
+    expect(existsSync(wa.cwd)).toBe(true);
   });
 });
 

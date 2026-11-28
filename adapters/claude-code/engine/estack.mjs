@@ -34729,11 +34729,99 @@ import { appendFileSync, existsSync as existsSync6, mkdirSync as mkdirSync2, rea
 import { basename, join as join5 } from "node:path";
 
 // engine/src/outcomes.ts
-import { existsSync as existsSync4 } from "node:fs";
+import { existsSync as existsSync5 } from "node:fs";
 
 // engine/src/plan.ts
-import { existsSync as existsSync3, realpathSync as realpathSync2 } from "node:fs";
+import { existsSync as existsSync4, realpathSync as realpathSync2 } from "node:fs";
 import { dirname as dirname2, isAbsolute, relative, resolve, sep } from "node:path";
+
+// engine/src/worktree.ts
+import { existsSync as existsSync3 } from "node:fs";
+import { join as join4 } from "node:path";
+var WORKTREES_DIR = ".estack/worktrees";
+var WORKTREE_SETUP_TIMEOUT_MS = 6e5;
+var ENGINE = { session_id: "engine" };
+function slug(title) {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
+}
+function ensureWorktreeExclude(e) {
+  appendExclude(e, e.repo.root, [`${WORKTREES_DIR}/`]);
+}
+function createWorktree(e, input2) {
+  const path = join4(input2.under, WORKTREES_DIR, input2.name);
+  const r = runBounded(e, input2.under, "git", ["worktree", "add", "-b", input2.branch, path, input2.base]);
+  if (r.code !== 0) throw new EngineError("NOT_A_REPO", (r.stderr || r.stdout).trim() || "git worktree add failed");
+  return path;
+}
+function ensureWorktree(e, input2) {
+  const path = join4(input2.under, WORKTREES_DIR, input2.name);
+  const list = runBounded(e, input2.under, "git", ["worktree", "list", "--porcelain"]);
+  const blocks = list.code !== 0 ? [] : list.stdout.split("\n\n").map((b) => {
+    const lines2 = b.split("\n");
+    const get = (k) => lines2.find((l) => l === k || l.startsWith(`${k} `));
+    return {
+      path: get("worktree")?.slice("worktree ".length) ?? "",
+      branch: get("branch")?.slice("branch ".length) ?? null,
+      locked: get("locked") !== void 0,
+      prunable: get("prunable") !== void 0
+    };
+  });
+  const ref = `refs/heads/${input2.branch}`;
+  const byHand = `remove it by hand (git worktree remove ${path}, then git branch -d ${input2.branch}) and start the task again`;
+  const here = blocks.find((b) => b.path === path);
+  if (here) {
+    if (here.prunable || !existsSync3(path)) {
+      throw new EngineError("POLICY_INVALID", `${path} is a worktree git lists but whose folder is gone; inspect it with git worktree list, clear it with git worktree prune, and start the task again`);
+    }
+    if (here.locked) {
+      throw new EngineError("POLICY_INVALID", `${path} is a locked worktree (a start that died while checking out); inspect it with git worktree list, release it with git worktree unlock ${path} and remove it, then start the task again`);
+    }
+    if (here.branch !== ref) throw new EngineError("POLICY_INVALID", `${path} is a worktree on ${here.branch ?? "no branch"}, not ${input2.branch}; ${byHand}`);
+    if (!input2.reuse) throw new EngineError("POLICY_INVALID", `${path} already exists from earlier work that is not this task's; ${byHand}`);
+    return { path, reused: true };
+  }
+  if (existsSync3(path)) throw new EngineError("POLICY_INVALID", `${path} already exists and is not the worktree of ${input2.branch}; ${byHand}`);
+  if (runBounded(e, input2.under, "git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).code === 0) {
+    const holder = blocks.find((b) => b.branch === ref);
+    throw new EngineError("POLICY_INVALID", holder ? `branch ${input2.branch} is checked out in ${holder.path}, not at ${path}; remove that worktree by hand (git worktree remove ${holder.path}) and start the task again` : `branch ${input2.branch} already exists without its worktree; delete it by hand (git branch -d ${input2.branch}) and start the task again`);
+  }
+  return { path: createWorktree(e, input2), reused: false };
+}
+function runWorktreeSetup(e, cwd) {
+  const command = e.policy.commands.worktree_setup;
+  if (!command) return null;
+  const r = e.exec.shell(command, { cwd, timeoutMs: WORKTREE_SETUP_TIMEOUT_MS });
+  const tail = (r.stdout + r.stderr).trim().slice(-500);
+  return { ok: r.code === 0 && !r.timedOut, output_tail: r.timedOut ? `${tail}
+timed out`.trim() : tail };
+}
+function removeWorktree(e, task) {
+  const keep = (reason) => {
+    const last = e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'worktree_kept' AND task_id = ? ORDER BY id DESC LIMIT 1").get(task.id);
+    if ((last ? JSON.parse(last.p).reason : void 0) !== reason) {
+      logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason });
+    }
+    return "kept";
+  };
+  if (task.cwd === "") return "missing";
+  if (!task.cwd.includes(`/${WORKTREES_DIR}/`)) return keep("not engine-made");
+  if (!existsSync3(task.cwd)) return "missing";
+  const list = runBounded(e, e.repo.root, "git", ["worktree", "list", "--porcelain"]);
+  if (list.code !== 0) return keep("could not list worktrees");
+  const nested = list.stdout.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice("worktree ".length)).some((p) => p.startsWith(task.cwd + "/"));
+  if (nested) return keep("nested worktrees");
+  const status2 = runBounded(e, task.cwd, "git", ["status", "--porcelain"]);
+  if (status2.code !== 0 || status2.stdout.trim() !== "") return keep(status2.code !== 0 ? "git status failed" : "uncommitted changes");
+  const rm = runBounded(e, e.repo.root, "git", ["worktree", "remove", task.cwd]);
+  if (rm.code !== 0) return keep(rm.stderr.trim());
+  const parent = task.parent_id === null ? void 0 : e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(task.parent_id);
+  const from = parent?.cwd && existsSync3(parent.cwd) ? parent.cwd : e.repo.root;
+  const br = runBounded(e, from, "git", ["branch", "-d", task.branch]);
+  logEvent(e, ENGINE, "worktree_removed", task.id, { path: task.cwd, branch: task.branch, branch_deleted: br.code === 0 });
+  return "removed";
+}
+
+// engine/src/plan.ts
 var getRow = (e, id) => e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
 function subjectOf(e, t) {
   const col = (sql) => e.db.prepare(sql).all(t.id).map((r) => r.v);
@@ -34746,7 +34834,7 @@ function subjectOf(e, t) {
   };
 }
 function realish(p) {
-  if (existsSync3(p)) return realpathSync2(p);
+  if (existsSync4(p)) return realpathSync2(p);
   const up = dirname2(p);
   return up === p ? p : resolve(realish(up), p.slice(up.length).replace(/^[\\/]+/, ""));
 }
@@ -34912,11 +35000,13 @@ function acceptOverlap(e, input2) {
   });
 }
 function withdrawTask(e, task_id, actor) {
+  const found = getRow(e, task_id);
+  if (!found) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
+  if (actor.agent_id) throw new EngineError("OWNER_ONLY", "a worker cannot withdraw tasks; report to your CTO");
+  if (!ownsTask(e, actor.session_id, task_id)) throw new EngineError("OWNER_ONLY", `only the CTO of task ${task_id} can withdraw it`);
+  if (found.status === "open") return retireWorker(e, found, actor);
   tx(e, () => {
     const t = getRow(e, task_id);
-    if (!t) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
-    if (actor.agent_id) throw new EngineError("OWNER_ONLY", "a worker cannot withdraw tasks; report to your CTO");
-    if (!ownsTask(e, actor.session_id, task_id)) throw new EngineError("OWNER_ONLY", `only the CTO of task ${task_id} can withdraw it`);
     if (t.status === "starting") {
       const c = claimInfo(e, task_id);
       if (!c.stale) throw new EngineError("TASK_CLOSED", `task #${task_id} is being started; try again when it is open`);
@@ -34925,10 +35015,35 @@ function withdrawTask(e, task_id, actor) {
       logEvent(e, actor, "task_released", task_id, {});
       return;
     }
-    if (t.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${t.status}; only a planned task can be withdrawn`);
+    if (t.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${t.status}; only a planned task or an open worker can be withdrawn`);
     e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'planned'").run(task_id);
     logEvent(e, actor, "task_withdrawn", task_id, {});
   });
+  return { worktree: null };
+}
+function retireWorker(e, t, actor) {
+  const parent = t.parent_id === null ? void 0 : getRow(e, t.parent_id);
+  if (!parent) {
+    throw new EngineError("TASK_CLOSED", `task ${t.id} is open and is not a worker; only a planned task or an open worker can be withdrawn (the owner cancels it with estack cancel)`);
+  }
+  const where = existsSync4(parent.cwd) ? parent.cwd : e.repo.root;
+  const head = runBounded(e, where, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${t.branch}^{commit}`]);
+  const sha = head.code === 0 ? head.stdout.trim() : "";
+  if (sha && sha !== t.base_sha && runBounded(e, where, "git", ["merge-base", "--is-ancestor", sha, `refs/heads/${parent.branch}`]).code === 0) {
+    throw new EngineError("TASK_CLOSED", `task #${t.id} is already merged into ${parent.branch}; record its merge step (complete_step merge) instead of withdrawing it`);
+  }
+  tx(e, () => {
+    const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'open'").run(t.id);
+    if (r.changes !== 1) throw new EngineError("TASK_CLOSED", `task ${t.id} changed while it was being withdrawn`);
+    logEvent(e, actor, "task_withdrawn", t.id, { from: "open" });
+    releaseClaims(e, t, actor, "withdrawn");
+  });
+  try {
+    return { worktree: removeWorktree(e, t) };
+  } catch (x) {
+    logEvent(e, { session_id: "engine" }, "worktree_kept", t.id, { path: t.cwd, reason: x instanceof Error ? x.message : String(x) });
+    return { worktree: "kept" };
+  }
 }
 var OutOfBudget = class extends Error {
 };
@@ -35040,7 +35155,7 @@ function plannedTasks(e) {
 }
 
 // engine/src/outcomes.ts
-var ENGINE = { session_id: "engine" };
+var ENGINE2 = { session_id: "engine" };
 var getTask2 = (e, id) => e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
 var featureOf = (e, t) => t.parent_id === null ? t : getTask2(e, t.parent_id) ?? t;
 function holderAtGrant(e, g) {
@@ -35052,7 +35167,7 @@ function holderAtGrant(e, g) {
   return e.db.prepare("SELECT task_id FROM claims WHERE id = ?").get(g.claim_id)?.task_id;
 }
 function changedFiles(e, t) {
-  if (!t.cwd || !existsSync4(t.cwd)) return null;
+  if (!t.cwd || !existsSync5(t.cwd)) return null;
   const run = (args) => e.exec.run("git", args, { cwd: t.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS });
   const diff = run(["diff", "--name-only", t.base_sha]);
   if (diff.code !== 0) return null;
@@ -35091,7 +35206,7 @@ function featureMerged(e, c, f) {
 function conflicted(e, c, g, holder, grantee) {
   const features = [...new Map([featureOf(e, grantee), featureOf(e, holder)].map((f) => [f.id, f])).values()];
   for (const f of features) {
-    if (!f.cwd || !existsSync4(f.cwd)) continue;
+    if (!f.cwd || !existsSync5(f.cwd)) continue;
     const r = e.exec.run("git", ["-C", f.cwd, "diff", "--name-only", "--diff-filter=U"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS });
     if (r.code === 0 && r.stdout.split("\n").includes(g.path)) return true;
   }
@@ -35129,7 +35244,7 @@ function judge(e, c, g) {
 function setOutcome(e, g, outcome) {
   tx(e, () => {
     const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL").run(outcome, e.now().toISOString(), g.id);
-    if (r.changes === 1) logEvent(e, ENGINE, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
+    if (r.changes === 1) logEvent(e, ENGINE2, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
   });
 }
 function mergeConflicts(e, cwd, branch, head) {
@@ -35156,7 +35271,7 @@ function mergeConflicts(e, cwd, branch, head) {
 }
 function recordMergeConflicts(e, worker, feature, head) {
   try {
-    const paths = new Set(mergeConflicts(e, feature.cwd && existsSync4(feature.cwd) ? feature.cwd : e.repo.root, feature.branch, head));
+    const paths = new Set(mergeConflicts(e, feature.cwd && existsSync5(feature.cwd) ? feature.cwd : e.repo.root, feature.branch, head));
     if (paths.size === 0) return;
     const involved = /* @__PURE__ */ new Set([worker.id, feature.id]);
     const grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all().filter((g) => paths.has(g.path));
@@ -35186,92 +35301,6 @@ function recordOutcomes(e, opts = {}) {
     } catch {
     }
   }
-}
-
-// engine/src/worktree.ts
-import { existsSync as existsSync5 } from "node:fs";
-import { join as join4 } from "node:path";
-var WORKTREES_DIR = ".estack/worktrees";
-var WORKTREE_SETUP_TIMEOUT_MS = 6e5;
-var ENGINE2 = { session_id: "engine" };
-function slug(title) {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
-}
-function ensureWorktreeExclude(e) {
-  appendExclude(e, e.repo.root, [`${WORKTREES_DIR}/`]);
-}
-function createWorktree(e, input2) {
-  const path = join4(input2.under, WORKTREES_DIR, input2.name);
-  const r = runBounded(e, input2.under, "git", ["worktree", "add", "-b", input2.branch, path, input2.base]);
-  if (r.code !== 0) throw new EngineError("NOT_A_REPO", (r.stderr || r.stdout).trim() || "git worktree add failed");
-  return path;
-}
-function ensureWorktree(e, input2) {
-  const path = join4(input2.under, WORKTREES_DIR, input2.name);
-  const list = runBounded(e, input2.under, "git", ["worktree", "list", "--porcelain"]);
-  const blocks = list.code !== 0 ? [] : list.stdout.split("\n\n").map((b) => {
-    const lines2 = b.split("\n");
-    const get = (k) => lines2.find((l) => l === k || l.startsWith(`${k} `));
-    return {
-      path: get("worktree")?.slice("worktree ".length) ?? "",
-      branch: get("branch")?.slice("branch ".length) ?? null,
-      locked: get("locked") !== void 0,
-      prunable: get("prunable") !== void 0
-    };
-  });
-  const ref = `refs/heads/${input2.branch}`;
-  const byHand = `remove it by hand (git worktree remove ${path}, then git branch -d ${input2.branch}) and start the task again`;
-  const here = blocks.find((b) => b.path === path);
-  if (here) {
-    if (here.prunable || !existsSync5(path)) {
-      throw new EngineError("POLICY_INVALID", `${path} is a worktree git lists but whose folder is gone; inspect it with git worktree list, clear it with git worktree prune, and start the task again`);
-    }
-    if (here.locked) {
-      throw new EngineError("POLICY_INVALID", `${path} is a locked worktree (a start that died while checking out); inspect it with git worktree list, release it with git worktree unlock ${path} and remove it, then start the task again`);
-    }
-    if (here.branch !== ref) throw new EngineError("POLICY_INVALID", `${path} is a worktree on ${here.branch ?? "no branch"}, not ${input2.branch}; ${byHand}`);
-    if (!input2.reuse) throw new EngineError("POLICY_INVALID", `${path} already exists from earlier work that is not this task's; ${byHand}`);
-    return { path, reused: true };
-  }
-  if (existsSync5(path)) throw new EngineError("POLICY_INVALID", `${path} already exists and is not the worktree of ${input2.branch}; ${byHand}`);
-  if (runBounded(e, input2.under, "git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).code === 0) {
-    const holder = blocks.find((b) => b.branch === ref);
-    throw new EngineError("POLICY_INVALID", holder ? `branch ${input2.branch} is checked out in ${holder.path}, not at ${path}; remove that worktree by hand (git worktree remove ${holder.path}) and start the task again` : `branch ${input2.branch} already exists without its worktree; delete it by hand (git branch -d ${input2.branch}) and start the task again`);
-  }
-  return { path: createWorktree(e, input2), reused: false };
-}
-function runWorktreeSetup(e, cwd) {
-  const command = e.policy.commands.worktree_setup;
-  if (!command) return null;
-  const r = e.exec.shell(command, { cwd, timeoutMs: WORKTREE_SETUP_TIMEOUT_MS });
-  const tail = (r.stdout + r.stderr).trim().slice(-500);
-  return { ok: r.code === 0 && !r.timedOut, output_tail: r.timedOut ? `${tail}
-timed out`.trim() : tail };
-}
-function removeWorktree(e, task) {
-  const keep = (reason) => {
-    const last = e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'worktree_kept' AND task_id = ? ORDER BY id DESC LIMIT 1").get(task.id);
-    if ((last ? JSON.parse(last.p).reason : void 0) !== reason) {
-      logEvent(e, ENGINE2, "worktree_kept", task.id, { path: task.cwd, reason });
-    }
-    return "kept";
-  };
-  if (task.cwd === "") return "missing";
-  if (!task.cwd.includes(`/${WORKTREES_DIR}/`)) return keep("not engine-made");
-  if (!existsSync5(task.cwd)) return "missing";
-  const list = runBounded(e, e.repo.root, "git", ["worktree", "list", "--porcelain"]);
-  if (list.code !== 0) return keep("could not list worktrees");
-  const nested = list.stdout.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice("worktree ".length)).some((p) => p.startsWith(task.cwd + "/"));
-  if (nested) return keep("nested worktrees");
-  const status2 = runBounded(e, task.cwd, "git", ["status", "--porcelain"]);
-  if (status2.code !== 0 || status2.stdout.trim() !== "") return keep(status2.code !== 0 ? "git status failed" : "uncommitted changes");
-  const rm = runBounded(e, e.repo.root, "git", ["worktree", "remove", task.cwd]);
-  if (rm.code !== 0) return keep(rm.stderr.trim());
-  const parent = task.parent_id === null ? void 0 : e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(task.parent_id);
-  const from = parent?.cwd && existsSync5(parent.cwd) ? parent.cwd : e.repo.root;
-  const br = runBounded(e, from, "git", ["branch", "-d", task.branch]);
-  logEvent(e, ENGINE2, "worktree_removed", task.id, { path: task.cwd, branch: task.branch, branch_deleted: br.code === 0 });
-  return "removed";
 }
 
 // engine/src/tasks.ts
@@ -47023,11 +47052,11 @@ function createServer(cwd, deps = {}) {
     return { accepted: [Math.min(a.a, a.b), Math.max(a.a, a.b)] };
   }));
   server.registerTool("withdraw_task", {
-    description: "Cancel a planned task you own that has not started.",
+    description: "Cancel a planned task you own that has not started, or retire an open worker of yours that will not be merged (a bakeoff loser, a worker no longer needed): it is cancelled, its claims are released and its worktree is removed, unless it has uncommitted changes (then it is kept).",
     inputSchema: { task_id: external_exports.number().int(), actor: actorSchema }
   }, tool((e, a, actor) => {
-    withdrawTask(e, a.task_id, actor);
-    return getTask(e, a.task_id);
+    const { worktree } = withdrawTask(e, a.task_id, actor);
+    return { ...getTask(e, a.task_id), worktree };
   }));
   server.registerTool("status", {
     description: "Show one task (with task_id), or all open tasks with the active claims and kept worktrees.",
@@ -47139,15 +47168,28 @@ function skipStep(e, input2, env) {
 function cancelTask(e, input2, env) {
   assertOwner(env);
   needReason(input2.reason);
-  return tx(e, () => {
+  const { ids, trees } = tx(e, () => {
     const v = getTask(e, input2.task_id);
     if (!["open", "planned", "starting"].includes(v.task.status)) throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
-    const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status IN ('open','planned','starting')").run(input2.task_id);
-    if (r.changes !== 1) throw new EngineError("TASK_CLOSED", `task ${v.task.id} changed while it was being cancelled`);
-    logEvent(e, OWNER, "task_cancelled", input2.task_id, { reason: input2.reason });
-    releaseClaims(e, v.task, OWNER);
-    return getTask(e, input2.task_id);
+    const children = e.db.prepare("SELECT * FROM tasks WHERE parent_id = ? AND status IN ('open','planned','starting') ORDER BY id").all(input2.task_id);
+    const all = [v.task, ...children];
+    for (const t of all) {
+      const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = ?").run(t.id, t.status);
+      if (r.changes !== 1) throw new EngineError("TASK_CLOSED", `task ${t.id} changed while it was being cancelled`);
+      logEvent(e, OWNER, "task_cancelled", t.id, t === v.task ? { reason: input2.reason } : { reason: input2.reason, feature: v.task.id });
+    }
+    for (const t of all) releaseClaims(e, t, OWNER, t === v.task ? void 0 : `feature #${v.task.id} cancelled`);
+    const trees2 = [...children, v.task].filter((t) => t.status === "open" && t.cwd.includes(`/${WORKTREES_DIR}/`));
+    return { ids: all.map((t) => t.id), trees: trees2 };
   });
+  for (const t of trees) {
+    try {
+      removeWorktree(e, t);
+    } catch (x) {
+      logEvent(e, { session_id: "engine" }, "worktree_kept", t.id, { path: t.cwd, reason: x instanceof Error ? x.message : String(x) });
+    }
+  }
+  return { ...getTask(e, input2.task_id), cancelled: ids, kept_worktrees: keptWorktrees(e).filter((k) => ids.includes(k.task_id)) };
 }
 function recordOverride(e, input2, env) {
   assertOwner(env);
@@ -47588,8 +47630,12 @@ function dispatch(cmd, rest, io) {
       const { opt } = parse4(rest, ["task", "reason"]);
       const a = { task_id: num(need(opt, "task"), "--task"), reason: need(opt, "reason") };
       assertOwner(io.env);
-      cancelTask(openEngine(io.cwd), a, io.env);
+      const r = cancelTask(openEngine(io.cwd), a, io.env);
       io.out(`cancelled task ${a.task_id}
+`);
+      for (const id of r.cancelled.filter((x) => x !== a.task_id)) io.out(`cancelled task ${id} (under #${a.task_id})
+`);
+      for (const k of r.kept_worktrees) io.out(`kept worktree: ${k.path} (#${k.task_id} ${k.title}): ${k.reason}
 `);
       return 0;
     }

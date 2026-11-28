@@ -39,6 +39,8 @@ Pick the base a future maintainer can extend most easily without breaking invari
 
 Walk each losing candidate once more for what is worth porting into the base, usually one or two things per candidate, not most of it. Fold each graft in by hand, per the **redesign-from-first-principles** principle skill, so the result stays coherent under one mental model. Don't paste mechanically.
 
+In an estack repository, once the grafts are in, retire each losing candidate's worker task with `withdraw_task`. That cancels it, releases its holds and removes its worktree, which is kept and reported if it has uncommitted changes.
+
 If the candidates converge on one shape, that is strong agreement. Note it and ship the consensus shape. No graft is needed. If they wildly diverge, Phase A was under-specified. Reframe and re-run rather than averaging the divergence.
 
 ## Phase F: Verify

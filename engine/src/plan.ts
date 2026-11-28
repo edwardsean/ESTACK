@@ -3,10 +3,12 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Engine } from "./engine";
 import { normaliseName, topLevelFunctions } from "./duplicates";
 import { loadGraph } from "./graph";
+import { releaseClaims } from "./claims";
 import {
-  EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, STALE_CLAIM_MS, defaultBranch, getTask, logEvent, ownsTask, tx, type TaskView,
+  EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, STALE_CLAIM_MS, defaultBranch, getTask, logEvent, ownsTask, runBounded, tx, type TaskView,
 } from "./tasks";
 import { EngineError, actorId, type Actor, type Task } from "./types";
+import { removeWorktree } from "./worktree";
 
 export interface PlanTaskInput {
   title: string; type: string; goal: string; done_check: string; area: string[];
@@ -220,12 +222,19 @@ export function acceptOverlap(e: Engine, input: { a: number; b: number; reason: 
   });
 }
 
-export function withdrawTask(e: Engine, task_id: number, actor: Actor): void {
+/**
+ * The CTO withdraws a planned task (or releases a stale start of one), or retires an open worker that will never be
+ * merged (a bakeoff loser, a worker no longer needed): it is cancelled, its claims released, and its worktree removed
+ * unless it has uncommitted work. `worktree` says what became of the worktree; null when there was none to remove.
+ */
+export function withdrawTask(e: Engine, task_id: number, actor: Actor): { worktree: "removed" | "kept" | "missing" | null } {
+  const found = getRow(e, task_id);
+  if (!found) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
+  if (actor.agent_id) throw new EngineError("OWNER_ONLY", "a worker cannot withdraw tasks; report to your CTO");
+  if (!ownsTask(e, actor.session_id, task_id)) throw new EngineError("OWNER_ONLY", `only the CTO of task ${task_id} can withdraw it`);
+  if (found.status === "open") return retireWorker(e, found, actor);
   tx(e, () => {
-    const t = getRow(e, task_id);
-    if (!t) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
-    if (actor.agent_id) throw new EngineError("OWNER_ONLY", "a worker cannot withdraw tasks; report to your CTO");
-    if (!ownsTask(e, actor.session_id, task_id)) throw new EngineError("OWNER_ONLY", `only the CTO of task ${task_id} can withdraw it`);
+    const t = getRow(e, task_id)!;
     if (t.status === "starting") {
       // A start that died leaves its claim behind: releasing it puts a planned task back where it was.
       const c = claimInfo(e, task_id);
@@ -235,10 +244,38 @@ export function withdrawTask(e: Engine, task_id: number, actor: Actor): void {
       logEvent(e, actor, "task_released", task_id, {});
       return;
     }
-    if (t.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${t.status}; only a planned task can be withdrawn`);
+    if (t.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${t.status}; only a planned task or an open worker can be withdrawn`);
     e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'planned'").run(task_id);
     logEvent(e, actor, "task_withdrawn", task_id, {});
   });
+  return { worktree: null };
+}
+
+/** Retire an open worker that will never be merged; one whose work git has already merged into its feature is refused. */
+function retireWorker(e: Engine, t: Task, actor: Actor): { worktree: "removed" | "kept" | "missing" } {
+  const parent = t.parent_id === null ? undefined : getRow(e, t.parent_id);
+  if (!parent) {
+    throw new EngineError("TASK_CLOSED", `task ${t.id} is open and is not a worker; only a planned task or an open worker can be withdrawn (the owner cancels it with estack cancel)`);
+  }
+  // Work already merged into the feature must pass its holds there with the merge step, not drop them.
+  const where = existsSync(parent.cwd) ? parent.cwd : e.repo.root;
+  const head = runBounded(e, where, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${t.branch}^{commit}`]);
+  const sha = head.code === 0 ? head.stdout.trim() : "";
+  if (sha && sha !== t.base_sha && runBounded(e, where, "git", ["merge-base", "--is-ancestor", sha, `refs/heads/${parent.branch}`]).code === 0) {
+    throw new EngineError("TASK_CLOSED", `task #${t.id} is already merged into ${parent.branch}; record its merge step (complete_step merge) instead of withdrawing it`);
+  }
+  tx(e, () => {
+    const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'open'").run(t.id);
+    if (r.changes !== 1) throw new EngineError("TASK_CLOSED", `task ${t.id} changed while it was being withdrawn`);
+    logEvent(e, actor, "task_withdrawn", t.id, { from: "open" });
+    releaseClaims(e, t, actor, "withdrawn");
+  });
+  try {
+    return { worktree: removeWorktree(e, t) };
+  } catch (x) {
+    logEvent(e, { session_id: "engine" }, "worktree_kept", t.id, { path: t.cwd, reason: x instanceof Error ? x.message : String(x) });
+    return { worktree: "kept" };
+  }
 }
 
 /** A check ran out of its time budget: the caller stops and leaves the rest for its next call. */

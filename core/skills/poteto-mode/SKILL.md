@@ -205,7 +205,8 @@ In a repository that opted in, the engine makes the worktrees and holds the file
 5. **Merge.** When the worker's verify and review pass, run `git -C <feature cwd> merge --no-ff <branch>`, then `complete_step` `merge` with evidence `{kind: "merged"}`.
 6. **Open the feature PR.** When the feature's own steps reach `pr`, push and open it from its worktree (`cd <feature cwd> && gh pr create`), or from the main checkout with `gh pr create --head <feature branch>`. The push gate reads the branch from `--head`, `git -C` or a leading `cd`.
 7. **A held file.** A worker whose edit is denied reports it to you. Check it with `claim_status`, then `allow_edit` or wait. A hold owned by another CTO is the owner's call: ask them to run `estack allow`. Workers never allow edits, accept overlaps or withdraw tasks.
-8. **Bakeoffs.** Give every candidate the same `group`, so they can touch the same files without blocking each other. This holds only for siblings under the same feature.
+8. **Bakeoffs.** Give every candidate the same `group`, so they can touch the same files without blocking each other. This holds only for siblings under the same feature. Once the winner is picked and merged, retire each loser with `withdraw_task`.
+9. **Retire a worker you no longer need.** Call `withdraw_task` with its id. It is cancelled, its holds are released, and its worktree is removed, or kept and reported when it has uncommitted changes. A worker already merged into the feature is refused: record its `merge` step instead. The owner's `estack cancel` on a feature cancels every planned, starting and open worker under it the same way.
 
 Outside an estack repository there is no engine to make worktrees, so pass `isolation: "worktree"` on the `Agent` call yourself.
 
