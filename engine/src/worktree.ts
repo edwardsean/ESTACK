@@ -39,18 +39,27 @@ export function runWorktreeSetup(e: Engine, cwd: string): { ok: boolean; output_
 
 /** Remove a task's worktree and branch without force: a dirty worktree is kept, an unmerged branch is kept. */
 export function removeWorktree(e: Engine, task: Task): "removed" | "kept" | "missing" {
-  if (!task.cwd || !existsSync(task.cwd)) return "missing";
+  const keep = (reason: string) => {
+    logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason });
+    return "kept" as const;
+  };
+  // Only a worktree the engine made (under <checkout>/.estack/worktrees/) is ever removed.
+  if (!task.cwd.includes(`/${WORKTREES_DIR}/`)) return keep("not engine-made");
+  if (!existsSync(task.cwd)) return "missing";
+  // git status cannot see worktrees nested in this one (the folder is excluded), so look for them directly.
+  const list = runBounded(e, e.repo.root, "git", ["worktree", "list", "--porcelain"]);
+  const nested = list.stdout.split("\n").filter((l) => l.startsWith("worktree "))
+    .map((l) => l.slice("worktree ".length)).some((p) => p.startsWith(task.cwd + "/"));
+  if (nested) return keep("nested worktrees");
   const status = runBounded(e, task.cwd, "git", ["status", "--porcelain"]);
-  if (status.code !== 0 || status.stdout.trim() !== "") {
-    logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason: status.code !== 0 ? "git status failed" : "uncommitted changes" });
-    return "kept";
-  }
+  if (status.code !== 0 || status.stdout.trim() !== "") return keep(status.code !== 0 ? "git status failed" : "uncommitted changes");
   const rm = runBounded(e, e.repo.root, "git", ["worktree", "remove", task.cwd]);
-  if (rm.code !== 0) {
-    logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason: rm.stderr.trim() });
-    return "kept";
-  }
-  const br = runBounded(e, e.repo.root, "git", ["branch", "-d", task.branch]);
+  if (rm.code !== 0) return keep(rm.stderr.trim());
+  // A worker is merged into its feature, so its branch is judged from the feature's checkout.
+  const parent = task.parent_id === null ? undefined
+    : e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(task.parent_id) as { cwd: string } | undefined;
+  const from = parent?.cwd && existsSync(parent.cwd) ? parent.cwd : e.repo.root;
+  const br = runBounded(e, from, "git", ["branch", "-d", task.branch]);
   logEvent(e, ENGINE, "worktree_removed", task.id, { path: task.cwd, branch: task.branch, branch_deleted: br.code === 0 });
   return "removed";
 }

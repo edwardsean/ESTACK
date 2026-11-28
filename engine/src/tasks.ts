@@ -99,7 +99,8 @@ function insertAreas(e: Engine, id: number, area: string[] | undefined): void {
 function featureBase(e: Engine, checkout: string): { ref: string; sha: string } {
   const remote = runBounded(e, checkout, "git", ["remote", "get-url", "origin"]);
   if (remote.code === 0) {
-    runBounded(e, checkout, "git", ["fetch", "origin", "main"], HOOK_FETCH_TIMEOUT_MS);
+    // A failed or timed-out fetch is ignored: the last known origin/main is used.
+    e.exec.run("git", ["fetch", "origin", "main"], { cwd: checkout, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
     const o = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"]);
     if (o.code === 0) return { ref: "origin/main", sha: o.stdout.trim() };
   }
@@ -130,8 +131,9 @@ export function startTask(e: Engine, input: {
   const type = field("type");
   const goal = field("goal");
   const done_check = field("done_check");
-  const parentId = planned?.parent_id ?? input.parent_task_id ?? null;
-  const group = planned?.task_group ?? input.group ?? null;
+  // A planned row's parent and group are its own: the call's values are ignored so behaviour matches stored data.
+  const parentId = planned ? planned.parent_id : input.parent_task_id ?? null;
+  const group = planned ? planned.task_group : input.group ?? null;
   const typeSteps = e.policy.task_types[type];
   if (!typeSteps) throw new EngineError("POLICY_INVALID", `unknown task type "${type}"`);
   if (input.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input.branch}`);
@@ -183,39 +185,39 @@ export function startTask(e: Engine, input: {
       })()
     : featureBase(e, checkout);
   // Insert first (the id names the branch and folder), then build the worktree outside any transaction.
+  // Until the final transaction the row is not open and has no cwd, so no commit gate sees a half-made task.
   let id: number;
   if (planned) {
     id = planned.id;
-    e.db.prepare("UPDATE tasks SET status = 'open', cwd = ?, base_sha = ? WHERE id = ?").run(checkout, from.sha, id);
   } else {
     id = Number(e.db.prepare(
-      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'open', '', ?, ?, ?, ?, ?, ?)",
-    ).run(title, type, goal, done_check, checkout, from.sha, by, now, parentId, group).lastInsertRowid);
+      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'cancelled', '', '', ?, ?, ?, ?, ?)",
+    ).run(title, type, goal, done_check, from.sha, by, now, parentId, group).lastInsertRowid);
   }
   const name = `${id}-${slug(title)}`;
   const branch = `${parent ? "task" : "feat"}/${name}`;
-  let path: string;
   try {
-    path = createWorktree(e, { under: checkout, name, branch, base: from.ref });
+    // The start point is the resolved sha, so the new branch tracks no upstream.
+    const path = createWorktree(e, { under: checkout, name, branch, base: from.sha });
+    ensureWorktreeExclude(e);
+    logEvent(e, input.actor, "worktree_created", id, { path, branch, base: from.ref });
+    const setup = runWorktreeSetup(e, path);
+    if (setup && !setup.ok) logEvent(e, input.actor, "worktree_setup_failed", id, { output_tail: setup.output_tail });
+    const base_sha = runBounded(e, path, "git", ["rev-parse", "HEAD"]).stdout.trim() || from.sha;
+    return tx(e, () => {
+      e.db.prepare("UPDATE tasks SET status = 'open', cwd = ?, branch = ?, base_sha = ? WHERE id = ?").run(path, branch, base_sha, id);
+      if (!planned) insertAreas(e, id, input.area);
+      insertSteps(e, id, parent ? workerSteps(typeSteps) : typeSteps);
+      bind(e, id, input.actor);
+      logEvent(e, input.actor, "task_started", id, { type, title, branch });
+      return { ...view(e, id), worktree_path: path, ...(setup ? { setup } : {}) };
+    });
   } catch (x) {
-    // A planned task goes back to planned; a new one is cancelled. Either way no open task remains.
-    e.db.prepare("UPDATE tasks SET status = ? WHERE id = ?").run(planned ? "planned" : "cancelled", id);
+    // A new task stays cancelled; a planned one stays planned. No open task remains. A worktree already made is kept.
+    e.db.prepare("UPDATE tasks SET status = ?, cwd = '', branch = '' WHERE id = ?").run(planned ? "planned" : "cancelled", id);
     logEvent(e, input.actor, "worktree_failed", id, { error: x instanceof Error ? x.message : String(x) });
     throw x;
   }
-  ensureWorktreeExclude(e);
-  logEvent(e, input.actor, "worktree_created", id, { path, branch, base: from.ref });
-  const setup = runWorktreeSetup(e, path);
-  if (setup && !setup.ok) logEvent(e, input.actor, "worktree_setup_failed", id, { output_tail: setup.output_tail });
-  const base_sha = runBounded(e, path, "git", ["rev-parse", "HEAD"]).stdout.trim() || from.sha;
-  return tx(e, () => {
-    e.db.prepare("UPDATE tasks SET cwd = ?, branch = ?, base_sha = ? WHERE id = ?").run(path, branch, base_sha, id);
-    if (!planned) insertAreas(e, id, input.area);
-    insertSteps(e, id, parent ? workerSteps(typeSteps) : typeSteps);
-    bind(e, id, input.actor);
-    logEvent(e, input.actor, "task_started", id, { type, title, branch });
-    return { ...view(e, id), worktree_path: path, ...(setup ? { setup } : {}) };
-  });
 }
 
 export function insertEvidence(e: Engine, task_id: number, step: string, kind: EvidenceKind, ok: boolean,

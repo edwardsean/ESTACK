@@ -8,10 +8,11 @@ import { initRepo } from "../src/policy";
 import { getTask, startTask } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
 import { removeWorktree, slug } from "../src/worktree";
-import { makeRepo } from "./helpers";
+import { realExec } from "../src/exec";
+import { fakeExec, makeRepo } from "./helpers";
 
 const cto: Actor = { session_id: "s1" };
-const git = (dir: string, ...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8" }).trim();
+const git = (dir: string, ...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
 function setup(setupCmd?: string) {
   const dir = makeRepo();
@@ -172,5 +173,86 @@ describe("worktrees", () => {
     const v = startTask(e, { actor: cto, cwd: dir, worktree: true, task_id: id });
     expect(v.task).toMatchObject({ id, status: "open", title: "Only id", branch: `feat/${id}-only-id` });
     expect(code(() => startTask(e, { actor: cto, cwd: dir, title: "t" }))).toBe("POLICY_INVALID");
+  });
+
+  test("removeWorktree keeps a feature that holds a dirty nested worker worktree", () => {
+    const { dir, e } = setup();
+    const f = feature(e, dir);
+    const w = startTask(e, { title: "w", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: f.task.cwd, worktree: true, parent_task_id: f.task.id });
+    writeFileSync(join(w.task.cwd, "dirty.txt"), "wip");
+    expect(removeWorktree(e, f.task)).toBe("kept");
+    expect(existsSync(join(w.task.cwd, "dirty.txt"))).toBe(true);
+    expect(e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'worktree_kept'").get()).toMatchObject({ p: expect.stringContaining("nested worktrees") });
+  });
+
+  test("removeWorktree deletes a worker branch merged into its feature", () => {
+    const { dir, e } = setup();
+    const f = feature(e, dir);
+    const w = startTask(e, { title: "w", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: f.task.cwd, worktree: true, parent_task_id: f.task.id });
+    git(w.task.cwd, "commit", "--allow-empty", "-m", "worker work");
+    git(f.task.cwd, "merge", "--no-ff", "-m", "merge", w.task.branch);
+    expect(removeWorktree(e, w.task)).toBe("removed");
+    expect(git(dir, "branch", "--list", w.task.branch)).toBe("");
+  });
+
+  test("removeWorktree never removes a worktree the user made", () => {
+    const { dir, e } = setup();
+    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-user-"))), "wt");
+    git(dir, "worktree", "add", "-b", "mine", wt);
+    const v = startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: wt });
+    expect(removeWorktree(e, v.task)).toBe("kept");
+    expect(existsSync(wt)).toBe(true);
+  });
+
+  test("a feature branch has no upstream", () => {
+    const { dir, e } = setup();
+    const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-origin-")));
+    git(bare, "init", "--bare", "-b", "main");
+    git(dir, "remote", "add", "origin", bare);
+    git(dir, "push", "origin", "main");
+    const v = feature(e, dir);
+    expect(v.task.base_sha).toBe(git(dir, "rev-parse", "origin/main"));
+    expect(() => git(v.task.cwd, "rev-parse", "--abbrev-ref", `${v.task.branch}@{upstream}`)).toThrow();
+  });
+
+  test("a timed-out fetch is ignored", () => {
+    const dir = makeRepo();
+    initRepo(dir);
+    const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-origin-")));
+    git(bare, "init", "--bare", "-b", "main");
+    git(dir, "remote", "add", "origin", bare);
+    git(dir, "push", "origin", "main");
+    const exec = {
+      ...fakeExec({}),
+      run: (file: string, args: string[], opts: Parameters<typeof realExec.run>[2]) =>
+        args[0] === "fetch" ? { code: null, stdout: "", stderr: "", timedOut: true, durationMs: 0 } : realExec.run(file, args, opts),
+    };
+    const v = feature(openEngine(dir, { exec }), dir);
+    expect(v.task.status).toBe("open");
+  });
+
+  test("a throw after the worktree exists leaves no open task and no cwd", () => {
+    const dir = makeRepo();
+    initRepo(dir);
+    const exec = {
+      ...fakeExec({}),
+      run: (file: string, args: string[], opts: Parameters<typeof realExec.run>[2]) =>
+        args[0] === "rev-parse" && args[1] === "HEAD" ? { code: null, stdout: "", stderr: "", timedOut: true, durationMs: 0 } : realExec.run(file, args, opts),
+    };
+    const e = openEngine(dir, { exec });
+    expect(() => feature(e, dir)).toThrow();
+    expect(e.db.prepare("SELECT status, cwd, branch FROM tasks WHERE id = 1").get()).toEqual({ status: "cancelled", cwd: "", branch: "" });
+    expect(e.db.prepare("SELECT COUNT(*) c FROM events WHERE kind = 'worktree_failed'").get()).toEqual({ c: 1 });
+  });
+
+  test("a planned task takes its parent and group from the row only", () => {
+    const { dir, e } = setup();
+    const f = feature(e, dir);
+    const id = Number(e.db.prepare(
+      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES ('P', 'feature', 'g', 'd', 'planned', '', '', '', 's1/main', 'now')",
+    ).run().lastInsertRowid);
+    const v = startTask(e, { actor: cto, cwd: dir, worktree: true, task_id: id, parent_task_id: f.task.id, group: "x" });
+    expect(v.task).toMatchObject({ parent_id: null, task_group: null });
+    expect(v.task.branch).toBe(`feat/${id}-p`);
   });
 });
