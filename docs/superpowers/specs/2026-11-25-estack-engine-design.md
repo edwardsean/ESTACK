@@ -328,7 +328,7 @@ Tables (SQLite, WAL mode so parallel workers can write safely):
 
 ```text
 tasks        id, title, type, goal, done_check, status(planned|open|done|cancelled),
-             parent_id (a worker's feature), group (bakeoff), branch, cwd (absolute
+             parent_id (a worker's feature), task_group (bakeoff), branch, cwd (absolute
              checkout), base_sha, created_by, created_at
 task_areas   task_id, path
 task_deps    task_id, depends_on        (finished: merged into the feature, or across features into main)
@@ -559,7 +559,7 @@ with one PR per feature, instead of one PR per task into `main`.*
   with role `cto` to the task or to its parent. After a handover the new session is bound
   to the old one's tasks (phase 4), so ownership moves with it.
 - **Bakeoffs.** Competing attempts at the same job (arena candidates) are worker tasks in
-  one group (`group` on the task). Tasks in a group never hold files against each other;
+  one group (`task_group` on the task). Tasks in a group never hold files against each other;
   only the chosen one is merged.
 
 ### Worktrees
