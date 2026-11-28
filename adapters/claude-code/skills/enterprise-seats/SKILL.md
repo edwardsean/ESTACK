@@ -59,7 +59,7 @@ These hold for all 18 and are the reason the roster is shaped this way.
 
 **An agent never self-approves.** Every seat reports the model it ran on in its first line so the orchestrator can tell whether an independence check actually held. The read-only seats, `estack:ent-code-reviewer`, `estack:ent-security-engineer`, and the read-only parts of `estack:ent-observability` and `estack:ent-sre`, carry no `Write` or `Edit` at all. `estack:ent-qa-engineer` and `estack:ent-performance-engineer` may write tests and harnesses but never the code under test. Approval of a change belongs to the human gate the governance policy names.
 
-**Concurrency is the orchestrator's decision and never the agent's.** A parallel dispatch must not clobber a sibling's writes: In an estack repository the engine makes a worktree per worker task (`start_task` with `worktree: true`). Elsewhere, pass `isolation: "worktree"` on the `Agent` call for every writing or parallel dispatch. The orchestrator collects the worktrees afterwards. Nothing inside a seat decides what else runs at the same time.
+**Concurrency is the orchestrator's decision and never the agent's.** A parallel dispatch must not clobber a sibling's writes: In an estack repository the engine makes a worktree for every worker task (any task started under a feature). Elsewhere, pass `isolation: "worktree"` on the `Agent` call for every writing or parallel dispatch. The orchestrator collects the worktrees afterwards. Nothing inside a seat decides what else runs at the same time.
 
 ## Tools and integrations
 

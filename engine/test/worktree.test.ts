@@ -89,13 +89,42 @@ describe("worktrees", () => {
     expect(code(start(f.task.id))).toBe("TASK_CLOSED");
   });
 
-  test("without worktree the task starts as today but records parent, area and group", () => {
+  test("a fresh worker started without the worktree flag still gets its own worktree, and records parent, area and group", () => {
     const { dir, e } = setup();
     const f = feature(e, dir);
-    const v = startTask(e, { title: "sub", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: f.task.cwd, parent_task_id: f.task.id, area: ["a", "b"], group: "grp" });
-    expect(v.task).toMatchObject({ cwd: f.task.cwd, branch: f.task.branch, parent_id: f.task.id, task_group: "grp" });
-    expect(v.steps.at(-1)?.name).toBe("pr");
+    const v = startTask(e, { title: "sub", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, parent_task_id: f.task.id, area: ["a", "b"], group: "grp" });
+    expect(v.task).toMatchObject({ parent_id: f.task.id, task_group: "grp", branch: `task/${v.task.id}-sub` });
+    expect(v.task.cwd).toBe(join(dir, ".estack", "worktrees", `${v.task.id}-sub`));
+    expect(v.worktree_path).toBe(v.task.cwd);
+    expect(git(v.task.cwd, "branch", "--show-current")).toBe(v.task.branch);
+    expect(git(dir, "branch", "--show-current")).toBe("main");
+    expect(v.steps.at(-1)?.name).toBe("merge");
     expect(e.db.prepare("SELECT path FROM task_areas WHERE task_id = ? ORDER BY path").all(v.task.id)).toEqual([{ path: "a" }, { path: "b" }]);
+  });
+
+  test("a planned worker started by task_id alone gets its own worktree", () => {
+    const { dir, e } = setup();
+    const f = feature(e, dir);
+    const id = Number(e.db.prepare(
+      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id) VALUES ('Planned worker', 'feature', 'g', 'd', 'planned', '', ?, '', 's1/main', 'now', ?)",
+    ).run(f.task.cwd, f.task.id).lastInsertRowid);
+    const v = startTask(e, { actor: cto, cwd: dir, task_id: id });
+    expect(v.task).toMatchObject({ id, status: "open", branch: `task/${id}-planned-worker` });
+    expect(v.task.cwd).toBe(join(dir, ".estack", "worktrees", `${id}-planned-worker`));
+    expect(git(v.task.cwd, "branch", "--show-current")).toBe(v.task.branch);
+    expect(v.steps.at(-1)?.name).toBe("merge");
+  });
+
+  test("worktree: false for a task with a parent is refused", () => {
+    const { dir, e } = setup();
+    const f = feature(e, dir);
+    let err: EngineError | undefined;
+    try {
+      startTask(e, { title: "sub", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: f.task.cwd, parent_task_id: f.task.id, worktree: false });
+    } catch (x) { err = x as EngineError; }
+    expect(err?.code).toBe("POLICY_INVALID");
+    expect(err?.message).toContain("a worker task always gets its own worktree");
+    expect(e.db.prepare("SELECT COUNT(*) c FROM tasks WHERE title = 'sub'").get()).toEqual({ c: 0 });
   });
 
   test("git ignores the worktrees folder without a tracked change", () => {

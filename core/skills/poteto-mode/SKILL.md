@@ -200,7 +200,7 @@ In a repository that opted in, the engine makes the worktrees and holds the file
 
 1. **Start the feature.** From the main checkout, call `start_task` with `worktree: true` and no parent. That makes `feat/<id>-<slug>` under `.estack/worktrees/`. If you are already in a feature checkout, start the feature task there with no worktree.
 2. **Plan the workers.** Call `plan_tasks` with the feature as `parent_task_id` and one entry per worker (title, type, goal, done_check, area, and optionally `adds`, `depends_on` and `group`). Resolve each overlap it returns with `depends_on`, or with `accept_overlap` when the overlap is fine.
-3. **Start each worker.** Call `start_task` with its `task_id` and `worktree: true`. The engine makes `task/<id>-<slug>` from the feature head.
+3. **Start each worker.** Call `start_task` with its `task_id`. A worker always gets its own worktree, so it needs no `worktree` flag: the engine makes `task/<id>-<slug>` from the feature head.
 4. **Dispatch the seat.** Give it the worktree path, full paths for every file, and `git -C <worktree>` for git. A seat does not change directory.
 5. **Merge.** When the worker's verify and review pass, run `git -C <feature cwd> merge --no-ff <branch>`, then `complete_step` `merge` with evidence `{kind: "merged"}`.
 6. **A held file.** A worker whose edit is denied reports it to you. Check it with `claim_status`, then `allow_edit` or wait. A hold owned by another CTO is the owner's call: ask them to run `estack allow`. Workers never allow edits, accept overlaps or withdraw tasks.

@@ -61,7 +61,7 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
       title: z.string().optional(), type: z.string().optional(), goal: z.string().optional(), done_check: z.string().optional(),
       branch: z.string().optional(),
       area: z.union([z.string(), z.array(z.string())]).optional().describe("the folders or files you will change, relative to the checkout root or absolute; with the code map on, the first one's context is returned"),
-      worktree: z.boolean().optional().describe("make the task its own branch and git worktree (a feature, or a worker when parent_task_id is given)"),
+      worktree: z.boolean().optional().describe("make a feature its own branch and git worktree; a worker (a planned task, or one with parent_task_id) always gets one, so it needs no flag"),
       parent_task_id: z.number().int().optional().describe("the feature this task is a worker of"),
       group: z.string().optional(), task_id: z.number().int().optional().describe("start this planned task instead of making a new one"),
       cwd: z.string().optional().describe("the caller's working directory; its worktree becomes the task's (stamped by the hook)"),

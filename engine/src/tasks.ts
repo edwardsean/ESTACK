@@ -187,6 +187,9 @@ export function startTask(e: Engine, input: {
   // A planned row's parent and group are its own: the call's values are ignored so behaviour matches stored data.
   const parentId = planned ? planned.parent_id : input.parent_task_id ?? null;
   const group = planned ? planned.task_group : input.group ?? null;
+  // A worker (a task with a parent) always gets its own worktree: one forgotten flag must not put it in the caller's checkout.
+  if (parentId !== null && input.worktree === false) throw new EngineError("POLICY_INVALID", "a worker task always gets its own worktree");
+  const worktree = parentId !== null || input.worktree === true;
   const typeSteps = e.policy.task_types[type];
   if (!typeSteps) throw new EngineError("POLICY_INVALID", `unknown task type "${type}"`);
   if (input.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input.branch}`);
@@ -200,7 +203,7 @@ export function startTask(e: Engine, input: {
       throw new EngineError("OWNER_ONLY", `task #${parentRow.id} belongs to another CTO; only its CTO can start a task under it`);
     }
   }
-  if (parentRow && input.worktree) {
+  if (parentRow && worktree) {
     parent = parentRow;
     if (parent.status !== "open") throw new EngineError("TASK_CLOSED", `parent task ${parent.id} is ${parent.status}`);
   }
@@ -219,7 +222,7 @@ export function startTask(e: Engine, input: {
   const by = actorId(input.actor);
   const now = iso(e);
 
-  if (!input.worktree) {
+  if (!worktree) {
     const branch = input.branch ?? runBounded(e, checkout, "git", ["branch", "--show-current"]).stdout.trim();
     if (input.branch === undefined && !branch) {
       throw new EngineError("POLICY_INVALID", `${checkout} is not on a branch (detached HEAD): pass a branch`);

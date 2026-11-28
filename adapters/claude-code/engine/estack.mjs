@@ -35331,6 +35331,8 @@ function startTask(e, input2) {
   const done_check = field("done_check");
   const parentId = planned ? planned.parent_id : input2.parent_task_id ?? null;
   const group = planned ? planned.task_group : input2.group ?? null;
+  if (parentId !== null && input2.worktree === false) throw new EngineError("POLICY_INVALID", "a worker task always gets its own worktree");
+  const worktree = parentId !== null || input2.worktree === true;
   const typeSteps = e.policy.task_types[type];
   if (!typeSteps) throw new EngineError("POLICY_INVALID", `unknown task type "${type}"`);
   if (input2.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input2.branch}`);
@@ -35343,7 +35345,7 @@ function startTask(e, input2) {
       throw new EngineError("OWNER_ONLY", `task #${parentRow.id} belongs to another CTO; only its CTO can start a task under it`);
     }
   }
-  if (parentRow && input2.worktree) {
+  if (parentRow && worktree) {
     parent = parentRow;
     if (parent.status !== "open") throw new EngineError("TASK_CLOSED", `parent task ${parent.id} is ${parent.status}`);
   }
@@ -35358,7 +35360,7 @@ function startTask(e, input2) {
   gate();
   const by = actorId(input2.actor);
   const now = iso(e);
-  if (!input2.worktree) {
+  if (!worktree) {
     const branch2 = input2.branch ?? runBounded(e, checkout, "git", ["branch", "--show-current"]).stdout.trim();
     if (input2.branch === void 0 && !branch2) {
       throw new EngineError("POLICY_INVALID", `${checkout} is not on a branch (detached HEAD): pass a branch`);
@@ -46850,7 +46852,7 @@ function createServer(cwd, deps = {}) {
       done_check: external_exports.string().optional(),
       branch: external_exports.string().optional(),
       area: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).optional().describe("the folders or files you will change, relative to the checkout root or absolute; with the code map on, the first one's context is returned"),
-      worktree: external_exports.boolean().optional().describe("make the task its own branch and git worktree (a feature, or a worker when parent_task_id is given)"),
+      worktree: external_exports.boolean().optional().describe("make a feature its own branch and git worktree; a worker (a planned task, or one with parent_task_id) always gets one, so it needs no flag"),
       parent_task_id: external_exports.number().int().optional().describe("the feature this task is a worker of"),
       group: external_exports.string().optional(),
       task_id: external_exports.number().int().optional().describe("start this planned task instead of making a new one"),
