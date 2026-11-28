@@ -729,6 +729,27 @@ describe("workers and the push check", () => {
     expect(bindings()).toHaveLength(2);
   });
 
+  test("the CTO's stop is not blocked by a background worker's commits; the worker's own stop is", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = startTask(e, { title: "Feat", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, worktree: true });
+    const w = startTask(e, { title: "Work", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, parent_task_id: f.task.id });
+    e.db.close();
+    expect(edit(w.task.cwd, join(w.task.cwd, "a.ts"), { agent_id: "W" })).toBeNull();   // binds W to the worker task
+    execFileSync("git", ["commit", "--allow-empty", "-m", "worker work"], { cwd: w.task.cwd, stdio: "ignore" });
+    const stop = (o: Partial<HookEvent>) => runHook(o.hook_event_name === "SubagentStop" ? "subagent-stop" : "stop", ev(dir, o), deps) as any;
+    expect(stop({ hook_event_name: "Stop" })).toBeNull();
+    const sub = stop({ hook_event_name: "SubagentStop", agent_id: "W", cwd: w.task.cwd });
+    expect(sub?.decision).toBe("block");
+    expect(sub?.reason).toContain(`task #${w.task.id} has 1 new commit(s)`);
+    // The CTO's own feature still blocks its stop.
+    execFileSync("git", ["commit", "--allow-empty", "-m", "feature work"], { cwd: f.task.cwd, stdio: "ignore" });
+    const own = stop({ hook_event_name: "Stop" });
+    expect(own?.decision).toBe("block");
+    expect(own?.reason).toContain(`task #${f.task.id}`);
+    expect(own?.reason).not.toContain(`task #${w.task.id}`);
+  });
+
   test("the push check uses the pushed branch", () => {
     const dir = repo();
     execFileSync("git", ["branch", "feat/x"], { cwd: dir });

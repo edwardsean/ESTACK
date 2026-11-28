@@ -36801,7 +36801,8 @@ function stop(e, ev) {
   if (ev.stop_hook_active) return null;
   const sub = ev.hook_event_name === "SubagentStop";
   const reasons = [];
-  for (const v of boundTasks(e, ev, sub)) {
+  const worked = sub ? /* @__PURE__ */ new Set() : new Set(e.db.prepare("SELECT DISTINCT task_id FROM task_bindings WHERE agent_id IS NOT NULL").all().map((r) => r.task_id));
+  for (const v of boundTasks(e, ev, sub).filter((t) => !worked.has(t.task.id))) {
     const t = v.task;
     const work = v.steps.find((s) => s.name === "implement" || s.name === "fix");
     if (!work) continue;

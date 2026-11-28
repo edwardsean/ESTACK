@@ -365,7 +365,10 @@ export function stop(e: Engine, ev: HookEvent): HookOutput {
   if (ev.stop_hook_active) return null;
   const sub = ev.hook_event_name === "SubagentStop";
   const reasons: string[] = [];
-  for (const v of boundTasks(e, ev, sub)) {
+  // The main session's stop skips tasks a worker agent is bound to: they run in the background and SubagentStop checks them.
+  const worked = sub ? new Set<number>() : new Set((e.db.prepare("SELECT DISTINCT task_id FROM task_bindings WHERE agent_id IS NOT NULL").all() as
+    { task_id: number }[]).map((r) => r.task_id));
+  for (const v of boundTasks(e, ev, sub).filter((t) => !worked.has(t.task.id))) {
     const t = v.task;
     const work = v.steps.find((s) => s.name === "implement" || s.name === "fix");
     if (!work) continue;
