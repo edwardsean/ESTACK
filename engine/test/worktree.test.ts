@@ -62,6 +62,59 @@ describe("worktrees", () => {
     expect(v.task.base_sha).not.toBe(git(dir, "rev-parse", "main"));
   });
 
+  describe("the default branch", () => {
+    const baseOf = (e: Engine, id: number) =>
+      JSON.parse((e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'worktree_created' AND task_id = ?").get(id) as { p: string }).p).base;
+
+    test("on a repository whose default is master, a feature branches from local master without origin", () => {
+      const { dir, e } = setup();
+      git(dir, "branch", "-m", "main", "master");
+      const v = feature(e, dir);
+      expect(v.task.base_sha).toBe(git(dir, "rev-parse", "master"));
+      expect(baseOf(e, v.task.id)).toBe("master");
+    });
+
+    test("origin/HEAD names the default branch: a feature branches from origin/master", () => {
+      const { dir, e } = setup();
+      git(dir, "branch", "-m", "main", "master");
+      const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-origin-")));
+      git(bare, "init", "--bare", "-b", "master");
+      git(dir, "remote", "add", "origin", bare);
+      git(dir, "push", "origin", "master");
+      git(dir, "remote", "set-head", "origin", "master");
+      git(dir, "commit", "--allow-empty", "-m", "local only");
+      const v = feature(e, dir);
+      expect(v.task.base_sha).toBe(git(dir, "rev-parse", "origin/master"));
+      expect(v.task.base_sha).not.toBe(git(dir, "rev-parse", "master"));
+      expect(baseOf(e, v.task.id)).toBe("origin/master");
+    });
+
+    test("origin/HEAD wins over a local main", () => {
+      const { dir, e } = setup();
+      const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-origin-")));
+      git(bare, "init", "--bare", "-b", "main");
+      git(dir, "remote", "add", "origin", bare);
+      git(dir, "branch", "trunk");
+      git(dir, "commit", "--allow-empty", "-m", "main moves on");
+      git(dir, "push", "origin", "main", "trunk");
+      git(dir, "remote", "set-head", "origin", "trunk");
+      const v = feature(e, dir);
+      expect(v.task.base_sha).toBe(git(dir, "rev-parse", "origin/trunk"));
+      expect(baseOf(e, v.task.id)).toBe("origin/trunk");
+    });
+
+    test("with no origin/HEAD, main or master, starting a feature is refused and says why", () => {
+      const { dir, e } = setup();
+      git(dir, "branch", "-m", "main", "trunk");
+      let err: EngineError | undefined;
+      try { feature(e, dir); } catch (x) { err = x as EngineError; }
+      expect(err?.code).toBe("POLICY_INVALID");
+      expect(err?.message).toContain("no default branch");
+      expect(err?.message).toContain("origin/HEAD");
+      expect(e.db.prepare("SELECT COUNT(*) c FROM tasks WHERE status IN ('open','starting')").get()).toEqual({ c: 0 });
+    });
+  });
+
   test("a worker branches from its feature's head and ends with merge", () => {
     const { dir, e } = setup();
     const f = feature(e, dir);

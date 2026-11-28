@@ -120,18 +120,34 @@ function insertAreas(e: Engine, id: number, area: string[] | undefined): void {
   for (const path of area ?? []) e.db.prepare("INSERT OR IGNORE INTO task_areas (task_id, path) VALUES (?, ?)").run(id, path);
 }
 
-/** The commit a new feature branches from: origin/main (after a bounded fetch) when origin exists, else local main. */
+/**
+ * The repository's default branch: the branch origin/HEAD points at when it is set, else local main, else local master.
+ * With none of them it is POLICY_INVALID, saying what is missing.
+ */
+export function defaultBranch(e: Engine, cwd: string): string {
+  const head = runBounded(e, cwd, "git", ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], HOOK_GIT_TIMEOUT_MS);
+  const named = head.code === 0 ? /^refs\/remotes\/origin\/([^-].*)$/.exec(head.stdout.trim())?.[1] : undefined;
+  if (named) return named;
+  for (const name of ["main", "master"]) {
+    if (runBounded(e, cwd, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${name}^{commit}`], HOOK_GIT_TIMEOUT_MS).code === 0) return name;
+  }
+  throw new EngineError("POLICY_INVALID",
+    "no default branch: origin/HEAD is not set and there is no local main or master; set it (git remote set-head origin --auto) or create main");
+}
+
+/** The commit a new feature branches from: origin/<default> (after a bounded fetch) when origin has it, else the local default branch. */
 function featureBase(e: Engine, checkout: string): { ref: string; sha: string } {
+  const name = defaultBranch(e, checkout);
   const remote = runBounded(e, checkout, "git", ["remote", "get-url", "origin"]);
   if (remote.code === 0) {
-    // A failed or timed-out fetch is ignored: the last known origin/main is used.
-    e.exec.run("git", ["fetch", "origin", "main"], { cwd: checkout, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
-    const o = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"]);
-    if (o.code === 0) return { ref: "origin/main", sha: o.stdout.trim() };
+    // A failed or timed-out fetch is ignored: the last known origin/<default> is used.
+    e.exec.run("git", ["fetch", "origin", name], { cwd: checkout, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+    const o = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}^{commit}`]);
+    if (o.code === 0) return { ref: `origin/${name}`, sha: o.stdout.trim() };
   }
-  const m = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"]);
-  if (m.code !== 0) throw new EngineError("POLICY_INVALID", "no main branch to start a feature from");
-  return { ref: "main", sha: m.stdout.trim() };
+  const m = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${name}^{commit}`]);
+  if (m.code !== 0) throw new EngineError("POLICY_INVALID", `no ${name} branch to start a feature from`);
+  return { ref: name, sha: m.stdout.trim() };
 }
 
 export const HOOK_FETCH_TIMEOUT_MS = 20_000;

@@ -5,7 +5,7 @@ import { isExempt, pathMatches } from "./match";
 import { normaliseName, topLevelFunctions } from "./duplicates";
 import { loadGraph } from "./graph";
 import { areaPath, mergedIntoMain } from "./plan";
-import { EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, logEvent, ownsTask, runBounded, tx } from "./tasks";
+import { EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, defaultBranch, logEvent, ownsTask, runBounded, tx } from "./tasks";
 import { EngineError, actorId, type Actor, type Task } from "./types";
 import { WORKTREES_DIR, removeWorktree } from "./worktree";
 
@@ -129,8 +129,9 @@ export function syncMerged(e: Engine): void {
   })).filter((x) => x.hasClaims || x.hasTree);
   if (todo.length === 0) return;
   const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
-  // One fetch for the whole pass, ignoring failure.
-  if (hasOrigin) e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  // One fetch of the default branch for the whole pass, ignoring failure.
+  const name = (() => { try { return defaultBranch(e, e.cwd); } catch { return null; } })();
+  if (hasOrigin && name) e.exec.run("git", ["fetch", "origin", name], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
   for (const { task, hasClaims, hasTree } of todo) {
     try {
       if (mergedIntoMain(e, task, { fetched: true })) {

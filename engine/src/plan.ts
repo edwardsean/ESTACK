@@ -4,7 +4,7 @@ import type { Engine } from "./engine";
 import { normaliseName, topLevelFunctions } from "./duplicates";
 import { loadGraph } from "./graph";
 import {
-  EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, STALE_CLAIM_MS, getTask, logEvent, ownsTask, tx, type TaskView,
+  EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, STALE_CLAIM_MS, defaultBranch, getTask, logEvent, ownsTask, tx, type TaskView,
 } from "./tasks";
 import { EngineError, actorId, type Actor, type Task } from "./types";
 
@@ -263,10 +263,13 @@ export function mergedIntoMain(e: Engine, task: Task, opts: { fetched?: boolean 
       try { if ((JSON.parse(pr.stdout) as { state?: unknown }).state === "MERGED") return true; } catch { /* fall through to git */ }
     }
   }
-  // Without an origin remote, local main is the main there is.
+  // A repository with no default branch has no main to be merged into.
+  let name: string;
+  try { name = defaultBranch(e, e.cwd); } catch (x) { if (x instanceof EngineError) return false; throw x; }
+  // Without an origin remote, the local default branch is the main there is.
   const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
-  if (hasOrigin && !opts.fetched) e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
-  const main = hasOrigin ? "refs/remotes/origin/main" : "refs/heads/main";
+  if (hasOrigin && !opts.fetched) e.exec.run("git", ["fetch", "origin", name], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  const main = hasOrigin ? `refs/remotes/origin/${name}` : `refs/heads/${name}`;
   return e.exec.run("git", ["merge-base", "--is-ancestor", sha, main], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
 }
 

@@ -34949,9 +34949,16 @@ function mergedIntoMain(e, task, opts = {}) {
       }
     }
   }
+  let name;
+  try {
+    name = defaultBranch(e, e.cwd);
+  } catch (x) {
+    if (x instanceof EngineError) return false;
+    throw x;
+  }
   const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
-  if (hasOrigin && !opts.fetched) e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
-  const main2 = hasOrigin ? "refs/remotes/origin/main" : "refs/heads/main";
+  if (hasOrigin && !opts.fetched) e.exec.run("git", ["fetch", "origin", name], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  const main2 = hasOrigin ? `refs/remotes/origin/${name}` : `refs/heads/${name}`;
   return e.exec.run("git", ["merge-base", "--is-ancestor", sha, main2], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
 }
 function dependencyState(e, task_id) {
@@ -35281,16 +35288,29 @@ function ownsTask(e, session_id, task_id) {
 function insertAreas(e, id, area) {
   for (const path of area ?? []) e.db.prepare("INSERT OR IGNORE INTO task_areas (task_id, path) VALUES (?, ?)").run(id, path);
 }
+function defaultBranch(e, cwd) {
+  const head = runBounded(e, cwd, "git", ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], HOOK_GIT_TIMEOUT_MS);
+  const named = head.code === 0 ? /^refs\/remotes\/origin\/([^-].*)$/.exec(head.stdout.trim())?.[1] : void 0;
+  if (named) return named;
+  for (const name of ["main", "master"]) {
+    if (runBounded(e, cwd, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${name}^{commit}`], HOOK_GIT_TIMEOUT_MS).code === 0) return name;
+  }
+  throw new EngineError(
+    "POLICY_INVALID",
+    "no default branch: origin/HEAD is not set and there is no local main or master; set it (git remote set-head origin --auto) or create main"
+  );
+}
 function featureBase(e, checkout) {
+  const name = defaultBranch(e, checkout);
   const remote = runBounded(e, checkout, "git", ["remote", "get-url", "origin"]);
   if (remote.code === 0) {
-    e.exec.run("git", ["fetch", "origin", "main"], { cwd: checkout, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
-    const o = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"]);
-    if (o.code === 0) return { ref: "origin/main", sha: o.stdout.trim() };
+    e.exec.run("git", ["fetch", "origin", name], { cwd: checkout, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+    const o = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}^{commit}`]);
+    if (o.code === 0) return { ref: `origin/${name}`, sha: o.stdout.trim() };
   }
-  const m = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"]);
-  if (m.code !== 0) throw new EngineError("POLICY_INVALID", "no main branch to start a feature from");
-  return { ref: "main", sha: m.stdout.trim() };
+  const m = runBounded(e, checkout, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${name}^{commit}`]);
+  if (m.code !== 0) throw new EngineError("POLICY_INVALID", `no ${name} branch to start a feature from`);
+  return { ref: name, sha: m.stdout.trim() };
 }
 var HOOK_FETCH_TIMEOUT_MS = 2e4;
 var STALE_CLAIM_MS = WORKTREE_SETUP_TIMEOUT_MS + 3e5;
@@ -36034,7 +36054,14 @@ function syncMerged(e) {
   })).filter((x) => x.hasClaims || x.hasTree);
   if (todo.length === 0) return;
   const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
-  if (hasOrigin) e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  const name = (() => {
+    try {
+      return defaultBranch(e, e.cwd);
+    } catch {
+      return null;
+    }
+  })();
+  if (hasOrigin && name) e.exec.run("git", ["fetch", "origin", name], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
   for (const { task, hasClaims, hasTree } of todo) {
     try {
       if (mergedIntoMain(e, task, { fetched: true })) {

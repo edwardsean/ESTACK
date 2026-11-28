@@ -295,6 +295,32 @@ describe("file claims", { timeout: 60_000 }, () => {
     expect(existsSync(f.cwd)).toBe(false);
   });
 
+  test("on a repository whose default is master, a done feature merged into it releases its claims, without and with origin", () => {
+    for (const withOrigin of [false, true]) {
+      const dir = repo();
+      git(dir, "branch", "-m", "main", "master");
+      if (withOrigin) {
+        const bare = execFileSync("mktemp", ["-d"], { encoding: "utf8" }).trim();
+        git(bare, "init", "--bare", "-b", "master");
+        git(dir, "remote", "add", "origin", bare);
+        git(dir, "push", "origin", "master");
+        git(dir, "remote", "set-head", "origin", "master");
+      }
+      const e = openEngine(dir, deps);
+      const f = feature(e, dir, A, "feat");
+      checkEdit(e, f, "src/a.ts");
+      git(f.cwd, "commit", "--allow-empty", "-m", "work");
+      insertEvidence(e, f.id, "implement", "commit", true, { sha: git(f.cwd, "rev-parse", "HEAD") }, A);
+      e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(f.id);
+      syncMerged(e);
+      expect(claims(e)[0].status).toBe("active");
+      git(dir, "merge", "--no-ff", "-m", "m", f.branch);
+      if (withOrigin) git(dir, "push", "origin", "master");
+      syncMerged(e);
+      expect(claims(e)[0].status, withOrigin ? "with origin" : "without origin").toBe("released");
+    }
+  });
+
   test("a done feature whose pr was closed unmerged releases its claims with a reason", () => {
     const dir = repo();
     const e = openEngine(dir, { exec: fakeExec({ "pr view feat/1-feat --json state": { code: 0, stdout: JSON.stringify({ state: "CLOSED" }) } }) });
