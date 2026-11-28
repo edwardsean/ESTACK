@@ -465,4 +465,55 @@ describe("deciding on held files and helper names", { timeout: 60_000 }, () => {
       { task_id: w.id, kind: "new_symbol", target: "parseMoney", status: "active" }]);
     expect(JSON.parse(kinds(e, "symbol_claimed")[0].p)).toMatchObject({ name: "parseMoney", file: "src/money.ts" });
   });
+
+  test("a worker subagent in the CTO's session cannot allow edits", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, A, "two");
+    checkEdit(e, t1, "src/a.ts");
+    const x = code(() => allowEdit(e, { task_id: t2.id, path: "src/a.ts", reason: "x", actor: { session_id: "sa", agent_id: "w" }, owner: false }));
+    expect(x.code).toBe("OWNER_ONLY");
+    expect(x.message).toContain("a worker cannot allow edits");
+    expect(hasGrant(e, t2.id, "src/a.ts")).toBe(false);
+  });
+
+  test("claim_status shows a file the holder created and has not staged", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    checkEdit(e, t1, "src/new.ts");
+    mkdirSync(join(t1.cwd, "src"), { recursive: true });
+    writeFileSync(join(t1.cwd, "src/new.ts"), "export const brandNew = 1;\n");
+    const s = claimStatus(e, "src/new.ts");
+    expect(s.diff).toContain("+export const brandNew = 1;");
+    expect(s.note).toBeUndefined();
+  });
+
+  test("release hands the file to the newest open grant, like any other release", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, A, "two");
+    checkEdit(e, t1, "src/a.ts");
+    allowEdit(e, { task_id: t2.id, path: "src/a.ts", reason: "x", actor: A, owner: false });
+    releaseClaim(e, "src/a.ts", "stale");
+    expect(claims(e)).toEqual([{ task_id: t1.id, target: "src/a.ts", status: "released" }, { task_id: t2.id, target: "src/a.ts", status: "active" }]);
+  });
+
+  test("allow_edit is idempotent, needs an open task, and paths are normalised to the checkout", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, A, "two");
+    checkEdit(e, t1, "src/a.ts");
+    for (const p of ["src/a.ts", "./src/a.ts", join(t1.cwd, "src/a.ts")]) {
+      allowEdit(e, { task_id: t2.id, path: p, reason: "x", actor: A, owner: false });
+    }
+    expect(e.db.prepare("SELECT COUNT(*) c FROM claim_grants").get()).toEqual({ c: 1 });
+    expect(claimStatus(e, "./src/a.ts").holder?.task_id).toBe(t1.id);
+    e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(t2.id);
+    expect(code(() => allowEdit(e, { task_id: t2.id, path: "src/a.ts", reason: "x", actor: A, owner: false })).code).toBe("TASK_CLOSED");
+    expect(code(() => claimSymbol(e, { task_id: t2.id, name: "foo", file: "x", actor: A })).code).toBe("TASK_CLOSED");
+  });
 });

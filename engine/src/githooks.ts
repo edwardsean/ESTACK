@@ -127,7 +127,7 @@ export function preCommit(e: Engine, cwd: string): string | null {
     if (!verdict.ok) refused.push(heldMessage(p, verdict.holder));
   }
   if (refused.length > 0) return refused.join("\n");
-  // A path another task took since the first pass is refused too (the first path taken stays held by this task).
+  // A path another task took since the first pass is refused too (every path taken before the lost one stays held by this task).
   const lost: string[] = [];
   for (const p of paths) {
     const verdict = checkEdit(e, open, p, git);

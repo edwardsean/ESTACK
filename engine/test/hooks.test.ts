@@ -140,7 +140,7 @@ describe("hooks", () => {
 
   test("hard-coded denials apply to bash", () => {
     const dir = repo();
-    for (const c of ["cat .estack/state.db", "estack override git_push --reason x", "git commit --no-verify -m x"]) {
+    for (const c of ["cat .estack/state.db", "estack override git_push --reason x", "estack allow --task 1 --path a --reason x", "env -i PATH=$PATH estack release --path a --reason x", "git commit --no-verify -m x"]) {
       const r = bash(dir, c);
       expect(decision(r), c).toBe("deny");
       expect(reason(r)).toContain("blocked by estack");

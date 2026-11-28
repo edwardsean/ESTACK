@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import type { Engine } from "./engine";
 import { isExempt, pathMatches } from "./match";
 import { normaliseName, topLevelFunctions } from "./duplicates";
 import { loadGraph } from "./graph";
-import { mergedIntoMain } from "./plan";
+import { areaPath, mergedIntoMain } from "./plan";
 import { EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, logEvent, ownsTask, runBounded, tx } from "./tasks";
 import { EngineError, actorId, type Actor, type Task } from "./types";
 import { WORKTREES_DIR, removeWorktree } from "./worktree";
@@ -92,19 +93,22 @@ export function passClaims(e: Engine, from: Task, to: Task, actor: Actor = ENGIN
 export function releaseClaims(e: Engine, task: Task, actor: Actor, reason?: string): void {
   const rows = e.db.prepare("SELECT id, kind, target FROM claims WHERE task_id = ? AND status = 'active' ORDER BY id")
     .all(task.id) as { id: number; kind: string; target: string }[];
-  for (const c of rows) {
-    e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso(e), c.id);
-    logEvent(e, actor, "claim_released", task.id, { claim_id: c.id, kind: c.kind, path: c.target, ...(reason ? { reason } : {}) });
-    if (c.kind !== "file") continue;
-    const grant = e.db.prepare(
-      `SELECT g.id, g.task_id FROM claim_grants g JOIN tasks t ON t.id = g.task_id
-       WHERE g.path = ? AND g.task_id != ? AND t.status = 'open' ORDER BY g.id DESC LIMIT 1`,
-    ).get(c.target, task.id) as { id: number; task_id: number } | undefined;
-    if (!grant) continue;
-    const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', ?, 'active', ?)")
-      .run(grant.task_id, c.target, iso(e));
-    logEvent(e, actor, "claim_taken", grant.task_id, { path: c.target, claim_id: Number(r.lastInsertRowid), from_grant: grant.id });
-  }
+  for (const c of rows) releaseOne(e, c, task.id, actor, reason);
+}
+
+/** Release one active claim and hand a file to the newest open grant. Not transactional itself. */
+function releaseOne(e: Engine, c: { id: number; kind: string; target: string }, task_id: number, actor: Actor, reason?: string): void {
+  e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso(e), c.id);
+  logEvent(e, actor, "claim_released", task_id, { claim_id: c.id, kind: c.kind, path: c.target, ...(reason ? { reason } : {}) });
+  if (c.kind !== "file") return;
+  const grant = e.db.prepare(
+    `SELECT g.id, g.task_id FROM claim_grants g JOIN tasks t ON t.id = g.task_id
+     WHERE g.path = ? AND g.task_id != ? AND t.status = 'open' ORDER BY g.id DESC LIMIT 1`,
+  ).get(c.target, task_id) as { id: number; task_id: number } | undefined;
+  if (!grant) return;
+  const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', ?, 'active', ?)")
+    .run(grant.task_id, c.target, iso(e));
+  logEvent(e, actor, "claim_taken", grant.task_id, { path: c.target, claim_id: Number(r.lastInsertRowid), from_grant: grant.id });
 }
 
 /**
@@ -160,7 +164,8 @@ export interface ClaimStatus {
 export const MAX_CLAIM_DIFF = 8000;
 
 /** Who holds a file, what the holder changed in it (committed or not, from its base), and who has been allowed in. */
-export function claimStatus(e: Engine, path: string): ClaimStatus {
+export function claimStatus(e: Engine, rawPath: string): ClaimStatus {
+  const path = claimPath(e, rawPath);
   const held = holderOf(e, path);
   if (!held) return { path, holder: null, diff: "", grants: [] };
   const { task } = held;
@@ -169,20 +174,29 @@ export function claimStatus(e: Engine, path: string): ClaimStatus {
   ).all(held.claim_id, path) as unknown as ClaimStatus["grants"];
   const out: ClaimStatus = { path, holder: { task_id: task.id, title: task.title, goal: task.goal, cwd: task.cwd }, diff: "", grants };
   if (!existsSync(task.cwd)) return { ...out, note: `the holder's worktree is gone (${task.cwd}), so its changes cannot be shown` };
-  const r = runBounded(e, task.cwd, "git", ["diff", "--no-color", task.base_sha, "--", path], HOOK_GIT_TIMEOUT_MS);
-  if (r.code !== 0) return { ...out, note: `could not read the holder's changes: ${r.stderr.trim()}` };
+  const tracked = runBounded(e, task.cwd, "git", ["ls-files", "--error-unmatch", "--", path], HOOK_GIT_TIMEOUT_MS).code === 0;
+  // A file the holder created and has not added yet is all new: git diff --no-index exits 1 when it differs.
+  const fresh = !tracked && existsSync(join(task.cwd, path));
+  const r = fresh
+    ? runBounded(e, task.cwd, "git", ["diff", "--no-index", "--no-color", "--", "/dev/null", path], HOOK_GIT_TIMEOUT_MS)
+    : runBounded(e, task.cwd, "git", ["diff", "--no-color", task.base_sha, "--", path], HOOK_GIT_TIMEOUT_MS);
+  if (r.code !== 0 && !(fresh && r.code === 1)) return { ...out, note: `could not read the holder's changes: ${r.stderr.trim()}` };
   out.diff = r.stdout.length > MAX_CLAIM_DIFF ? `${r.stdout.slice(0, MAX_CLAIM_DIFF)}\n(truncated)` : r.stdout;
   return out;
 }
 
 /** The CTO of both the holder and the task (or the owner) lets the task edit a held file. */
 export function allowEdit(e: Engine, input: { task_id: number; path: string; reason: string; actor?: Actor; owner: boolean }): void {
+  if (!input.owner && input.actor?.agent_id) throw new EngineError("OWNER_ONLY", "a worker cannot allow edits; report to your CTO");
   const reason = input.reason?.trim();
   if (!reason) throw new EngineError("BAD_EVIDENCE", "a reason is required");
   const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input.task_id) as unknown as Task | undefined;
   if (!task) throw new EngineError("NO_TASK", `no task with id ${input.task_id}`);
-  const held = holderOf(e, input.path);
-  if (!held) throw new EngineError("BAD_EVIDENCE", `${input.path} is not held by any task`);
+  if (task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${task.id} is ${task.status}`);
+  const path = claimPath(e, input.path, task);
+  input = { ...input, path };
+  const held = holderOf(e, path);
+  if (!held) throw new EngineError("BAD_EVIDENCE", `${path} is not held by any task`);
   const by = input.owner ? "owner" : actorId(input.actor ?? { session_id: "unknown" });
   if (!input.owner) {
     const s = input.actor?.session_id;
@@ -192,6 +206,7 @@ export function allowEdit(e: Engine, input: { task_id: number; path: string; rea
     }
   }
   tx(e, () => {
+    if (e.db.prepare("SELECT 1 FROM claim_grants WHERE claim_id = ? AND task_id = ? AND path = ?").get(held.claim_id, task.id, path)) return;
     e.db.prepare("INSERT INTO claim_grants (claim_id, task_id, path, reason, by, at) VALUES (?, ?, ?, ?, ?, ?)")
       .run(held.claim_id, task.id, input.path, reason, by, iso(e));
     logEvent(e, input.actor ?? { session_id: "owner" }, "claim_granted", task.id, { path: input.path, holder: held.task.id, by });
@@ -199,14 +214,25 @@ export function allowEdit(e: Engine, input: { task_id: number; path: string; rea
 }
 
 /** Owner only (the caller checks): free a held file, for a hold nobody is working on any more. */
-export function releaseClaim(e: Engine, path: string, reason: string): void {
+export function releaseClaim(e: Engine, rawPath: string, reason: string): void {
   if (!reason || !reason.trim()) throw new EngineError("BAD_EVIDENCE", "a reason is required");
-  const held = holderOf(e, path);
-  if (!held) throw new EngineError("BAD_EVIDENCE", `${path} is not held by any task`);
+  const path = claimPath(e, rawPath);
   tx(e, () => {
-    e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso(e), held.claim_id);
-    logEvent(e, { session_id: "owner" }, "claim_released", held.task.id, { claim_id: held.claim_id, kind: "file", path, reason });
+    const held = holderOf(e, path);
+    if (!held) throw new EngineError("BAD_EVIDENCE", `${path} is not held by any task`);
+    releaseOne(e, { id: held.claim_id, kind: "file", target: path }, held.task.id, { session_id: "owner" }, reason);
   });
+}
+
+/** A path as claims hold it: relative to the checkout, "/" separators. An absolute path is read against the task's worktree (or the one that contains it). */
+function claimPath(e: Engine, path: string, task?: Task): string {
+  let base = task?.cwd ?? e.repo.root;
+  if (isAbsolute(path)) {
+    const cwds = (e.db.prepare("SELECT cwd FROM tasks WHERE cwd != ''").all() as { cwd: string }[]).map((r) => r.cwd)
+      .filter((c) => path === c || path.startsWith(c + "/")).sort((x, y) => y.length - x.length);
+    if (cwds.length > 0) base = cwds[0];
+  }
+  return areaPath(base, path);
 }
 
 /** Claim the name of a shared helper a task is about to write, unless it already exists or another task claimed it. */
@@ -214,6 +240,7 @@ export function claimSymbol(e: Engine, input: { task_id: number; name: string; f
   { status: "claimed" } | { status: "exists"; file: string; line: number } | { status: "claimed_by"; task_id: number } {
   const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input.task_id) as unknown as Task | undefined;
   if (!task) throw new EngineError("NO_TASK", `no task with id ${input.task_id}`);
+  if (task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${task.id} is ${task.status}`);
   if (!input.name.trim()) throw new EngineError("BAD_EVIDENCE", "a name is required");
   const want = normaliseName(input.name);
   const parent = task.parent_id === null ? undefined
@@ -221,23 +248,17 @@ export function claimSymbol(e: Engine, input: { task_id: number; name: string; f
   const g = loadGraph(task.cwd) ?? (parent ? loadGraph(parent.cwd) : null);
   const hit = g ? topLevelFunctions(g).find((n) => normaliseName(n.name) === want) : undefined;
   if (hit) return { status: "exists", file: hit.file, line: hit.line };
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // Read and insert in one transaction, so two tasks claiming the same name cannot both win.
+  return tx(e, () => {
     const rows = e.db.prepare("SELECT task_id, target FROM claims WHERE kind = 'new_symbol' AND status = 'active'")
       .all() as { task_id: number; target: string }[];
     const mine = rows.find((r) => normaliseName(r.target) === want);
-    if (mine) return mine.task_id === task.id ? { status: "claimed" } : { status: "claimed_by", task_id: mine.task_id };
-    try {
-      tx(e, () => {
-        const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'new_symbol', ?, 'active', ?)")
-          .run(task.id, input.name, iso(e));
-        logEvent(e, input.actor, "symbol_claimed", task.id, { name: input.name, file: input.file, claim_id: Number(r.lastInsertRowid) });
-      });
-      return { status: "claimed" };
-    } catch (x) {
-      if (!(x instanceof Error) || !/UNIQUE constraint failed/.test(x.message)) throw x;
-    }
-  }
-  throw new EngineError("HELD", `could not claim ${input.name}: its claim keeps changing hands; try again`);
+    if (mine) return mine.task_id === task.id ? { status: "claimed" as const } : { status: "claimed_by" as const, task_id: mine.task_id };
+    const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'new_symbol', ?, 'active', ?)")
+      .run(task.id, input.name, iso(e));
+    logEvent(e, input.actor, "symbol_claimed", task.id, { name: input.name, file: input.file, claim_id: Number(r.lastInsertRowid) });
+    return { status: "claimed" as const };
+  });
 }
 
 export interface ActiveClaim { kind: string; target: string; task_id: number; title: string }
@@ -258,7 +279,8 @@ export function keptWorktrees(e: Engine): KeptWorktree[] {
        (SELECT payload_json FROM events v WHERE v.kind = 'worktree_kept' AND v.task_id = t.id ORDER BY v.id DESC LIMIT 1) AS p
      FROM tasks t WHERE t.id IN (SELECT task_id FROM events WHERE kind = 'worktree_kept') ORDER BY t.id`,
   ).all() as unknown as { task_id: number; title: string; path: string; p: string }[];
-  return rows.filter((r) => existsSync(r.path)).map((r) => ({
-    task_id: r.task_id, title: r.title, path: r.path, reason: String((JSON.parse(r.p) as { reason?: unknown }).reason ?? ""),
-  }));
+  return rows.map((r) => {
+    const kept = JSON.parse(r.p) as { path?: unknown; reason?: unknown };
+    return { task_id: r.task_id, title: r.title, path: typeof kept.path === "string" ? kept.path : r.path, reason: String(kept.reason ?? "") };
+  }).filter((k) => existsSync(k.path));
 }

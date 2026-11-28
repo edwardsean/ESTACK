@@ -526,3 +526,17 @@ describe("review fixes", () => {
     });
   });
 });
+
+describe("workers cannot decide", () => {
+  test("a worker subagent in the CTO's session cannot accept overlaps or withdraw tasks", () => {
+    const { dir, e } = setup();
+    const f = feature(e, dir, cto);
+    const p = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [item("A", ["src/a"]), item("B", ["src/a"])] });
+    const [a, b] = p.tasks.map((t) => t.task.id);
+    const worker: Actor = { session_id: cto.session_id, agent_id: "w1" };
+    expect(code(() => acceptOverlap(e, { a, b, reason: "ok", by: "x", owner: false, actor: worker })).message).toMatch(/a worker cannot/);
+    expect(code(() => withdrawTask(e, a, worker)).message).toMatch(/a worker cannot/);
+    expect(e.db.prepare("SELECT COUNT(*) c FROM overlap_accepts").get()).toEqual({ c: 0 });
+    withdrawTask(e, a, cto);
+  });
+});

@@ -85,7 +85,7 @@ function status(e: Engine, json: boolean, out: (s: string) => void): void {
     const busy = starting.map((s) => ({ ...s.task, steps: [], next: null, stale: s.stale }));
     return out(JSON.stringify({
       tasks: [...shown, ...busy, ...waiting], claims,
-      kept_worktrees: kept.map((k) => ({ task_id: k.task_id, title: k.title, path: k.path, reason: k.reason })),
+      kept_worktrees: kept,
     }, null, 2) + "\n");
   }
   if (open.length === 0 && planned.length === 0 && starting.length === 0 && claims.length === 0 && kept.length === 0) return out("no open tasks\n");

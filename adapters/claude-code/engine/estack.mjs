@@ -14594,7 +14594,7 @@ var require_dist2 = __commonJS({
 
 // engine/src/cli.ts
 import { readFileSync as readFileSync5, realpathSync as realpathSync5, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join9, resolve as resolve5 } from "node:path";
+import { join as join10, resolve as resolve5 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // engine/src/engine.ts
@@ -34627,10 +34627,11 @@ function openEngine(cwd, deps = {}) {
 
 // engine/src/hooks.ts
 import { existsSync as existsSync8, realpathSync as realpathSync3 } from "node:fs";
-import { dirname as dirname3, isAbsolute as isAbsolute2, join as join7, relative as relative3, resolve as resolve2, sep as sep3 } from "node:path";
+import { dirname as dirname3, isAbsolute as isAbsolute3, join as join8, relative as relative3, resolve as resolve2, sep as sep3 } from "node:path";
 
 // engine/src/claims.ts
 import { existsSync as existsSync6 } from "node:fs";
+import { isAbsolute as isAbsolute2, join as join7 } from "node:path";
 
 // engine/src/match.ts
 var escapeRe = (c) => c.replace(/[.+^${}()|[\]\\\/-]/g, "\\$&");
@@ -34674,9 +34675,13 @@ var HARDCODED_DENY = [
   { action: "owner_only", pattern: "estack skip*" },
   { action: "owner_only", pattern: "estack cancel*" },
   { action: "owner_only", pattern: "estack override*" },
+  { action: "owner_only", pattern: "estack allow*" },
+  { action: "owner_only", pattern: "estack release*" },
   { action: "owner_only", pattern: "*estack.mjs skip*" },
   { action: "owner_only", pattern: "*estack.mjs cancel*" },
   { action: "owner_only", pattern: "*estack.mjs override*" },
+  { action: "owner_only", pattern: "*estack.mjs allow*" },
+  { action: "owner_only", pattern: "*estack.mjs release*" },
   { action: "disable_hooks", pattern: "*--no-verify*" },
   { action: "disable_hooks", pattern: "*core.hooksPath*" },
   { action: "disable_hooks", pattern: "git config*hooks*" },
@@ -34890,6 +34895,7 @@ function acceptOverlap(e, input2) {
   for (const id of [a, b]) if (!getRow(e, id)) throw new EngineError("NO_TASK", `no task with id ${id}`);
   if (!input2.owner) {
     const s = input2.actor?.session_id;
+    if (input2.actor?.agent_id) throw new EngineError("OWNER_ONLY", "a worker cannot accept overlaps; report to your CTO");
     if (!s || !ownsTask(e, s, a) || !ownsTask(e, s, b)) {
       throw new EngineError(
         "OWNER_ONLY",
@@ -34906,6 +34912,7 @@ function withdrawTask(e, task_id, actor) {
   tx(e, () => {
     const t = getRow(e, task_id);
     if (!t) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
+    if (actor.agent_id) throw new EngineError("OWNER_ONLY", "a worker cannot withdraw tasks; report to your CTO");
     if (!ownsTask(e, actor.session_id, task_id)) throw new EngineError("OWNER_ONLY", `only the CTO of task ${task_id} can withdraw it`);
     if (t.status === "starting") {
       const c = claimInfo(e, task_id);
@@ -35860,18 +35867,19 @@ function passClaims(e, from, to, actor = ENGINE2) {
 }
 function releaseClaims(e, task, actor, reason) {
   const rows = e.db.prepare("SELECT id, kind, target FROM claims WHERE task_id = ? AND status = 'active' ORDER BY id").all(task.id);
-  for (const c of rows) {
-    e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso2(e), c.id);
-    logEvent(e, actor, "claim_released", task.id, { claim_id: c.id, kind: c.kind, path: c.target, ...reason ? { reason } : {} });
-    if (c.kind !== "file") continue;
-    const grant = e.db.prepare(
-      `SELECT g.id, g.task_id FROM claim_grants g JOIN tasks t ON t.id = g.task_id
-       WHERE g.path = ? AND g.task_id != ? AND t.status = 'open' ORDER BY g.id DESC LIMIT 1`
-    ).get(c.target, task.id);
-    if (!grant) continue;
-    const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', ?, 'active', ?)").run(grant.task_id, c.target, iso2(e));
-    logEvent(e, actor, "claim_taken", grant.task_id, { path: c.target, claim_id: Number(r.lastInsertRowid), from_grant: grant.id });
-  }
+  for (const c of rows) releaseOne(e, c, task.id, actor, reason);
+}
+function releaseOne(e, c, task_id, actor, reason) {
+  e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso2(e), c.id);
+  logEvent(e, actor, "claim_released", task_id, { claim_id: c.id, kind: c.kind, path: c.target, ...reason ? { reason } : {} });
+  if (c.kind !== "file") return;
+  const grant = e.db.prepare(
+    `SELECT g.id, g.task_id FROM claim_grants g JOIN tasks t ON t.id = g.task_id
+     WHERE g.path = ? AND g.task_id != ? AND t.status = 'open' ORDER BY g.id DESC LIMIT 1`
+  ).get(c.target, task_id);
+  if (!grant) return;
+  const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', ?, 'active', ?)").run(grant.task_id, c.target, iso2(e));
+  logEvent(e, actor, "claim_taken", grant.task_id, { path: c.target, claim_id: Number(r.lastInsertRowid), from_grant: grant.id });
 }
 function syncMerged(e) {
   const rows = e.db.prepare(
@@ -35910,7 +35918,8 @@ function prClosed(e, task) {
   }
 }
 var MAX_CLAIM_DIFF = 8e3;
-function claimStatus(e, path) {
+function claimStatus(e, rawPath) {
+  const path = claimPath(e, rawPath);
   const held = holderOf(e, path);
   if (!held) return { path, holder: null, diff: "", grants: [] };
   const { task } = held;
@@ -35919,19 +35928,25 @@ function claimStatus(e, path) {
   ).all(held.claim_id, path);
   const out = { path, holder: { task_id: task.id, title: task.title, goal: task.goal, cwd: task.cwd }, diff: "", grants };
   if (!existsSync6(task.cwd)) return { ...out, note: `the holder's worktree is gone (${task.cwd}), so its changes cannot be shown` };
-  const r = runBounded(e, task.cwd, "git", ["diff", "--no-color", task.base_sha, "--", path], HOOK_GIT_TIMEOUT_MS);
-  if (r.code !== 0) return { ...out, note: `could not read the holder's changes: ${r.stderr.trim()}` };
+  const tracked = runBounded(e, task.cwd, "git", ["ls-files", "--error-unmatch", "--", path], HOOK_GIT_TIMEOUT_MS).code === 0;
+  const fresh = !tracked && existsSync6(join7(task.cwd, path));
+  const r = fresh ? runBounded(e, task.cwd, "git", ["diff", "--no-index", "--no-color", "--", "/dev/null", path], HOOK_GIT_TIMEOUT_MS) : runBounded(e, task.cwd, "git", ["diff", "--no-color", task.base_sha, "--", path], HOOK_GIT_TIMEOUT_MS);
+  if (r.code !== 0 && !(fresh && r.code === 1)) return { ...out, note: `could not read the holder's changes: ${r.stderr.trim()}` };
   out.diff = r.stdout.length > MAX_CLAIM_DIFF ? `${r.stdout.slice(0, MAX_CLAIM_DIFF)}
 (truncated)` : r.stdout;
   return out;
 }
 function allowEdit(e, input2) {
+  if (!input2.owner && input2.actor?.agent_id) throw new EngineError("OWNER_ONLY", "a worker cannot allow edits; report to your CTO");
   const reason = input2.reason?.trim();
   if (!reason) throw new EngineError("BAD_EVIDENCE", "a reason is required");
   const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input2.task_id);
   if (!task) throw new EngineError("NO_TASK", `no task with id ${input2.task_id}`);
-  const held = holderOf(e, input2.path);
-  if (!held) throw new EngineError("BAD_EVIDENCE", `${input2.path} is not held by any task`);
+  if (task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${task.id} is ${task.status}`);
+  const path = claimPath(e, input2.path, task);
+  input2 = { ...input2, path };
+  const held = holderOf(e, path);
+  if (!held) throw new EngineError("BAD_EVIDENCE", `${path} is not held by any task`);
   const by = input2.owner ? "owner" : actorId(input2.actor ?? { session_id: "unknown" });
   if (!input2.owner) {
     const s = input2.actor?.session_id;
@@ -35943,43 +35958,46 @@ function allowEdit(e, input2) {
     }
   }
   tx(e, () => {
+    if (e.db.prepare("SELECT 1 FROM claim_grants WHERE claim_id = ? AND task_id = ? AND path = ?").get(held.claim_id, task.id, path)) return;
     e.db.prepare("INSERT INTO claim_grants (claim_id, task_id, path, reason, by, at) VALUES (?, ?, ?, ?, ?, ?)").run(held.claim_id, task.id, input2.path, reason, by, iso2(e));
     logEvent(e, input2.actor ?? { session_id: "owner" }, "claim_granted", task.id, { path: input2.path, holder: held.task.id, by });
   });
 }
-function releaseClaim(e, path, reason) {
+function releaseClaim(e, rawPath, reason) {
   if (!reason || !reason.trim()) throw new EngineError("BAD_EVIDENCE", "a reason is required");
-  const held = holderOf(e, path);
-  if (!held) throw new EngineError("BAD_EVIDENCE", `${path} is not held by any task`);
+  const path = claimPath(e, rawPath);
   tx(e, () => {
-    e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso2(e), held.claim_id);
-    logEvent(e, { session_id: "owner" }, "claim_released", held.task.id, { claim_id: held.claim_id, kind: "file", path, reason });
+    const held = holderOf(e, path);
+    if (!held) throw new EngineError("BAD_EVIDENCE", `${path} is not held by any task`);
+    releaseOne(e, { id: held.claim_id, kind: "file", target: path }, held.task.id, { session_id: "owner" }, reason);
   });
+}
+function claimPath(e, path, task) {
+  let base = task?.cwd ?? e.repo.root;
+  if (isAbsolute2(path)) {
+    const cwds = e.db.prepare("SELECT cwd FROM tasks WHERE cwd != ''").all().map((r) => r.cwd).filter((c) => path === c || path.startsWith(c + "/")).sort((x, y) => y.length - x.length);
+    if (cwds.length > 0) base = cwds[0];
+  }
+  return areaPath(base, path);
 }
 function claimSymbol(e, input2) {
   const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input2.task_id);
   if (!task) throw new EngineError("NO_TASK", `no task with id ${input2.task_id}`);
+  if (task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${task.id} is ${task.status}`);
   if (!input2.name.trim()) throw new EngineError("BAD_EVIDENCE", "a name is required");
   const want = normaliseName(input2.name);
   const parent = task.parent_id === null ? void 0 : e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(task.parent_id);
   const g = loadGraph(task.cwd) ?? (parent ? loadGraph(parent.cwd) : null);
   const hit = g ? topLevelFunctions(g).find((n) => normaliseName(n.name) === want) : void 0;
   if (hit) return { status: "exists", file: hit.file, line: hit.line };
-  for (let attempt = 0; attempt < 3; attempt++) {
+  return tx(e, () => {
     const rows = e.db.prepare("SELECT task_id, target FROM claims WHERE kind = 'new_symbol' AND status = 'active'").all();
-    const mine = rows.find((r) => normaliseName(r.target) === want);
+    const mine = rows.find((r2) => normaliseName(r2.target) === want);
     if (mine) return mine.task_id === task.id ? { status: "claimed" } : { status: "claimed_by", task_id: mine.task_id };
-    try {
-      tx(e, () => {
-        const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'new_symbol', ?, 'active', ?)").run(task.id, input2.name, iso2(e));
-        logEvent(e, input2.actor, "symbol_claimed", task.id, { name: input2.name, file: input2.file, claim_id: Number(r.lastInsertRowid) });
-      });
-      return { status: "claimed" };
-    } catch (x) {
-      if (!(x instanceof Error) || !/UNIQUE constraint failed/.test(x.message)) throw x;
-    }
-  }
-  throw new EngineError("HELD", `could not claim ${input2.name}: its claim keeps changing hands; try again`);
+    const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'new_symbol', ?, 'active', ?)").run(task.id, input2.name, iso2(e));
+    logEvent(e, input2.actor, "symbol_claimed", task.id, { name: input2.name, file: input2.file, claim_id: Number(r.lastInsertRowid) });
+    return { status: "claimed" };
+  });
 }
 function activeClaims(e) {
   return e.db.prepare(
@@ -35993,12 +36011,10 @@ function keptWorktrees(e) {
        (SELECT payload_json FROM events v WHERE v.kind = 'worktree_kept' AND v.task_id = t.id ORDER BY v.id DESC LIMIT 1) AS p
      FROM tasks t WHERE t.id IN (SELECT task_id FROM events WHERE kind = 'worktree_kept') ORDER BY t.id`
   ).all();
-  return rows.filter((r) => existsSync6(r.path)).map((r) => ({
-    task_id: r.task_id,
-    title: r.title,
-    path: r.path,
-    reason: String(JSON.parse(r.p).reason ?? "")
-  }));
+  return rows.map((r) => {
+    const kept = JSON.parse(r.p);
+    return { task_id: r.task_id, title: r.title, path: typeof kept.path === "string" ? kept.path : r.path, reason: String(kept.reason ?? "") };
+  }).filter((k) => existsSync6(k.path));
 }
 
 // engine/src/context.ts
@@ -36388,7 +36404,7 @@ function resolveReal(cwd, p) {
     rest.unshift(d.slice(up.length + 1));
     d = up;
   }
-  return join7(realpathSync3(d), ...rest);
+  return join8(realpathSync3(d), ...rest);
 }
 function nearestDir(p) {
   let d = dirname3(p);
@@ -36428,7 +36444,7 @@ function preEdit(e, ev) {
   }
   const worktree = top.stdout.trim();
   const rel = relative3(worktree, abs).split(sep3).join("/");
-  if (rel.startsWith("..") || isAbsolute2(rel)) return null;
+  if (rel.startsWith("..") || isAbsolute3(rel)) return null;
   if (rel === ".git" || rel.startsWith(".git/")) return deny(`${rel} is protected (git directory)`);
   if (isProtected(rel, e.policy)) return deny(`${rel} is protected by .estack/policy.yaml`);
   if (isExempt(rel, e.policy)) return null;
@@ -46444,7 +46460,7 @@ var StdioServerTransport = class {
 
 // engine/src/codemap.ts
 import { existsSync as existsSync9, realpathSync as realpathSync4 } from "node:fs";
-import { isAbsolute as isAbsolute3, relative as relative4, resolve as resolve3, sep as sep4 } from "node:path";
+import { isAbsolute as isAbsolute4, relative as relative4, resolve as resolve3, sep as sep4 } from "node:path";
 var MAX_LIST = 40;
 var MAX_MATCHES = 15;
 var USES = /* @__PURE__ */ new Set(["calls", "indirect_call", "imports", "imports_from", "inherits", "references"]);
@@ -46460,7 +46476,7 @@ var real = (p) => existsSync9(p) ? realpathSync4(p) : p;
 function mapPath(g, path) {
   const root = real(g.checkout);
   const rel = relative4(root, real(resolve3(root, path))).split(sep4).join("/");
-  if (rel === ".." || rel.startsWith("../") || isAbsolute3(rel)) {
+  if (rel === ".." || rel.startsWith("../") || isAbsolute4(rel)) {
     throw new EngineError("BAD_EVIDENCE", `${path} is outside the checkout ${g.checkout} that this map is for; give a path inside it`);
   }
   return rel;
@@ -46894,7 +46910,7 @@ function ownerRelease(e, input2, env) {
 // engine/src/githooks.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { chmodSync, existsSync as existsSync10, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join8, resolve as resolve4 } from "node:path";
+import { join as join9, resolve as resolve4 } from "node:path";
 var MANAGED_MARK = "# estack-managed-hook";
 var MAP_HOOKS = ["post-commit", "post-checkout", "post-merge", "post-rewrite"];
 var HOOKS = ["pre-commit", "pre-push", ...MAP_HOOKS];
@@ -46955,7 +46971,7 @@ function installGitHooks(repoRoot, enginePath) {
   mkdirSync3(dir, { recursive: true });
   const installed = [], chained = [];
   for (const name of HOOKS) {
-    const p = join8(dir, name);
+    const p = join9(dir, name);
     if (existsSync10(p) && !readFileSync4(p, "utf8").includes(MANAGED_MARK)) {
       let dest = `${p}.estack-prev`;
       for (let n = 2; existsSync10(dest); n++) dest = `${p}.estack-prev.${n}`;
@@ -47078,7 +47094,7 @@ function status(e, json2, out) {
     return out(JSON.stringify({
       tasks: [...shown, ...busy, ...waiting],
       claims,
-      kept_worktrees: kept.map((k) => ({ task_id: k.task_id, title: k.title, path: k.path, reason: k.reason }))
+      kept_worktrees: kept
     }, null, 2) + "\n");
   }
   if (open2.length === 0 && planned.length === 0 && starting.length === 0 && claims.length === 0 && kept.length === 0) return out("no open tasks\n");
@@ -47206,7 +47222,7 @@ function dispatch(cmd, rest, io) {
             const checkout = e.repo.root;
             const r = buildGraph(e, checkout, BUILD_TIMEOUT_MS);
             if (fresh && (!r.ok || r.files === 0)) {
-              writeFileSync4(join9(e.repo.estackDir, "policy.yaml"), defaultPolicyYaml({ codeMap: false, exclude }));
+              writeFileSync4(join10(e.repo.estackDir, "policy.yaml"), defaultPolicyYaml({ codeMap: false, exclude }));
               io.out(`code map off: ${r.ok ? "Graphify mapped no files" : r.error}; nothing to map yet. Turn it on later by editing the code_map block in .estack/policy.yaml.
 `);
             } else {

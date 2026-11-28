@@ -157,7 +157,7 @@ installed git hooks call. Exit codes: 0 on success, 1 for an engine or
 internal error, 2 for a usage error, and 3 when `run` ran the check but it
 failed.
 
-**Owner-only commands.** `skip`, `cancel` and `override` refuse to run inside
+**Owner-only commands.** `skip`, `cancel`, `override`, `allow` and `release` refuse to run inside
 an agent session (when `CLAUDECODE=1`), as a guard against accidental use; it
 is not a security boundary. Run them from a normal terminal.
 

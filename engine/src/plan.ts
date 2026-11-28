@@ -207,6 +207,7 @@ export function acceptOverlap(e: Engine, input: { a: number; b: number; reason: 
   for (const id of [a, b]) if (!getRow(e, id)) throw new EngineError("NO_TASK", `no task with id ${id}`);
   if (!input.owner) {
     const s = input.actor?.session_id;
+    if (input.actor?.agent_id) throw new EngineError("OWNER_ONLY", "a worker cannot accept overlaps; report to your CTO");
     if (!s || !ownsTask(e, s, a) || !ownsTask(e, s, b)) {
       throw new EngineError("OWNER_ONLY",
         `only the CTO of both tasks can accept this overlap; the owner runs: estack allow --task ${a} --with ${b} --reason <text>`);
@@ -223,6 +224,7 @@ export function withdrawTask(e: Engine, task_id: number, actor: Actor): void {
   tx(e, () => {
     const t = getRow(e, task_id);
     if (!t) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
+    if (actor.agent_id) throw new EngineError("OWNER_ONLY", "a worker cannot withdraw tasks; report to your CTO");
     if (!ownsTask(e, actor.session_id, task_id)) throw new EngineError("OWNER_ONLY", `only the CTO of task ${task_id} can withdraw it`);
     if (t.status === "starting") {
       // A start that died leaves its claim behind: releasing it puts a planned task back where it was.

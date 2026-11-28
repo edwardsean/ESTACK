@@ -24,7 +24,7 @@ function setup(gh: Record<string, Partial<ExecResult>> = {}) {
   const e = openEngine(dir, { exec: fakeExec(gh) });
   return { dir, e };
 }
-const git = (dir: string, ...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8" }).trim();
+const git = (dir: string, ...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const note = (text = "ok"): EvidenceInput => ({ kind: "note", text });
 const start = (e: Engine, dir: string, type = "feature") =>
   startTask(e, { title: "t", type, goal: "g", done_check: "d", actor: cto, cwd: dir });

@@ -34,6 +34,9 @@ describe("command matching", () => {
     expect(classifyCommand("estack override push --reason x", policy)).toMatchObject({
       kind: "deny", action: "owner_only", hardcoded: true,
     });
+    for (const c of ["estack allow --task 1 --path a --reason x", "estack release --path a --reason x", "env -i PATH=$PATH node /x/estack.mjs allow --task 1 --with 2 --reason x", "node /x/estack.mjs release --path a --reason x"]) {
+      expect(classifyCommand(c, policy), c).toMatchObject({ kind: "deny", action: "owner_only", hardcoded: true });
+    }
     expect(classifyCommand("git push --no-verify origin feat", policy)).toMatchObject({
       kind: "deny", action: "disable_hooks", hardcoded: true,
     });
