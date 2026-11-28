@@ -133,7 +133,7 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
     inputSchema: { task_id: z.number().int().optional(), actor: actorSchema },
   }, tool((e, a: { task_id?: number; actor?: Actor }) => {
     syncMerged(e);
-    recordOutcomes(e);
+    recordOutcomes(e, { remote: true });
     return a.task_id !== undefined ? getTask(e, a.task_id) : { tasks: listOpen(e), claims: activeClaims(e), kept_worktrees: keptWorktrees(e) };
   }));
 

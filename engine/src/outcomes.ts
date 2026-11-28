@@ -32,24 +32,57 @@ function changedFiles(e: Engine, t: Task): Set<string> | null {
   return new Set([...diff.stdout.split("\n"), ...(fresh.code === 0 ? fresh.stdout.split("\n") : [])].filter(Boolean));
 }
 
-/** A merge is in progress with the path unmerged in the feature's checkout, or a pull request is CONFLICTING with the path in both features' changes. */
-function conflicted(e: Engine, g: Grant, holder: Task, grantee: Task): boolean {
+export const OUTCOME_BUDGET_MS = 10_000;
+class OutOfBudget extends Error {}
+
+/** One recordOutcomes call: what it may run, its time budget and what it has already asked per feature. */
+interface Ctx {
+  remote: boolean;
+  deadline: number;
+  fetched: boolean;
+  mergeable: Map<number, boolean>;
+  merged: Map<number, boolean>;
+}
+const checkBudget = (c: Ctx): void => { if (Date.now() >= c.deadline) throw new OutOfBudget(); };
+
+/** True when the feature's pull request is CONFLICTING (asked once per feature per call). */
+function prConflicting(e: Engine, c: Ctx, f: Task): boolean {
+  const known = c.mergeable.get(f.id);
+  if (known !== undefined) return known;
+  checkBudget(c);
+  let bad = false;
+  if (f.branch) {
+    const pr = e.exec.run("gh", ["pr", "view", f.branch, "--json", "mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+    if (pr.code === 0) {
+      try { bad = (JSON.parse(pr.stdout) as { mergeable?: unknown }).mergeable === "CONFLICTING"; } catch { /* not conflicting as far as we know */ }
+    }
+  }
+  c.mergeable.set(f.id, bad);
+  return bad;
+}
+
+/** True when the feature is merged into main (asked once per feature per call, fetching at most once). */
+function featureMerged(e: Engine, c: Ctx, f: Task): boolean {
+  const known = c.merged.get(f.id);
+  if (known !== undefined) return known;
+  checkBudget(c);
+  const r = mergedIntoMain(e, f, { fetched: c.fetched });
+  c.fetched = true;
+  c.merged.set(f.id, r);
+  return r;
+}
+
+/** A merge is in progress with the path unmerged in a feature's checkout, or (remote) a pull request is CONFLICTING with the path in both features' changes. */
+function conflicted(e: Engine, c: Ctx, g: Grant, holder: Task, grantee: Task): boolean {
   const features = [...new Map([featureOf(e, grantee), featureOf(e, holder)].map((f) => [f.id, f])).values()];
   for (const f of features) {
     if (!f.cwd || !existsSync(f.cwd)) continue;
     const r = e.exec.run("git", ["-C", f.cwd, "diff", "--name-only", "--diff-filter=U"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS });
     if (r.code === 0 && r.stdout.split("\n").includes(g.path)) return true;
   }
-  if (features.length < 2) return false;
+  if (!c.remote || features.length < 2) return false;
   for (const f of features) {
-    if (!f.branch) continue;
-    const pr = e.exec.run("gh", ["pr", "view", f.branch, "--json", "mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-    if (pr.code !== 0) continue;
-    let mergeable: unknown;
-    try { mergeable = (JSON.parse(pr.stdout) as { mergeable?: unknown }).mergeable; } catch { continue; }
-    if (mergeable !== "CONFLICTING") continue;
-    const both = features.map((x) => changedFiles(e, x));
-    if (both.every((s) => s?.has(g.path))) return true;
+    if (prConflicting(e, c, f) && features.every((x) => changedFiles(e, x)?.has(g.path))) return true;
   }
   return false;
 }
@@ -62,36 +95,51 @@ function holderFailed(e: Engine, g: Grant, holder: Task): boolean {
   return failed !== undefined && (changedFiles(e, holder)?.has(g.path) ?? false);
 }
 
-/** A worker is finished when merged into its feature, a feature when merged into main. */
-function finished(e: Engine, t: Task): boolean {
-  if (t.parent_id === null) return mergedIntoMain(e, t);
-  return e.db.prepare("SELECT 1 FROM evidence WHERE task_id = ? AND kind = 'merged' AND ok = 1 LIMIT 1").get(t.id) !== undefined
-    || mergedIntoMain(e, t);
+const workerMerged = (e: Engine, t: Task): boolean =>
+  t.parent_id !== null && e.db.prepare("SELECT 1 FROM evidence WHERE task_id = ? AND kind = 'merged' AND ok = 1 LIMIT 1").get(t.id) !== undefined;
+
+/**
+ * Both tasks finished. Within one feature a worker is finished once merged into it (local), the feature itself once
+ * merged into main. Across features, both features must be merged into main (remote only), so a later conflict between
+ * the two is not missed.
+ */
+function finished(e: Engine, c: Ctx, a: Task, b: Task): boolean {
+  const fa = featureOf(e, a);
+  const fb = featureOf(e, b);
+  if (fa.id === fb.id) {
+    const done = (t: Task) => (t.parent_id === null ? c.remote && featureMerged(e, c, t) : workerMerged(e, t) || (c.remote && featureMerged(e, c, fa)));
+    return done(a) && done(b);
+  }
+  return c.remote && featureMerged(e, c, fa) && featureMerged(e, c, fb);
 }
 
-function judge(e: Engine, g: Grant): Outcome | null {
+function judge(e: Engine, c: Ctx, g: Grant): Outcome | null {
   const grantee = getTask(e, g.task_id);
   const holderId = holderAtGrant(e, g);
   const holder = holderId === undefined ? undefined : getTask(e, holderId);
   if (!grantee || !holder) return null;
-  if (conflicted(e, g, holder, grantee)) return "conflict";
+  if (conflicted(e, c, g, holder, grantee)) return "conflict";
   if (holderFailed(e, g, holder)) return "holder_failed";
-  return finished(e, grantee) && finished(e, holder) ? "clean" : null;
+  return finished(e, c, grantee, holder) ? "clean" : null;
 }
 
 /**
  * Record what became of each shared-edit grant: a merge conflict in the file, the holder's failing test or verify on a
  * change including it, or both tasks merged cleanly. Recorded once; never throws; a grant that cannot be judged now is
- * tried again next time. Runs git/gh, so only status, complete_step and run_check call it.
+ * tried again next time. With `remote: false` (complete_step, run_check) it reads only local state and makes no gh call
+ * or fetch; `remote: true` (status) adds the pull request and merged-into-main checks, asked once per feature. The call
+ * stops when its time budget is spent, leaving the remaining grants for next time.
  */
-export function recordOutcomes(e: Engine): void {
+export function recordOutcomes(e: Engine, opts: { remote?: boolean; budget_ms?: number } = {}): void {
+  const c: Ctx = { remote: opts.remote ?? true, deadline: Date.now() + (opts.budget_ms ?? OUTCOME_BUDGET_MS), fetched: false, mergeable: new Map(), merged: new Map() };
   let grants: Grant[];
   try {
     grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all() as unknown as Grant[];
   } catch { return; }
   for (const g of grants) {
+    if (Date.now() >= c.deadline) return;
     try {
-      const outcome = judge(e, g);
+      const outcome = judge(e, c, g);
       if (!outcome) continue;
       tx(e, () => {
         const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL")

@@ -75,7 +75,7 @@ const CLI_ACTOR = { session_id: "cli" };
 
 function status(e: Engine, json: boolean, out: (s: string) => void): void {
   syncMerged(e);
-  recordOutcomes(e);
+  recordOutcomes(e, { remote: true });
   const open = listOpen(e);
   const starting = startingTasks(e);
   const planned = plannedTasks(e);

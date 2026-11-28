@@ -440,6 +440,6 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
     }
     logEvent(e, input.actor, "task_merged", v.task.id, { into: payload.into });
   }
-  recordOutcomes(e);
+  recordOutcomes(e, { remote: false });
   return result;
 }

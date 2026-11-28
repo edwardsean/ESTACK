@@ -35033,27 +35033,48 @@ function changedFiles(e, t) {
   const fresh = run(["ls-files", "--others", "--exclude-standard"]);
   return new Set([...diff.stdout.split("\n"), ...fresh.code === 0 ? fresh.stdout.split("\n") : []].filter(Boolean));
 }
-function conflicted(e, g, holder, grantee) {
+var OUTCOME_BUDGET_MS = 1e4;
+var OutOfBudget = class extends Error {
+};
+var checkBudget = (c) => {
+  if (Date.now() >= c.deadline) throw new OutOfBudget();
+};
+function prConflicting(e, c, f) {
+  const known = c.mergeable.get(f.id);
+  if (known !== void 0) return known;
+  checkBudget(c);
+  let bad2 = false;
+  if (f.branch) {
+    const pr = e.exec.run("gh", ["pr", "view", f.branch, "--json", "mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+    if (pr.code === 0) {
+      try {
+        bad2 = JSON.parse(pr.stdout).mergeable === "CONFLICTING";
+      } catch {
+      }
+    }
+  }
+  c.mergeable.set(f.id, bad2);
+  return bad2;
+}
+function featureMerged(e, c, f) {
+  const known = c.merged.get(f.id);
+  if (known !== void 0) return known;
+  checkBudget(c);
+  const r = mergedIntoMain(e, f, { fetched: c.fetched });
+  c.fetched = true;
+  c.merged.set(f.id, r);
+  return r;
+}
+function conflicted(e, c, g, holder, grantee) {
   const features = [...new Map([featureOf(e, grantee), featureOf(e, holder)].map((f) => [f.id, f])).values()];
   for (const f of features) {
     if (!f.cwd || !existsSync4(f.cwd)) continue;
     const r = e.exec.run("git", ["-C", f.cwd, "diff", "--name-only", "--diff-filter=U"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS });
     if (r.code === 0 && r.stdout.split("\n").includes(g.path)) return true;
   }
-  if (features.length < 2) return false;
+  if (!c.remote || features.length < 2) return false;
   for (const f of features) {
-    if (!f.branch) continue;
-    const pr = e.exec.run("gh", ["pr", "view", f.branch, "--json", "mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-    if (pr.code !== 0) continue;
-    let mergeable;
-    try {
-      mergeable = JSON.parse(pr.stdout).mergeable;
-    } catch {
-      continue;
-    }
-    if (mergeable !== "CONFLICTING") continue;
-    const both = features.map((x) => changedFiles(e, x));
-    if (both.every((s) => s?.has(g.path))) return true;
+    if (prConflicting(e, c, f) && features.every((x) => changedFiles(e, x)?.has(g.path))) return true;
   }
   return false;
 }
@@ -35063,20 +35084,27 @@ function holderFailed(e, g, holder) {
   ).get(holder.id, g.at);
   return failed !== void 0 && (changedFiles(e, holder)?.has(g.path) ?? false);
 }
-function finished(e, t) {
-  if (t.parent_id === null) return mergedIntoMain(e, t);
-  return e.db.prepare("SELECT 1 FROM evidence WHERE task_id = ? AND kind = 'merged' AND ok = 1 LIMIT 1").get(t.id) !== void 0 || mergedIntoMain(e, t);
+var workerMerged = (e, t) => t.parent_id !== null && e.db.prepare("SELECT 1 FROM evidence WHERE task_id = ? AND kind = 'merged' AND ok = 1 LIMIT 1").get(t.id) !== void 0;
+function finished(e, c, a, b) {
+  const fa = featureOf(e, a);
+  const fb = featureOf(e, b);
+  if (fa.id === fb.id) {
+    const done = (t) => t.parent_id === null ? c.remote && featureMerged(e, c, t) : workerMerged(e, t) || c.remote && featureMerged(e, c, fa);
+    return done(a) && done(b);
+  }
+  return c.remote && featureMerged(e, c, fa) && featureMerged(e, c, fb);
 }
-function judge(e, g) {
+function judge(e, c, g) {
   const grantee = getTask2(e, g.task_id);
   const holderId = holderAtGrant(e, g);
   const holder = holderId === void 0 ? void 0 : getTask2(e, holderId);
   if (!grantee || !holder) return null;
-  if (conflicted(e, g, holder, grantee)) return "conflict";
+  if (conflicted(e, c, g, holder, grantee)) return "conflict";
   if (holderFailed(e, g, holder)) return "holder_failed";
-  return finished(e, grantee) && finished(e, holder) ? "clean" : null;
+  return finished(e, c, grantee, holder) ? "clean" : null;
 }
-function recordOutcomes(e) {
+function recordOutcomes(e, opts = {}) {
+  const c = { remote: opts.remote ?? true, deadline: Date.now() + (opts.budget_ms ?? OUTCOME_BUDGET_MS), fetched: false, mergeable: /* @__PURE__ */ new Map(), merged: /* @__PURE__ */ new Map() };
   let grants;
   try {
     grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all();
@@ -35084,8 +35112,9 @@ function recordOutcomes(e) {
     return;
   }
   for (const g of grants) {
+    if (Date.now() >= c.deadline) return;
     try {
-      const outcome = judge(e, g);
+      const outcome = judge(e, c, g);
       if (!outcome) continue;
       tx(e, () => {
         const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL").run(outcome, e.now().toISOString(), g.id);
@@ -35521,7 +35550,7 @@ function completeStep(e, input2) {
     }
     logEvent(e, input2.actor, "task_merged", v.task.id, { into: payload.into });
   }
-  recordOutcomes(e);
+  recordOutcomes(e, { remote: false });
   return result;
 }
 
@@ -36883,7 +36912,7 @@ function runCheck(e, input2) {
       logEvent(e, input2.actor, "step_done", input2.task_id, { step: input2.step, closed });
     }
   });
-  recordOutcomes(e);
+  recordOutcomes(e, { remote: false });
   return result;
 }
 
@@ -46898,7 +46927,7 @@ function createServer(cwd, deps = {}) {
     inputSchema: { task_id: external_exports.number().int().optional(), actor: actorSchema }
   }, tool((e, a) => {
     syncMerged(e);
-    recordOutcomes(e);
+    recordOutcomes(e, { remote: true });
     return a.task_id !== void 0 ? getTask(e, a.task_id) : { tasks: listOpen(e), claims: activeClaims(e), kept_worktrees: keptWorktrees(e) };
   }));
   server.registerTool("claim_status", {
@@ -47214,7 +47243,7 @@ function num(s, what) {
 var CLI_ACTOR = { session_id: "cli" };
 function status(e, json2, out) {
   syncMerged(e);
-  recordOutcomes(e);
+  recordOutcomes(e, { remote: true });
   const open2 = listOpen(e);
   const starting = startingTasks(e);
   const planned = plannedTasks(e);

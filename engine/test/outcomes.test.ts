@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { runCheck } from "../src/checks";
+import type { Exec } from "../src/exec";
 import { describe, expect, test } from "vitest";
 import { allowEdit, checkEdit } from "../src/claims";
 import { openEngine, type Engine } from "../src/engine";
-import { recordOutcomes } from "../src/outcomes";
+import { OUTCOME_BUDGET_MS, recordOutcomes } from "../src/outcomes";
 import { initRepo } from "../src/policy";
 import { completeStep, insertEvidence, startTask } from "../src/tasks";
 import type { Actor, Task } from "../src/types";
@@ -152,5 +154,113 @@ describe("grant outcomes", { timeout: 60_000 }, () => {
     expect(() => recordOutcomes(e)).not.toThrow();
     expect(outcome(e, g).outcome).toBe("holder_failed");
     expect(outcome(e, 100).outcome).toBeNull();
+  });
+
+  /** Wrap an exec, counting gh calls and fetches. `gh` answers with the scripted responses. */
+  function counting(responses: Record<string, any> = {}): { exec: Exec; gh: string[]; fetches: number } {
+    const inner = fakeExec(responses);
+    const out = { gh: [] as string[], fetches: 0, exec: undefined as unknown as Exec };
+    out.exec = {
+      run(file, args, opts) {
+        if (file === "gh") out.gh.push(args.join(" "));
+        if (file === "git" && args[0] === "fetch") out.fetches++;
+        return inner.run(file, args, opts);
+      },
+      shell: (c, o) => inner.shell(c, o),
+    };
+    return out;
+  }
+  const withTestCommand = (dir: string) => {
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, readFileSync(p, "utf8").replace(/commands:[\s\S]*$/, 'commands:\n  test: "true"\n'));
+    git(dir, "add", "-A");
+    git(dir, "commit", "-m", "cmd");
+  };
+
+  test("complete_step and run_check make no gh call or fetch", () => {
+    const dir = repo();
+    withTestCommand(dir);
+    const spy = counting({ "pr view feat/1-one --json state": { code: 1 } });
+    const e = openEngine(dir, { exec: spy.exec });
+    const t1 = feature(e, dir, "one");
+    const t2 = feature(e, dir, "two");
+    grant(e, t1, t2);
+    commitFile(t1, "src/a.ts", "one\n");
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name IN ('plan', 'reuse_check', 'implement')").run(t1.id);
+    runCheck(e, { task_id: t1.id, step: "test", actor: A });
+    recordOutcomes(e, { remote: false });
+    expect(spy.gh).toEqual([]);
+    expect(spy.fetches).toBe(0);
+  });
+
+  test("complete_step still succeeds when gh is missing", () => {
+    const dir = repo();
+    const e = openEngine(dir, { exec: { run: (f, a, o) => (f === "gh" ? { code: 127, stdout: "", stderr: "gh: not found", timedOut: false, durationMs: 0 } : fakeExec({}).run(f, a, o)), shell: (c, o) => fakeExec({}).shell(c, o) } });
+    const f = feature(e, dir, "feat");
+    const w1 = worker(e, f, "w1");
+    const w2 = worker(e, f, "w2");
+    const g = grant(e, w1, w2);
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name != 'merge'").run(w1.id);
+    commitFile(w1, "src/a.ts", "one\n");
+    git(f.cwd, "merge", "--no-ff", "-m", "m", w1.branch);
+    expect(() => completeStep(e, { task_id: w1.id, step: "merge", evidence: { kind: "merged" }, actor: A })).not.toThrow();
+    expect(outcome(e, g).outcome).toBeNull();
+  });
+
+  test("many grants across the same two features make a bounded number of gh calls from status", () => {
+    const dir = repo();
+    const spy = counting();
+    const e = openEngine(dir, { exec: spy.exec });
+    const t1 = feature(e, dir, "one");
+    const t2 = feature(e, dir, "two");
+    for (const f of ["a", "b", "c", "d", "e"]) {
+      commitFile(t1, `src/${f}.ts`, "one\n");
+      checkEdit(e, t1, `src/${f}.ts`);
+      allowEdit(e, { task_id: t2.id, path: `src/${f}.ts`, reason: "r", actor: A, owner: false });
+    }
+    recordOutcomes(e, { remote: true });
+    // One mergeable and one state call per feature, however many grants.
+    expect(spy.gh.length).toBeLessThanOrEqual(4);
+    expect(spy.fetches).toBeLessThanOrEqual(1);
+  });
+
+  test("an exhausted budget leaves the grants untouched", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, "one");
+    const t2 = feature(e, dir, "two");
+    const g = grant(e, t1, t2);
+    commitFile(t1, "src/a.ts", "one\n");
+    insertEvidence(e, t1.id, "test", "command", false, { command: "x" }, A);
+    recordOutcomes(e, { budget_ms: 0 });
+    expect(outcome(e, g).outcome).toBeNull();
+    expect(OUTCOME_BUDGET_MS).toBe(10_000);
+    recordOutcomes(e);
+    expect(outcome(e, g).outcome).toBe("holder_failed");
+  });
+
+  test("workers of different features are not clean until both features are merged into main", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f1 = feature(e, dir, "feat one");
+    const f2 = feature(e, dir, "feat two");
+    const w1 = worker(e, f1, "w1");
+    const w2 = worker(e, f2, "w2");
+    const g = grant(e, w1, w2);
+    for (const w of [w1, w2]) {
+      commitFile(w, `src/${w.id}.ts`, "x\n");
+      e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name != 'merge'").run(w.id);
+      git(w.parent_id === f1.id ? f1.cwd : f2.cwd, "merge", "--no-ff", "-m", "m", w.branch);
+      completeStep(e, { task_id: w.id, step: "merge", evidence: { kind: "merged" }, actor: A });
+    }
+    recordOutcomes(e, { remote: true });
+    expect(outcome(e, g).outcome).toBeNull();      // both workers merged, neither feature in main
+    for (const f of [f1, f2]) {
+      commitFile(f, `src/${f.id}.ts`, "y\n");
+      insertEvidence(e, f.id, "commit", "commit", true, { sha: git(f.cwd, "rev-parse", "HEAD") }, A);
+      git(dir, "merge", "--no-ff", "-m", "m", f.branch);
+    }
+    recordOutcomes(e, { remote: true });
+    expect(outcome(e, g).outcome).toBe("clean");
   });
 });

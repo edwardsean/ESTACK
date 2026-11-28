@@ -60,6 +60,6 @@ export function runCheck(e: Engine, input: { task_id: number; step: string; acto
       logEvent(e, input.actor, "step_done", input.task_id, { step: input.step, closed });
     }
   });
-  recordOutcomes(e);
+  recordOutcomes(e, { remote: false });
   return result;
 }
