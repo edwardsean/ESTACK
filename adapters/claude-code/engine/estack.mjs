@@ -34901,6 +34901,23 @@ function others(e, s) {
   const rows = e.db.prepare("SELECT * FROM tasks WHERE status IN ('open','planned','starting') ORDER BY id").all();
   return rows.filter((t) => !(t.status === "starting" && claimInfo(e, t.id).stale && claimInfo(e, t.id).from === "new")).filter((t) => t.id !== s.id && !(s.group !== null && s.parent_id !== null && t.task_group === s.group && t.parent_id === s.parent_id) && t.id !== s.parent_id && !(s.id !== null && t.parent_id === s.id)).map((t) => subjectOf(e, t));
 }
+function heldInArea(e, s) {
+  if (s.areas.length === 0) return [];
+  const rows = e.db.prepare(
+    `SELECT c.target AS path, t.* FROM claims c JOIN tasks t ON t.id = c.task_id
+     WHERE c.kind = 'file' AND c.status = 'active' ORDER BY c.id`
+  ).all();
+  const out = [];
+  for (const { path, ...holder } of rows) {
+    if (!s.areas.some((a) => a === "" || path === a || path.startsWith(`${a}/`))) continue;
+    const family = holder.id === s.id || holder.id === s.parent_id || s.id !== null && holder.parent_id === s.id;
+    const sameGroup = s.group !== null && holder.task_group === s.group && holder.parent_id === s.parent_id;
+    const sameCheckout = s.cwd !== void 0 && holder.cwd === s.cwd;
+    const granted = s.id !== null && hasGrant(e, s.id, path);
+    if (!family && !sameGroup && !sameCheckout && !granted) out.push({ path, task_id: holder.id, title: holder.title });
+  }
+  return out;
+}
 function overlapsOf(e, s) {
   const raw = [...others(e, s).flatMap((o) => between(s, o)), ...existing(e, s)];
   return raw.map((o) => ({ ...o, resolved: isResolved(e, o) }));
@@ -34980,7 +34997,11 @@ function planTasks(e, input2) {
     return seen.has(k) ? false : (seen.add(k), true);
   });
   for (const o of overlaps) if (!o.resolved) logEvent(e, input2.actor, "overlap_found", o.a, o);
-  return { tasks: ids.map((id) => getTask(e, id)), overlaps };
+  const held = /* @__PURE__ */ new Map();
+  for (const [i, id] of ids.entries()) {
+    for (const h of heldInArea(e, { id, parent_id: parent.id, group: input2.tasks[i].group ?? null, areas: areas[i] })) held.set(`${h.task_id}/${h.path}`, h);
+  }
+  return { tasks: ids.map((id) => getTask(e, id)), overlaps, held_in_area: [...held.values()] };
 }
 function acceptOverlap(e, input2) {
   const [a, b] = input2.a <= input2.b ? [input2.a, input2.b] : [input2.b, input2.a];
@@ -35242,11 +35263,12 @@ function judge(e, c, g) {
   if (holderFailed(e, g, holder)) return "holder_failed";
   return finished(e, c, grantee, holder) ? "clean" : null;
 }
+function writeOutcome(e, g, outcome) {
+  const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL").run(outcome, e.now().toISOString(), g.id);
+  if (r.changes === 1) logEvent(e, ENGINE2, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
+}
 function setOutcome(e, g, outcome) {
-  tx(e, () => {
-    const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL").run(outcome, e.now().toISOString(), g.id);
-    if (r.changes === 1) logEvent(e, ENGINE2, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
-  });
+  tx(e, () => writeOutcome(e, g, outcome));
 }
 function mergeConflicts(e, cwd, branch, head) {
   const run = (args) => e.exec.run("git", args, { cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
@@ -35270,24 +35292,30 @@ function mergeConflicts(e, cwd, branch, head) {
   }
   return out;
 }
-function recordMergeConflicts(e, worker, feature, head) {
+function mergeConflictGrants(e, worker, feature, head) {
   try {
     const paths = new Set(mergeConflicts(e, feature.cwd && existsSync5(feature.cwd) ? feature.cwd : e.repo.root, feature.branch, head));
-    if (paths.size === 0) return;
-    const involved = /* @__PURE__ */ new Set([worker.id, feature.id]);
-    const grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all().filter((g) => paths.has(g.path));
-    for (const g of grants) {
+    if (paths.size === 0) return [];
+    const inside = /* @__PURE__ */ new Set([
+      worker.id,
+      feature.id,
+      ...e.db.prepare("SELECT id FROM tasks WHERE parent_id = ?").all(feature.id).map((r) => r.id)
+    ]);
+    return e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all().filter((g) => paths.has(g.path)).filter((g) => {
       const holder = holderAtGrant(e, g);
-      if (!involved.has(g.task_id) && !(holder !== void 0 && involved.has(holder))) continue;
-      const cancelled = [g.task_id, holder].some((id) => id !== void 0 && getTask2(e, id)?.status === "cancelled");
-      if (!cancelled) setOutcome(e, g, "conflict");
-    }
+      if (holder === void 0 || !inside.has(g.task_id) || !inside.has(holder)) return false;
+      return ![g.task_id, holder].some((id) => getTask2(e, id)?.status === "cancelled");
+    });
   } catch {
+    return [];
   }
+}
+function recordMergeConflicts(e, grants) {
+  for (const g of grants) writeOutcome(e, g, "conflict");
 }
 function recordOutcomes(e, opts = {}) {
   const budget = opts.budget_ms ?? OUTCOME_BUDGET_MS;
-  const c = { remote: opts.remote ?? true, deadline: Date.now() + budget, check: mergeCheck(budget), mergeable: /* @__PURE__ */ new Map(), merged: /* @__PURE__ */ new Map() };
+  const c = { remote: opts.remote ?? true, deadline: Date.now() + budget, check: opts.check ?? mergeCheck(budget), mergeable: /* @__PURE__ */ new Map(), merged: /* @__PURE__ */ new Map() };
   let grants;
   try {
     grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all();
@@ -35302,6 +35330,11 @@ function recordOutcomes(e, opts = {}) {
     } catch {
     }
   }
+}
+function refreshStatus(e) {
+  const check2 = mergeCheck(SYNC_BUDGET_MS + OUTCOME_BUDGET_MS);
+  syncMerged(e, { check: check2 });
+  recordOutcomes(e, { remote: true, check: check2 });
 }
 
 // engine/src/tasks.ts
@@ -35464,6 +35497,13 @@ function startTask(e, input2) {
     else if (areas.length > 0) gateStart(e, input2.actor, { fresh: { parent_id: parentId, group, areas } });
   };
   gate();
+  const held_in_area = heldInArea(e, {
+    id: planned?.id ?? null,
+    parent_id: parentId,
+    group,
+    areas: planned ? e.db.prepare("SELECT path FROM task_areas WHERE task_id = ? ORDER BY path").all(planned.id).map((r) => r.path) : areas,
+    cwd: worktree ? void 0 : checkout
+  });
   const by = actorId(input2.actor);
   const now = iso(e);
   if (!worktree) {
@@ -35490,7 +35530,7 @@ function startTask(e, input2) {
       insertSteps(e, id2, typeSteps);
       insertBinding(e, id2, input2.actor);
       logEvent(e, input2.actor, "task_started", id2, { type, title, branch: branch2 });
-      return view(e, id2);
+      return { ...view(e, id2), held_in_area };
     });
   }
   const from = parent ? (() => {
@@ -35526,7 +35566,7 @@ function startTask(e, input2) {
       insertSteps(e, id, parent ? workerSteps(typeSteps) : typeSteps);
       insertBinding(e, id, input2.actor);
       logEvent(e, input2.actor, "task_started", id, { type, title, branch });
-      return { ...view(e, id), worktree_path: path, ...setup ? { setup } : {} };
+      return { ...view(e, id), worktree_path: path, ...setup ? { setup } : {}, held_in_area };
     });
   } catch (x) {
     e.db.prepare(`UPDATE tasks SET status = ?, cwd = ${planned ? "COALESCE((SELECT cwd FROM tasks p WHERE p.id = tasks.parent_id), '')" : "''"}, branch = '' WHERE id = ? AND status = 'starting'`).run(planned ? "planned" : "cancelled", id);
@@ -35634,6 +35674,8 @@ function completeStep(e, input2) {
   }
   if (input2.evidence.kind !== required2) bad(`step "${input2.step}" needs ${required2} evidence, got ${input2.evidence.kind}`);
   const { payload, rejected } = checkEvidence(e, v, input2.step, input2.evidence, input2.actor);
+  const mergeFeature = input2.step === "merge" && !rejected && v.task.parent_id !== null ? e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) : void 0;
+  const conflicts = mergeFeature && typeof payload.head === "string" ? mergeConflictGrants(e, v.task, mergeFeature, payload.head) : [];
   const result = tx(e, () => {
     assertNext(view(e, input2.task_id), input2.step);
     insertEvidence(e, v.task.id, input2.step, required2, !rejected, payload, input2.actor);
@@ -35644,6 +35686,7 @@ function completeStep(e, input2) {
     const closed = finishStep(e, v.task.id, input2.step, input2.actor);
     logEvent(e, input2.actor, "step_done", v.task.id, { step: input2.step, kind: required2, closed });
     if (input2.step === "merge" && v.task.parent_id !== null) {
+      recordMergeConflicts(e, conflicts);
       const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id);
       if (feature.status === "open") passClaims(e, v.task, feature, input2.actor);
       else releaseClaims(e, v.task, input2.actor, `feature #${feature.id} is ${feature.status}`);
@@ -35652,8 +35695,6 @@ function completeStep(e, input2) {
   });
   if (!result) return bad(rejected ?? "evidence rejected");
   if (input2.step === "merge") {
-    const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id);
-    if (feature && typeof payload.head === "string") recordMergeConflicts(e, v.task, feature, payload.head);
     try {
       removeWorktree(e, v.task);
     } catch (x) {
@@ -35661,6 +35702,7 @@ function completeStep(e, input2) {
     }
     logEvent(e, input2.actor, "task_merged", v.task.id, { into: payload.into });
   }
+  if (result.task.status === "done") removeOnClose(e, v.task.id);
   recordOutcomes(e, { remote: false });
   return result;
 }
@@ -36124,6 +36166,16 @@ function releaseOnClose(e, task_id, actor) {
   const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id);
   if (task) releaseClaims(e, task, actor, "closed with no pr or merge step");
 }
+function removeOnClose(e, task_id) {
+  const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id);
+  if (!task || task.parent_id === null || task.status !== "done") return;
+  if (e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id)) return;
+  try {
+    removeWorktree(e, task);
+  } catch (x) {
+    logEvent(e, ENGINE3, "worktree_kept", task.id, { path: task.cwd, reason: x instanceof Error ? x.message : String(x) });
+  }
+}
 function releaseOne(e, c, task_id, actor, reason) {
   e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso2(e), c.id);
   logEvent(e, actor, "claim_released", task_id, { claim_id: c.id, kind: c.kind, path: c.target, ...reason ? { reason } : {} });
@@ -36147,7 +36199,7 @@ function syncMerged(e, opts = {}) {
     hasClaims: e.db.prepare("SELECT 1 FROM claims WHERE task_id = ? AND status = 'active'").get(task.id) !== void 0,
     hasTree: task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync7(task.cwd)
   })).filter((x) => x.hasClaims || x.hasTree);
-  const check2 = mergeCheck(opts.budget_ms ?? SYNC_BUDGET_MS);
+  const check2 = opts.check ?? mergeCheck(opts.budget_ms ?? SYNC_BUDGET_MS);
   for (const { task, hasClaims, hasTree } of todo) {
     if (Date.now() >= check2.deadline) return;
     try {
@@ -36731,10 +36783,13 @@ function recordAsk(e, ev, taskId, action, command) {
 function pushedBranch(e, cwd, command) {
   const current = (dir) => runBounded(e, dir, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
   let here = cwd;
+  let previous = cwd;
   for (const segment of command.split(/[;&|\n]+/)) {
     const words = (segment.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^(["'])(.*)\1$/, "$2"));
-    if (words[0] === "cd" && words[1] !== void 0 && words[1] !== "-") {
-      here = resolve2(here, words[1]);
+    if (words[0] === "cd" && words[1] !== void 0) {
+      const next = words[1] === "-" ? previous : resolve2(here, words[1]);
+      previous = here;
+      here = next;
       continue;
     }
     const gh = words.findIndex((w) => /(^|\/)gh$/.test(w));
@@ -36768,8 +36823,8 @@ function pushedBranch(e, cwd, command) {
     }
     const ref = args[1];
     if (ref !== void 0 && ref !== "HEAD") {
-      const dst = ref.replace(/^\+/, "").split(":").at(-1).replace(/^refs\/heads\//, "");
-      if (dst !== "" && dst !== "HEAD") return { branch: dst, pr: false };
+      const src = ref.replace(/^\+/, "").split(":")[0].replace(/^refs\/heads\//, "");
+      if (src !== "" && src !== "HEAD") return { branch: src, pr: false };
     }
     return { branch: current(dir), pr: false };
   }
@@ -47071,8 +47126,7 @@ function createServer(cwd, deps = {}) {
     description: "Show one task (with task_id), or all open tasks with the active claims, kept worktrees and stray worktrees (engine worktrees no task accounts for).",
     inputSchema: { task_id: external_exports.number().int().optional(), actor: actorSchema }
   }, tool((e, a) => {
-    syncMerged(e);
-    recordOutcomes(e, { remote: true });
+    refreshStatus(e);
     return a.task_id !== void 0 ? getTask(e, a.task_id) : { tasks: listOpen(e), claims: activeClaims(e), kept_worktrees: keptWorktrees(e), stray_worktrees: strayWorktrees(e) };
   }));
   server.registerTool("claim_status", {
@@ -47159,7 +47213,7 @@ function needReason(reason) {
 function skipStep(e, input2, env) {
   assertOwner(env);
   needReason(input2.reason);
-  return tx(e, () => {
+  const view2 = tx(e, () => {
     const v = getTask(e, input2.task_id);
     if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
     if (!v.next || v.next.name !== input2.step) {
@@ -47173,6 +47227,8 @@ function skipStep(e, input2, env) {
     if (closed) releaseOnClose(e, input2.task_id, OWNER);
     return getTask(e, input2.task_id);
   });
+  if (view2.task.status === "done") removeOnClose(e, input2.task_id);
+  return view2;
 }
 function cancelTask(e, input2, env) {
   assertOwner(env);
@@ -47406,8 +47462,7 @@ function num(s, what) {
 }
 var CLI_ACTOR = { session_id: "cli" };
 function status(e, json2, out) {
-  syncMerged(e);
-  recordOutcomes(e, { remote: true });
+  refreshStatus(e);
   const open2 = listOpen(e);
   const starting = startingTasks(e);
   const planned = plannedTasks(e);
