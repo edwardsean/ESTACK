@@ -3,7 +3,7 @@ import { recordMergeConflicts, recordOutcomes } from "./outcomes";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
 import { areaPath, claimInfo, gateStart, releaseStale } from "./plan";
-import { WORKTREE_SETUP_TIMEOUT_MS, ensureWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
+import { WORKTREE_ADD_TIMEOUT_MS, WORKTREE_SETUP_TIMEOUT_MS, ensureWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
 import {
   EngineError, STEP_EVIDENCE, actorId,
   type Actor, type Evidence, type EvidenceKind, type Step, type Task,
@@ -152,8 +152,8 @@ function featureBase(e: Engine, checkout: string): { ref: string; sha: string } 
 
 export const HOOK_FETCH_TIMEOUT_MS = 20_000;
 
-/** A `starting` row older than this has lost its starter (the setup command's limit plus five minutes). */
-export const STALE_CLAIM_MS = WORKTREE_SETUP_TIMEOUT_MS + 300_000;
+/** A `starting` row older than this has lost its starter (the worktree add and setup command limits plus five minutes). */
+export const STALE_CLAIM_MS = WORKTREE_ADD_TIMEOUT_MS + WORKTREE_SETUP_TIMEOUT_MS + 300_000;
 const alreadyStarting = (id: number) => new EngineError("TASK_CLOSED", `task #${id} is already being started`);
 
 /**

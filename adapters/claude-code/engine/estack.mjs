@@ -34740,6 +34740,7 @@ import { existsSync as existsSync3 } from "node:fs";
 import { join as join4 } from "node:path";
 var WORKTREES_DIR = ".estack/worktrees";
 var WORKTREE_SETUP_TIMEOUT_MS = 6e5;
+var WORKTREE_ADD_TIMEOUT_MS = 3e5;
 var ENGINE = { session_id: "engine" };
 function slug(title) {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
@@ -34749,7 +34750,7 @@ function ensureWorktreeExclude(e) {
 }
 function createWorktree(e, input2) {
   const path = join4(input2.under, WORKTREES_DIR, input2.name);
-  const r = runBounded(e, input2.under, "git", ["worktree", "add", "-b", input2.branch, path, input2.base]);
+  const r = runBounded(e, input2.under, "git", ["worktree", "add", "-b", input2.branch, path, input2.base], WORKTREE_ADD_TIMEOUT_MS);
   if (r.code !== 0) throw new EngineError("NOT_A_REPO", (r.stderr || r.stdout).trim() || "git worktree add failed");
   return path;
 }
@@ -35398,7 +35399,7 @@ function featureBase(e, checkout) {
   return { ref: name, sha: m.stdout.trim() };
 }
 var HOOK_FETCH_TIMEOUT_MS = 2e4;
-var STALE_CLAIM_MS = WORKTREE_SETUP_TIMEOUT_MS + 3e5;
+var STALE_CLAIM_MS = WORKTREE_ADD_TIMEOUT_MS + WORKTREE_SETUP_TIMEOUT_MS + 3e5;
 var alreadyStarting = (id) => new EngineError("TASK_CLOSED", `task #${id} is already being started`);
 function claimPlanned(e, id, actor) {
   const row = e.db.prepare("SELECT status FROM tasks WHERE id = ?").get(id);

@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
 import { initRepo } from "../src/policy";
-import { getTask, startTask } from "../src/tasks";
+import { STALE_CLAIM_MS, getTask, startTask } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
-import { removeWorktree, slug } from "../src/worktree";
+import { WORKTREE_ADD_TIMEOUT_MS, WORKTREE_SETUP_TIMEOUT_MS, removeWorktree, slug } from "../src/worktree";
 import { realExec } from "../src/exec";
 import { fakeExec, makeRepo } from "./helpers";
 
@@ -178,6 +178,19 @@ describe("worktrees", () => {
     expect(err?.code).toBe("POLICY_INVALID");
     expect(err?.message).toContain("a worker task always gets its own worktree");
     expect(e.db.prepare("SELECT COUNT(*) c FROM tasks WHERE title = 'sub'").get()).toEqual({ c: 0 });
+  });
+
+  test("git worktree add has its own five-minute limit, which a stale claim waits out", () => {
+    const { dir, e } = setup();
+    const limits: (number | undefined)[] = [];
+    e.exec = { ...realExec, run(file, args, opts) {
+      if (file === "git" && args[0] === "worktree" && args[1] === "add") limits.push(opts.timeoutMs);
+      return realExec.run(file, args, opts);
+    } };
+    feature(e, dir);
+    expect(WORKTREE_ADD_TIMEOUT_MS).toBe(300_000);
+    expect(limits).toEqual([WORKTREE_ADD_TIMEOUT_MS]);
+    expect(STALE_CLAIM_MS).toBe(WORKTREE_ADD_TIMEOUT_MS + WORKTREE_SETUP_TIMEOUT_MS + 300_000);
   });
 
   test("git ignores the worktrees folder without a tracked change", () => {

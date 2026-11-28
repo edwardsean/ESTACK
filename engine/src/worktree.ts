@@ -7,6 +7,8 @@ import { EngineError, type Task } from "./types";
 
 export const WORKTREES_DIR = ".estack/worktrees";
 export const WORKTREE_SETUP_TIMEOUT_MS = 600_000;
+/** `git worktree add` checks out the whole tree, which can take minutes in a big repository. */
+export const WORKTREE_ADD_TIMEOUT_MS = 300_000;
 
 const ENGINE = { session_id: "engine" };
 
@@ -23,7 +25,7 @@ export function ensureWorktreeExclude(e: Engine): void {
 /** `git worktree add -b <branch> <under>/.estack/worktrees/<name> <base>`; returns the absolute path. */
 export function createWorktree(e: Engine, input: { under: string; name: string; branch: string; base: string }): string {
   const path = join(input.under, WORKTREES_DIR, input.name);
-  const r = runBounded(e, input.under, "git", ["worktree", "add", "-b", input.branch, path, input.base]);
+  const r = runBounded(e, input.under, "git", ["worktree", "add", "-b", input.branch, path, input.base], WORKTREE_ADD_TIMEOUT_MS);
   if (r.code !== 0) throw new EngineError("NOT_A_REPO", (r.stderr || r.stdout).trim() || "git worktree add failed");
   return path;
 }
