@@ -12,7 +12,7 @@ import { afterCommit } from "./duplicates";
 import { defaultPolicyYaml, initRepo, loadPolicy } from "./policy";
 import { realExec, type Exec } from "./exec";
 import { findRepo } from "./repo";
-import { pendingHandovers, type SessionHandoverBody } from "./handover";
+import { pendingHandovers, savedIn, type SessionHandoverBody } from "./handover";
 import {
   BUILD_TIMEOUT_MS, INSTALL_HINT, buildGraph, checkoutLabel, checkoutOf, folderShares, graphifyVersion, loadGraph, suggestExcludes, versionSupported,
   type FolderShare,
@@ -85,7 +85,9 @@ function handovers(e: Engine, json: boolean, out: (s: string) => void): void {
   for (const h of all) {
     const bodies = h.body.kind === "session" ? (h.body as SessionHandoverBody).tasks : [h.body];
     const next = bodies.map((t) => `#${t.task.id} ${t.next_step ?? "done"}`).join(", ");
-    out(`#${h.id} ${h.kind === "session" ? "session" : `task #${h.task_id}`} ${h.created_at} from ${h.from_session} ${h.auto ? "auto" : "manual"} next: ${next}\n`);
+    const where = savedIn(e, h);
+    out(`#${h.id} ${h.kind === "session" ? "session" : `task #${h.task_id}`} ${h.created_at} from ${h.from_session} ${h.auto ? "auto" : "manual"} in ${
+      where === e.repo.root ? "main" : where} next: ${next}\n`);
   }
 }
 

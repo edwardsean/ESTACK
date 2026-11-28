@@ -183,6 +183,12 @@ session has no open task left is not offered at all when it has no plan left,
 when its session kept working after saving it, or when it is more than 24 hours
 old: that is finished or abandoned work.
 
+Handovers stay in the worktree they were saved from. A new session is only
+offered, and a plain resume only takes, a handover saved from its own
+worktree, so a session for one feature never picks up another feature's work.
+It is told when handovers are waiting in other worktrees; `estack handovers`
+lists every one with its worktree, and you can resume any of them by id.
+
 Use `/compact` only when the conversation itself must be kept. The engine saves
 state before compaction and restores it afterward. A handover from the CTO
 moves every task bound to the old session to the new session, including tasks
@@ -198,7 +204,7 @@ Every hook goes through `hooks/scripts/estack-hook.sh`, which runs the bundled e
 | `PreToolUse` (edit tools, `Bash`, estack MCP tools) | Denies an edit with no open task, an edit to a protected path, a push without verify evidence, any `ask` action from a worker, and the hard-coded set (touching `.estack/state.db`, `estack skip`/`cancel`/`override`, `--no-verify` or `git commit -n`, `core.hooksPath` in any case, mentioning `CLAUDECODE`). Asks the owner for push, merge, deploy and migration. Fails closed if the engine errors |
 | `PreToolUse` (`Read`, `Grep`) | With the code map on, "look at the map first": an agent on a task whose `reuse_check` is not done is denied once on its first read of mapped code, until it has run a code-map tool (`context_for`, `find_existing` or `who_uses`) itself. The `reuse_check` step itself still needs a `context_for` or `find_existing` search. Fails open: any error lets the read through |
 | `PostToolUse` (`Bash`) | Records an approved command in the events log. Never blocks |
-| `SessionStart` | Tells the session the repository is opted in and lists open tasks. On every start that is not a compaction (startup, `/clear`, resume) it hints at waiting handovers; it tells the session to load one on its own only when exactly one is waiting and that handover's session has not been active in the last 10 minutes, and otherwise lists them by id and asks the owner. After a compaction it restores the state saved for that compaction, or shows the session's open tasks as they are now |
+| `SessionStart` | Tells the session the repository is opted in and lists open tasks. On every start that is not a compaction (startup, `/clear`, resume) it hints at waiting handovers; it tells the session to load one on its own only when exactly one is waiting for its own worktree and that handover's session has not been active in the last 10 minutes, and otherwise lists them by id and asks the owner. After a compaction it restores the state saved for that compaction, or shows the session's open tasks as they are now |
 | `UserPromptSubmit` | Every prompt: reminds the session of its task's next step. Once per task step, and only past `handover.threshold` of the context window: suggests a handover |
 | `PreCompact` | Saves a session handover before the conversation is compacted, only when the main session (not a worker) has open tasks. Never blocks |
 | `Stop` | Blocks once when a session task has commits made after the task started but no evidence on its implement or fix step |

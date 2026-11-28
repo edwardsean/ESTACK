@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, test } from "vitest";
@@ -54,7 +54,7 @@ describe("handover storage", () => {
     old.close();
     const db = openDb(path);
     expect((db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }).value).toBe(String(SCHEMA_VERSION));
-    expect(SCHEMA_VERSION).toBe(3);
+    expect(SCHEMA_VERSION).toBe(4);
     expect((db.prepare("SELECT COUNT(*) c FROM events").get() as { c: number }).c).toBe(1);
     expect((db.prepare("SELECT COUNT(*) c FROM handovers").get() as { c: number }).c).toBe(0);
     expect((db.prepare("SELECT COUNT(*) c FROM tasks").get() as { c: number }).c).toBe(1);
@@ -349,5 +349,64 @@ describe("handover assembly", () => {
     const err = (() => { try { saveSessionHandover(e, { goal: "g" }, cto); } catch (x) { return x as EngineError; } throw new Error("no throw"); })();
     expect(err.message).toContain(`#${t.task.id} next: explore`);
     expect(err.message).toContain("(a worker-bound task with no test step counts as busy until it closes; pass workers_done if the workers are finished)");
+  });
+});
+
+describe("handover scoping by checkout", () => {
+  const A: Actor = { session_id: "sA" };
+  const M: Actor = { session_id: "sM" };
+  function twoCheckouts() {
+    const { dir, e } = setup();
+    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "a");
+    git(dir, "worktree", "add", "-q", wt, "-b", "feat-a");
+    return { dir, e, wt: realpathSync(wt) };
+  }
+  const message = (fn: () => unknown) => { try { fn(); } catch (x) { return (x as Error).message; } throw new Error("did not throw"); };
+
+  test("a handover records the checkout it was saved from", () => {
+    const { dir, e, wt } = twoCheckouts();
+    const t = start(e, wt, A);
+    expect(saveSessionHandover(e, { goal: "a" }, A, false, wt).checkout).toBe(wt);
+    expect(saveTaskHandover(e, t.task.id, {}, A).checkout).toBe(wt);
+    expect(saveSessionHandover(e, { goal: "m", plan: ["p"] }, M, false, dir).checkout).toBe(dir);
+  });
+
+  test("pending handovers can be scoped to one checkout", () => {
+    const { dir, e, wt } = twoCheckouts();
+    start(e, wt, A);
+    const a = saveSessionHandover(e, { goal: "a" }, A, true, wt);
+    const m = saveSessionHandover(e, { goal: "m", plan: ["p"] }, M, false, dir);
+    expect(pendingHandovers(e, wt).map((h) => h.id)).toEqual([a.id]);
+    expect(pendingHandovers(e, dir).map((h) => h.id)).toEqual([m.id]);
+    expect(pendingHandovers(e).map((h) => h.id)).toEqual([a.id, m.id]);
+  });
+
+  test("resume with no handover named takes only this checkout's", () => {
+    const { dir, e, wt } = twoCheckouts();
+    start(e, wt, A);
+    // main's is older, so a repo-wide "newest" would wrongly pick the worktree's
+    const m = saveSessionHandover(e, { goal: "m", plan: ["p"] }, M, false, dir);
+    const a = saveSessionHandover(e, { goal: "a" }, A, true, wt);
+    expect(consumeHandover(e, { session_id: "new-main" }, {}, dir).handover?.id).toBe(m.id);
+    expect(consumeHandover(e, { session_id: "new-wt" }, {}, wt).handover?.id).toBe(a.id);
+  });
+
+  test("resume with no handover named refuses when several are waiting in this checkout", () => {
+    const { dir, e } = twoCheckouts();
+    const one = saveSessionHandover(e, { goal: "one", plan: ["p"] }, M, false, dir);
+    const two = saveSessionHandover(e, { goal: "two", plan: ["q"] }, A, false, dir);
+    expect(code(() => consumeHandover(e, fresh, {}, dir))).toBe("NO_TASK");
+    expect(message(() => consumeHandover(e, fresh, {}, dir))).toContain(`#${one.id}, #${two.id}; pass handover_id`);
+    expect(consumeHandover(e, fresh, { handover_id: one.id }, dir).handover?.id).toBe(one.id);
+  });
+
+  test("an old handover with no recorded checkout counts as the main checkout's", () => {
+    const { dir, e, wt } = twoCheckouts();
+    const t = start(e, wt, A);
+    saveSessionHandover(e, { goal: "m", plan: ["p"] }, M, false, dir);
+    saveTaskHandover(e, t.task.id, {}, A);
+    e.db.prepare("UPDATE handovers SET checkout = NULL").run();
+    expect(pendingHandovers(e, dir).map((h) => h.kind)).toEqual(["session"]);
+    expect(pendingHandovers(e, wt).map((h) => h.kind)).toEqual(["task"]);
   });
 });

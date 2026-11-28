@@ -14654,7 +14654,10 @@ CREATE TABLE duplicates (
 CREATE INDEX events_kind_task_actor ON events(kind, task_id, actor);
 CREATE INDEX code_queries_task_actor ON code_queries(task_id, recorded_by);
 `;
-var MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3];
+var MIGRATION_4 = `
+ALTER TABLE handovers ADD COLUMN checkout TEXT;
+`;
+var MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4];
 function openDb(path) {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA busy_timeout=5000");
@@ -34526,7 +34529,7 @@ patterns:                 # how shell commands map to actions
   git_push:      ["git push*", "gh pr create*"]
   merge:         ["gh pr merge*"]
   deploy:        ["npm run deploy*", "pnpm run deploy*", "pnpm deploy*", "yarn deploy*", "vercel --prod*", "vercel deploy*", "fly deploy*", "flyctl deploy*", "kubectl apply*", "kubectl delete*", "kubectl rollout*", "terraform apply*", "terraform destroy*", "helm install*", "helm upgrade*", "helm uninstall*"]
-  db_migration:  ["prisma migrate deploy*", "prisma migrate reset*", "prisma db push*", "alembic upgrade*", "alembic downgrade*", "flyway migrate*", "rails db:migrate*", "npm run migrate*", "psql * -c *", "mysql * -e *"]
+  db_migration:  ["prisma migrate deploy*", "prisma migrate reset*", "prisma db push*", "alembic upgrade*", "alembic downgrade*", "flyway migrate*", "rails db:migrate*", "npm run migrate*", "npm run *:migrate*", "pnpm run migrate*", "pnpm run *:migrate*", "pnpm migrate*", "pnpm *:migrate*", "yarn migrate*", "yarn *:migrate*", "psql * -c *", "mysql * -e *"]
   force_push_protected: ["git push --force* origin main", "git push -f* origin main", "git push --force* origin master", "git push -f* origin master", "git push* origin main* --force*", "git push* origin main* -f*", "git push* origin +main*", "git push* origin master* --force*", "git push* origin master* -f*", "git push* origin +master*"]
 task_types:
   feature:  [plan, reuse_check, implement, test, verify, review, pr]
@@ -34647,6 +34650,10 @@ function contextRatio(transcriptPath, windowTokens) {
   if (t <= windowTokens) return t / windowTokens;
   return t <= FALLBACK_WINDOW_TOKENS ? t / FALLBACK_WINDOW_TOKENS : null;
 }
+
+// engine/src/graph.ts
+import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { basename, join as join4 } from "node:path";
 
 // engine/src/tasks.ts
 var iso = (e) => e.now().toISOString();
@@ -34819,248 +34826,7 @@ function completeStep(e, input2) {
   return result;
 }
 
-// engine/src/handover.ts
-var MAX_COMMITS = 30;
-var MAX_FILES = 50;
-var toHandover = ({ auto, body_json, ...r }) => ({ ...r, auto: auto === 1, body: JSON.parse(body_json) });
-var iso2 = (e) => e.now().toISOString();
-function cap(items, max) {
-  return items.length <= max ? items : [...items.slice(0, max), `+${items.length - max} more`];
-}
-function summarize(ev) {
-  const p = ev.payload;
-  switch (ev.kind) {
-    case "commit":
-      return String(p.sha ?? "").slice(0, 7);
-    case "command":
-      return p.timed_out ? `${p.command} timed out` : `${p.command} exit ${p.exit_code}`;
-    case "pr":
-      return String(p.url ?? "");
-    case "review":
-      return `${p.verdict} by ${ev.recorded_by}`;
-    default:
-      return String(p.text ?? "").replace(/\s+/g, " ").slice(0, 120);
-  }
-}
-function git(e, cwd, args) {
-  const r = runBounded(e, cwd, "git", args, HOOK_GIT_TIMEOUT_MS);
-  if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim() || `exit ${r.code}`}`);
-  return r.stdout;
-}
-var lines = (s) => s.split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.length > 0);
-function buildTaskBody(e, v, input2, actor, auto) {
-  const t = v.task;
-  let commits = [];
-  let files = [];
-  let git_error;
-  try {
-    const range = `${t.base_sha}..refs/heads/${t.branch}`;
-    commits = lines(git(e, t.cwd, ["log", "--format=%h %s", range]));
-    const changed = lines(git(e, t.cwd, ["diff", "--name-only", range]));
-    const dirty = lines(git(e, t.cwd, ["status", "--porcelain"])).map((l) => l.slice(3).split(" -> ").pop());
-    files = [...changed, ...dirty];
-  } catch (err) {
-    commits = [];
-    files = [];
-    git_error = err instanceof Error ? err.message : String(err);
-  }
-  files = [.../* @__PURE__ */ new Set([...files, ...input2.files ?? []])].sort();
-  return {
-    kind: "task",
-    auto,
-    created_at: iso2(e),
-    from_session: actor.session_id,
-    decisions: input2.decisions ?? [],
-    open_questions: input2.open_questions ?? [],
-    task: { id: t.id, title: t.title, type: t.type, goal: t.goal, done_check: t.done_check, branch: t.branch, cwd: t.cwd, base_sha: t.base_sha },
-    steps: v.steps.map((s) => ({
-      name: s.name,
-      status: s.status,
-      evidence: v.evidence.filter((x) => x.step === s.name).map((x) => ({ kind: x.kind, ok: x.ok, summary: summarize(x) }))
-    })),
-    next_step: v.next?.name ?? null,
-    commits: cap(commits, MAX_COMMITS),
-    files: cap(files, MAX_FILES),
-    ...git_error ? { git_error } : {}
-  };
-}
-function boundIds(e, session_id, agentOnly) {
-  const rows = e.db.prepare(
-    `SELECT DISTINCT task_id FROM task_bindings WHERE session_id = ?${agentOnly ? " AND agent_id IS NOT NULL" : ""}`
-  ).all(session_id);
-  return new Set(rows.map((r) => r.task_id));
-}
-function sessionTasks(e, session_id) {
-  const ids = boundIds(e, session_id);
-  return listOpen(e).filter((v) => ids.has(v.task.id));
-}
-function busyWorkerTasks(e, session_id) {
-  const ids = boundIds(e, session_id, true);
-  return listOpen(e).filter((v) => {
-    if (!ids.has(v.task.id) || !v.next) return false;
-    const test = v.steps.find((s) => s.name === "test");
-    return !test || v.next.ordinal <= test.ordinal;
-  });
-}
-function insertHandover(e, kind, task_id, actor, auto, body) {
-  const r = e.db.prepare(
-    "INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(kind, task_id, actor.session_id, body.created_at, auto ? 1 : 0, JSON.stringify(body));
-  const id = Number(r.lastInsertRowid);
-  logEvent(e, actor, "handover_saved", task_id, { id, kind, auto });
-  return toHandover(e.db.prepare("SELECT * FROM handovers WHERE id = ?").get(id));
-}
-function saveTaskHandover(e, task_id, input2, actor, auto = false) {
-  const v = getTask(e, task_id);
-  const body = buildTaskBody(e, v, input2, actor, auto);
-  return tx(e, () => insertHandover(e, "task", task_id, actor, auto, body));
-}
-function latestSessionHandover(e, session_id) {
-  const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND from_session = ? ORDER BY id DESC LIMIT 1").get(session_id);
-  return row ? toHandover(row) : null;
-}
-function lastConsumedBy(e, session_id) {
-  const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND consumed_by LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1").get(`${session_id.replace(/[\\%_]/g, "\\$&")}/%`);
-  return row ? toHandover(row) : null;
-}
-function saveSessionHandover(e, input2, actor, auto = false) {
-  if (!input2.workers_done && !auto) {
-    const busy = busyWorkerTasks(e, actor.session_id);
-    if (busy.length > 0) {
-      const noTest = busy.some((v) => !v.steps.some((s) => s.name === "test"));
-      throw new EngineError(
-        "BAD_EVIDENCE",
-        `workers are still mid-task: ${busy.map((v) => `#${v.task.id} next: ${v.next?.name}`).join(", ")}; wait for them or pass workers_done${noTest ? " (a worker-bound task with no test step counts as busy until it closes; pass workers_done if the workers are finished)" : ""}`
-      );
-    }
-  }
-  const prev = auto ? latestSessionHandover(e, actor.session_id) ?? lastConsumedBy(e, actor.session_id) : null;
-  const pb = prev?.body;
-  const merged = {
-    ...input2,
-    goal: input2.goal ?? pb?.goal,
-    plan: input2.plan ?? pb?.plan,
-    decisions: input2.decisions ?? pb?.decisions,
-    open_questions: input2.open_questions ?? pb?.open_questions,
-    files: input2.files ?? pb?.files?.filter((f) => !/^\+\d+ more$/.test(f))
-  };
-  const tasks = sessionTasks(e, actor.session_id).map((v) => buildTaskBody(e, v, {}, actor, auto));
-  const body = {
-    kind: "session",
-    auto,
-    created_at: iso2(e),
-    from_session: actor.session_id,
-    decisions: merged.decisions ?? [],
-    open_questions: merged.open_questions ?? [],
-    goal: merged.goal ?? "",
-    plan: merged.plan ?? [],
-    files: cap([...new Set(merged.files ?? [])].sort(), MAX_FILES),
-    tasks
-  };
-  return tx(e, () => insertHandover(e, "session", null, actor, auto, body));
-}
-function openBoundIds(e, session_id) {
-  return e.db.prepare(
-    `SELECT DISTINCT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
-     WHERE t.status = 'open' AND b.session_id = ? ORDER BY t.id`
-  ).all(session_id).map((r) => r.id);
-}
-function activityAfter(e, h) {
-  const saved = e.db.prepare(
-    "SELECT id FROM events WHERE kind = 'handover_saved' AND json_extract(payload_json, '$.id') = ? ORDER BY id LIMIT 1"
-  ).get(h.id);
-  if (!saved) return null;
-  const row = e.db.prepare("SELECT at FROM events WHERE id > ? AND actor LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1").get(saved.id, `${h.from_session.replace(/[\\%_]/g, "\\$&")}/%`);
-  return row?.at ?? null;
-}
-var STALE_PLAN_MS = 24 * 3600 * 1e3;
-function pendingHandovers(e) {
-  const rows = e.db.prepare("SELECT * FROM handovers WHERE consumed_at IS NULL ORDER BY id").all().map(toHandover);
-  const newestSession = /* @__PURE__ */ new Map();
-  for (const h of rows) if (h.kind === "session") newestSession.set(h.from_session, h);
-  const sessions = [...newestSession.values()];
-  const open2 = new Set(listOpen(e).map((v) => v.task.id));
-  const newestTask = /* @__PURE__ */ new Map();
-  for (const h of rows) if (h.kind === "task" && h.task_id !== null && open2.has(h.task_id)) newestTask.set(h.task_id, h);
-  const tasks = [...newestTask.values()].filter((h) => !sessions.some((s) => s.id > h.id && s.body.tasks.some((t) => t.task.id === h.task_id)));
-  const live = sessions.filter((h) => {
-    if (openBoundIds(e, h.from_session).length > 0) return true;
-    if (h.body.plan.length === 0) return false;
-    return activityAfter(e, h) === null && e.now().getTime() - Date.parse(h.created_at) < STALE_PLAN_MS;
-  });
-  return [...live, ...tasks].sort((a, b) => a.id - b.id);
-}
-function bind(e, task_id, actor) {
-  const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id IS ?").get(task_id, actor.session_id, actor.agent_id ?? null);
-  if (dup) return;
-  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso2(e));
-}
-function consumeHandover(e, actor, sel = {}) {
-  const { task_id, handover_id } = sel;
-  const result = tx(e, () => {
-    let handover = null;
-    let ids;
-    const openTask = (id) => {
-      const v = getTask(e, id);
-      if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${id} is ${v.task.status}`);
-    };
-    if (handover_id !== void 0) {
-      const row = e.db.prepare("SELECT * FROM handovers WHERE id = ? AND consumed_at IS NULL").get(handover_id);
-      if (!row) throw new EngineError("NO_TASK", `no handover #${handover_id} waiting`);
-      handover = toHandover(row);
-      if (handover.kind === "task") {
-        openTask(handover.task_id);
-        ids = [handover.task_id];
-      } else ids = [];
-    } else if (task_id !== void 0) {
-      openTask(task_id);
-      const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'task' AND task_id = ? AND consumed_at IS NULL ORDER BY id DESC LIMIT 1").get(task_id);
-      handover = row ? toHandover(row) : null;
-      ids = [task_id];
-    } else {
-      handover = pendingHandovers(e).filter((h2) => h2.kind === "session").at(-1) ?? null;
-      if (!handover) throw new EngineError("NO_TASK", "no session handover waiting");
-      ids = [];
-    }
-    if (handover?.kind === "session") {
-      const listed = handover.body.tasks.map((t) => t.task.id);
-      ids = [.../* @__PURE__ */ new Set([...openBoundIds(e, handover.from_session), ...listed])].sort((a, b) => a - b);
-    }
-    if (handover) {
-      e.db.prepare("UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE id = ?").run(actorId(actor), iso2(e), handover.id);
-      handover = { ...handover, consumed_by: actorId(actor), consumed_at: iso2(e) };
-      const covered = handover.kind === "session" ? ids : [handover.task_id];
-      const marks = covered.map(() => "?").join(",");
-      e.db.prepare(
-        `UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE consumed_at IS NULL AND id < ? AND (${handover.kind === "session" ? "(kind = 'session' AND from_session = ?) OR " : ""}(kind = 'task' AND task_id IN (${marks || "NULL"})))`
-      ).run(actorId(actor), iso2(e), handover.id, ...handover.kind === "session" ? [handover.from_session] : [], ...covered);
-    }
-    const views = [];
-    for (const id of ids) {
-      const v = getTask(e, id);
-      if (v.task.status !== "open") continue;
-      bind(e, id, actor);
-      views.push(v);
-    }
-    logEvent(e, actor, "resumed", handover?.task_id ?? task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });
-    return { handover, views };
-  });
-  const h = result.handover;
-  if (h?.kind === "session") {
-    const from = { session_id: h.from_session };
-    const tasks = result.views.map((v) => buildTaskBody(e, v, {}, from, h.auto));
-    return { handover: { ...h, body: { ...h.body, tasks } }, views: result.views };
-  }
-  return result;
-}
-
-// engine/src/mapfirst.ts
-import { existsSync as existsSync4, statSync as statSync2 } from "node:fs";
-import { relative, sep } from "node:path";
-
 // engine/src/graph.ts
-import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { basename, join as join4 } from "node:path";
 var GRAPHIFY_ENV = { GRAPHIFY_BACKEND: "none", GRAPHIFY_QUERY_LOG_DISABLE: "1" };
 var GRAPH_SCHEMA = 1;
 var BUILD_TIMEOUT_MS = 3e5;
@@ -35279,7 +35045,254 @@ function suggestExcludes(e, root) {
   return [...found].map(([glob, reason]) => ({ glob, reason })).sort((a, b) => a.glob.localeCompare(b.glob, "en"));
 }
 
+// engine/src/handover.ts
+var MAX_COMMITS = 30;
+var MAX_FILES = 50;
+var toHandover = ({ auto, body_json, ...r }) => ({ ...r, auto: auto === 1, body: JSON.parse(body_json) });
+var iso2 = (e) => e.now().toISOString();
+function cap(items, max) {
+  return items.length <= max ? items : [...items.slice(0, max), `+${items.length - max} more`];
+}
+function summarize(ev) {
+  const p = ev.payload;
+  switch (ev.kind) {
+    case "commit":
+      return String(p.sha ?? "").slice(0, 7);
+    case "command":
+      return p.timed_out ? `${p.command} timed out` : `${p.command} exit ${p.exit_code}`;
+    case "pr":
+      return String(p.url ?? "");
+    case "review":
+      return `${p.verdict} by ${ev.recorded_by}`;
+    default:
+      return String(p.text ?? "").replace(/\s+/g, " ").slice(0, 120);
+  }
+}
+function git(e, cwd, args) {
+  const r = runBounded(e, cwd, "git", args, HOOK_GIT_TIMEOUT_MS);
+  if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim() || `exit ${r.code}`}`);
+  return r.stdout;
+}
+var lines = (s) => s.split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.length > 0);
+function buildTaskBody(e, v, input2, actor, auto) {
+  const t = v.task;
+  let commits = [];
+  let files = [];
+  let git_error;
+  try {
+    const range = `${t.base_sha}..refs/heads/${t.branch}`;
+    commits = lines(git(e, t.cwd, ["log", "--format=%h %s", range]));
+    const changed = lines(git(e, t.cwd, ["diff", "--name-only", range]));
+    const dirty = lines(git(e, t.cwd, ["status", "--porcelain"])).map((l) => l.slice(3).split(" -> ").pop());
+    files = [...changed, ...dirty];
+  } catch (err) {
+    commits = [];
+    files = [];
+    git_error = err instanceof Error ? err.message : String(err);
+  }
+  files = [.../* @__PURE__ */ new Set([...files, ...input2.files ?? []])].sort();
+  return {
+    kind: "task",
+    auto,
+    created_at: iso2(e),
+    from_session: actor.session_id,
+    decisions: input2.decisions ?? [],
+    open_questions: input2.open_questions ?? [],
+    task: { id: t.id, title: t.title, type: t.type, goal: t.goal, done_check: t.done_check, branch: t.branch, cwd: t.cwd, base_sha: t.base_sha },
+    steps: v.steps.map((s) => ({
+      name: s.name,
+      status: s.status,
+      evidence: v.evidence.filter((x) => x.step === s.name).map((x) => ({ kind: x.kind, ok: x.ok, summary: summarize(x) }))
+    })),
+    next_step: v.next?.name ?? null,
+    commits: cap(commits, MAX_COMMITS),
+    files: cap(files, MAX_FILES),
+    ...git_error ? { git_error } : {}
+  };
+}
+function boundIds(e, session_id, agentOnly) {
+  const rows = e.db.prepare(
+    `SELECT DISTINCT task_id FROM task_bindings WHERE session_id = ?${agentOnly ? " AND agent_id IS NOT NULL" : ""}`
+  ).all(session_id);
+  return new Set(rows.map((r) => r.task_id));
+}
+function sessionTasks(e, session_id) {
+  const ids = boundIds(e, session_id);
+  return listOpen(e).filter((v) => ids.has(v.task.id));
+}
+function busyWorkerTasks(e, session_id) {
+  const ids = boundIds(e, session_id, true);
+  return listOpen(e).filter((v) => {
+    if (!ids.has(v.task.id) || !v.next) return false;
+    const test = v.steps.find((s) => s.name === "test");
+    return !test || v.next.ordinal <= test.ordinal;
+  });
+}
+function insertHandover(e, kind, task_id, actor, auto, body, checkout) {
+  const r = e.db.prepare(
+    "INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json, checkout) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).run(kind, task_id, actor.session_id, body.created_at, auto ? 1 : 0, JSON.stringify(body), checkout);
+  const id = Number(r.lastInsertRowid);
+  logEvent(e, actor, "handover_saved", task_id, { id, kind, auto });
+  return toHandover(e.db.prepare("SELECT * FROM handovers WHERE id = ?").get(id));
+}
+function saveTaskHandover(e, task_id, input2, actor, auto = false) {
+  const v = getTask(e, task_id);
+  const body = buildTaskBody(e, v, input2, actor, auto);
+  return tx(e, () => insertHandover(e, "task", task_id, actor, auto, body, v.task.cwd));
+}
+function latestSessionHandover(e, session_id) {
+  const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND from_session = ? ORDER BY id DESC LIMIT 1").get(session_id);
+  return row ? toHandover(row) : null;
+}
+function lastConsumedBy(e, session_id) {
+  const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'session' AND consumed_by LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1").get(`${session_id.replace(/[\\%_]/g, "\\$&")}/%`);
+  return row ? toHandover(row) : null;
+}
+function saveSessionHandover(e, input2, actor, auto = false, cwd) {
+  if (!input2.workers_done && !auto) {
+    const busy = busyWorkerTasks(e, actor.session_id);
+    if (busy.length > 0) {
+      const noTest = busy.some((v) => !v.steps.some((s) => s.name === "test"));
+      throw new EngineError(
+        "BAD_EVIDENCE",
+        `workers are still mid-task: ${busy.map((v) => `#${v.task.id} next: ${v.next?.name}`).join(", ")}; wait for them or pass workers_done${noTest ? " (a worker-bound task with no test step counts as busy until it closes; pass workers_done if the workers are finished)" : ""}`
+      );
+    }
+  }
+  const prev = auto ? latestSessionHandover(e, actor.session_id) ?? lastConsumedBy(e, actor.session_id) : null;
+  const pb = prev?.body;
+  const merged = {
+    ...input2,
+    goal: input2.goal ?? pb?.goal,
+    plan: input2.plan ?? pb?.plan,
+    decisions: input2.decisions ?? pb?.decisions,
+    open_questions: input2.open_questions ?? pb?.open_questions,
+    files: input2.files ?? pb?.files?.filter((f) => !/^\+\d+ more$/.test(f))
+  };
+  const tasks = sessionTasks(e, actor.session_id).map((v) => buildTaskBody(e, v, {}, actor, auto));
+  const body = {
+    kind: "session",
+    auto,
+    created_at: iso2(e),
+    from_session: actor.session_id,
+    decisions: merged.decisions ?? [],
+    open_questions: merged.open_questions ?? [],
+    goal: merged.goal ?? "",
+    plan: merged.plan ?? [],
+    files: cap([...new Set(merged.files ?? [])].sort(), MAX_FILES),
+    tasks
+  };
+  const checkout = checkoutOf(e, cwd ?? e.cwd);
+  return tx(e, () => insertHandover(e, "session", null, actor, auto, body, checkout));
+}
+function openBoundIds(e, session_id) {
+  return e.db.prepare(
+    `SELECT DISTINCT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+     WHERE t.status = 'open' AND b.session_id = ? ORDER BY t.id`
+  ).all(session_id).map((r) => r.id);
+}
+function activityAfter(e, h) {
+  const saved = e.db.prepare(
+    "SELECT id FROM events WHERE kind = 'handover_saved' AND json_extract(payload_json, '$.id') = ? ORDER BY id LIMIT 1"
+  ).get(h.id);
+  if (!saved) return null;
+  const row = e.db.prepare("SELECT at FROM events WHERE id > ? AND actor LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1").get(saved.id, `${h.from_session.replace(/[\\%_]/g, "\\$&")}/%`);
+  return row?.at ?? null;
+}
+var STALE_PLAN_MS = 24 * 3600 * 1e3;
+function pendingHandovers(e, checkout) {
+  const rows = e.db.prepare("SELECT * FROM handovers WHERE consumed_at IS NULL ORDER BY id").all().map(toHandover);
+  const newestSession = /* @__PURE__ */ new Map();
+  for (const h of rows) if (h.kind === "session") newestSession.set(h.from_session, h);
+  const sessions = [...newestSession.values()];
+  const open2 = new Set(listOpen(e).map((v) => v.task.id));
+  const newestTask = /* @__PURE__ */ new Map();
+  for (const h of rows) if (h.kind === "task" && h.task_id !== null && open2.has(h.task_id)) newestTask.set(h.task_id, h);
+  const tasks = [...newestTask.values()].filter((h) => !sessions.some((s) => s.id > h.id && s.body.tasks.some((t) => t.task.id === h.task_id)));
+  const live = sessions.filter((h) => {
+    if (openBoundIds(e, h.from_session).length > 0) return true;
+    if (h.body.plan.length === 0) return false;
+    return activityAfter(e, h) === null && e.now().getTime() - Date.parse(h.created_at) < STALE_PLAN_MS;
+  });
+  return [...live, ...tasks].filter((h) => checkout === void 0 || savedIn(e, h) === checkout).sort((a, b) => a.id - b.id);
+}
+function savedIn(e, h) {
+  if (h.checkout) return h.checkout;
+  return h.kind === "task" ? h.body.task.cwd : e.repo.root;
+}
+function bind(e, task_id, actor) {
+  const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id IS ?").get(task_id, actor.session_id, actor.agent_id ?? null);
+  if (dup) return;
+  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso2(e));
+}
+function consumeHandover(e, actor, sel = {}, cwd) {
+  const { task_id, handover_id } = sel;
+  const here = task_id === void 0 && handover_id === void 0 ? checkoutOf(e, cwd ?? e.cwd) : null;
+  const result = tx(e, () => {
+    let handover = null;
+    let ids;
+    const openTask = (id) => {
+      const v = getTask(e, id);
+      if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${id} is ${v.task.status}`);
+    };
+    if (handover_id !== void 0) {
+      const row = e.db.prepare("SELECT * FROM handovers WHERE id = ? AND consumed_at IS NULL").get(handover_id);
+      if (!row) throw new EngineError("NO_TASK", `no handover #${handover_id} waiting`);
+      handover = toHandover(row);
+      if (handover.kind === "task") {
+        openTask(handover.task_id);
+        ids = [handover.task_id];
+      } else ids = [];
+    } else if (task_id !== void 0) {
+      openTask(task_id);
+      const row = e.db.prepare("SELECT * FROM handovers WHERE kind = 'task' AND task_id = ? AND consumed_at IS NULL ORDER BY id DESC LIMIT 1").get(task_id);
+      handover = row ? toHandover(row) : null;
+      ids = [task_id];
+    } else {
+      const waiting = pendingHandovers(e, here).filter((h2) => h2.kind === "session");
+      if (waiting.length === 0) throw new EngineError("NO_TASK", `no session handover waiting in ${here}`);
+      if (waiting.length > 1) {
+        throw new EngineError("NO_TASK", `several session handovers are waiting here: ${waiting.map((h2) => `#${h2.id}`).join(", ")}; pass handover_id (ask the owner which)`);
+      }
+      handover = waiting[0];
+      ids = [];
+    }
+    if (handover?.kind === "session") {
+      const listed = handover.body.tasks.map((t) => t.task.id);
+      ids = [.../* @__PURE__ */ new Set([...openBoundIds(e, handover.from_session), ...listed])].sort((a, b) => a - b);
+    }
+    if (handover) {
+      e.db.prepare("UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE id = ?").run(actorId(actor), iso2(e), handover.id);
+      handover = { ...handover, consumed_by: actorId(actor), consumed_at: iso2(e) };
+      const covered = handover.kind === "session" ? ids : [handover.task_id];
+      const marks = covered.map(() => "?").join(",");
+      e.db.prepare(
+        `UPDATE handovers SET consumed_by = ?, consumed_at = ? WHERE consumed_at IS NULL AND id < ? AND (${handover.kind === "session" ? "(kind = 'session' AND from_session = ?) OR " : ""}(kind = 'task' AND task_id IN (${marks || "NULL"})))`
+      ).run(actorId(actor), iso2(e), handover.id, ...handover.kind === "session" ? [handover.from_session] : [], ...covered);
+    }
+    const views = [];
+    for (const id of ids) {
+      const v = getTask(e, id);
+      if (v.task.status !== "open") continue;
+      bind(e, id, actor);
+      views.push(v);
+    }
+    logEvent(e, actor, "resumed", handover?.task_id ?? task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });
+    return { handover, views };
+  });
+  const h = result.handover;
+  if (h?.kind === "session") {
+    const from = { session_id: h.from_session };
+    const tasks = result.views.map((v) => buildTaskBody(e, v, {}, from, h.auto));
+    return { handover: { ...h, body: { ...h.body, tasks } }, views: result.views };
+  }
+  return result;
+}
+
 // engine/src/mapfirst.ts
+import { existsSync as existsSync4, statSync as statSync2 } from "node:fs";
+import { relative, sep } from "node:path";
 var READ_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep"]);
 function preRead(e, ev) {
   try {
@@ -35521,7 +35534,7 @@ function preBash(e, ev) {
   recordAsk(e, ev, t.id, v.action, command);
   return pre("ask", `${v.action} (pattern ${v.pattern}) for task #${t.id} "${t.title}": verify is settled, the owner must confirm`);
 }
-var STAMP_CWD = /* @__PURE__ */ new Set(["start_task", "context_for", "find_existing", "who_uses"]);
+var STAMP_CWD = /* @__PURE__ */ new Set(["start_task", "context_for", "find_existing", "who_uses", "handover", "resume"]);
 function preToolUse(e, ev) {
   const tool = ev.tool_name ?? "";
   if (EDIT_TOOLS.has(tool)) return preEdit(e, ev);
@@ -35601,19 +35614,23 @@ function handoverLines(e, ev) {
         `estack: context was compacted; these are your open tasks as they are now. ${reread}`
       ];
     }
-    const pending = pendingHandovers(e);
+    const pending = pendingHandovers(e, checkoutOf(e, ev.cwd));
+    const n = pendingHandovers(e).length - pending.length;
+    const elsewhere = n > 0 ? [`estack: ${n} handover${n === 1 ? " is" : "s are"} waiting in ${n === 1 ? "another worktree" : "other worktrees"} of this repository; this session is not told to take ${n === 1 ? "it" : "them"}. "estack handovers" lists them; resume one by handover_id only if the owner asks.`] : [];
     if (pending.length === 1 && stillRunning(e, pending[0]) === null) {
       const h = pending[0];
-      return [`estack: a handover is waiting (#${h.id}, ${handoverKind(h)}, ${since(e, h.created_at)} ago, goal: ${handoverGoal(h)}). Call the resume tool now${h.kind === "task" ? ` with task_id ${h.task_id}` : ""}, then re-read the files it lists and continue.`];
+      return [...elsewhere, `estack: a handover is waiting (#${h.id}, ${handoverKind(h)}, ${since(e, h.created_at)} ago, goal: ${handoverGoal(h)}). Call the resume tool now${h.kind === "task" ? ` with task_id ${h.task_id}` : ""}, then re-read the files it lists and continue.`];
     }
     if (pending.length > 0) {
       const extra = pending.length - MAX_LISTED_HANDOVERS;
       return [
+        ...elsewhere,
         ...pending.slice(0, MAX_LISTED_HANDOVERS).map((h) => listLine(e, h)),
         ...extra > 0 ? [`+${extra} more`] : [],
         pending.length === 1 ? "estack: a handover is waiting but its session may still be running; ask the owner whether to resume it, then call the resume tool with handover_id." : "estack: several handovers are waiting; ask the owner which one, then call the resume tool with handover_id."
       ];
     }
+    return elsewhere;
   } catch {
   }
   return [];
@@ -35626,7 +35643,7 @@ function sessionStart(e, ev) {
 }
 function preCompact(e, ev) {
   try {
-    if (!ev.agent_id && sessionTasks(e, ev.session_id).length > 0) saveSessionHandover(e, {}, { session_id: ev.session_id }, true);
+    if (!ev.agent_id && sessionTasks(e, ev.session_id).length > 0) saveSessionHandover(e, {}, { session_id: ev.session_id }, true, ev.cwd);
   } catch {
   }
   return null;
@@ -45885,11 +45902,12 @@ function createServer(cwd, deps = {}) {
       open_questions: external_exports.array(external_exports.string()).optional(),
       files: external_exports.array(external_exports.string()).optional().describe("files to re-read that git cannot see"),
       workers_done: external_exports.boolean().optional().describe("override the check that no worker is mid-task"),
+      cwd: external_exports.string().optional().describe("the caller's working directory; its checkout scopes who is offered the handover (stamped by the hook)"),
       actor: actorSchema
     }
   }, tool((e, a, actor) => {
-    const { task_id, actor: _actor, ...input2 } = a;
-    const h = task_id !== void 0 ? saveTaskHandover(e, task_id, input2, actor) : saveSessionHandover(e, input2, actor);
+    const { task_id, actor: _actor, cwd: cwd2, ...input2 } = a;
+    const h = task_id !== void 0 ? saveTaskHandover(e, task_id, input2, actor) : saveSessionHandover(e, input2, actor, false, cwd2);
     return { ...h, next: "Handover saved. Tell the owner: run /clear; the new session will load this automatically." };
   }));
   server.registerTool("resume", {
@@ -45897,10 +45915,11 @@ function createServer(cwd, deps = {}) {
     inputSchema: {
       task_id: external_exports.number().int().optional(),
       handover_id: external_exports.number().int().optional().describe("the handover the owner chose, from the start-of-session list"),
+      cwd: external_exports.string().optional().describe("the caller's working directory; with no selector only its checkout's handovers count (stamped by the hook)"),
       actor: actorSchema
     }
   }, tool((e, a, actor) => {
-    const { handover, views } = consumeHandover(e, actor, { task_id: a.task_id, handover_id: a.handover_id });
+    const { handover, views } = consumeHandover(e, actor, { task_id: a.task_id, handover_id: a.handover_id }, a.cwd);
     const body = handover?.body;
     const goal = (body?.kind === "session" ? body.goal : "") || (views.length === 1 ? views[0].task.goal : "") || "(none recorded)";
     const next = views.map((v) => v.next ? `#${v.task.id} ${v.next.name}` : `#${v.task.id} done`).join(", ");
@@ -46136,7 +46155,8 @@ function handovers(e, json2, out) {
   for (const h of all) {
     const bodies = h.body.kind === "session" ? h.body.tasks : [h.body];
     const next = bodies.map((t) => `#${t.task.id} ${t.next_step ?? "done"}`).join(", ");
-    out(`#${h.id} ${h.kind === "session" ? "session" : `task #${h.task_id}`} ${h.created_at} from ${h.from_session} ${h.auto ? "auto" : "manual"} next: ${next}
+    const where = savedIn(e, h);
+    out(`#${h.id} ${h.kind === "session" ? "session" : `task #${h.task_id}`} ${h.created_at} from ${h.from_session} ${h.auto ? "auto" : "manual"} in ${where === e.repo.root ? "main" : where} next: ${next}
 `);
   }
 }

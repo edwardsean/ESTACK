@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { MIGRATION_1, MIGRATION_2, openDb } from "../src/db";
+import { MIGRATION_1, MIGRATION_2, MIGRATION_3, openDb } from "../src/db";
 import { realExec } from "../src/exec";
 import { DEFAULT_POLICY_YAML, initRepo, loadPolicy, parsePolicy } from "../src/policy";
 import { findRepo } from "../src/repo";
@@ -72,7 +72,7 @@ test("openDb twice is idempotent and sets WAL", () => {
   openDb(path).close();
   const db = openDb(path);
   expect((db.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("wal");
-  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "3" });
+  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "4" });
   db.close();
 });
 
@@ -111,13 +111,28 @@ test("a version-2 database upgrades to 3 and keeps its rows", () => {
   old.prepare("INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json) VALUES ('k', 1, 's1', 't', 0, '{}')").run();
   old.close();
   const db = openDb(path);
-  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "3" });
+  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "4" });
   for (const t of ["code_queries", "duplicates"]) {
     expect(db.prepare("SELECT COUNT(*) c FROM " + t).get()).toMatchObject({ c: 0 });
   }
   expect(db.prepare("SELECT COUNT(*) c FROM tasks").get()).toMatchObject({ c: 1 });
   expect(db.prepare("SELECT COUNT(*) c FROM handovers").get()).toMatchObject({ c: 1 });
   expect(indexes(db)).toEqual(PHASE_5_INDEXES);
+  db.close();
+});
+
+test("a version-3 database upgrades to 4: handovers gain a checkout, old rows keep null", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "estack-mig4-")), "state.db");
+  const old = new DatabaseSync(path);
+  old.exec(MIGRATION_1);
+  old.exec(MIGRATION_2);
+  old.exec(MIGRATION_3);
+  old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '3')").run();
+  old.prepare("INSERT INTO handovers (kind, task_id, from_session, created_at, auto, body_json) VALUES ('session', NULL, 's1', 't', 0, '{}')").run();
+  old.close();
+  const db = openDb(path);
+  expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toMatchObject({ value: "4" });
+  expect(db.prepare("SELECT checkout FROM handovers").get()).toMatchObject({ checkout: null });
   db.close();
 });
 

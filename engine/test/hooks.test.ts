@@ -390,6 +390,20 @@ describe("hooks", () => {
         expect(text).not.toContain("handover");
       });
 
+      test("a new session in another worktree is not told to resume a handover saved in a different one", () => {
+        const dir = repo();
+        const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "a");
+        execFileSync("git", ["worktree", "add", "-q", wt, "-b", "feat-a"], { cwd: dir });
+        const real = realpathSync(wt);
+        withEngine(dir, (e) => startTask(e, { title: "a", type: "feature", goal: "feature A", done_check: "d", actor: { session_id: "sA" }, cwd: real }));
+        hook("pre-compact", real, { hook_event_name: "PreCompact", trigger: "auto", session_id: "sA" });
+        const other = ctx(hook("session-start", dir, { hook_event_name: "SessionStart", source: "startup", session_id: "sB" }));
+        expect(other).not.toContain("Call the resume tool now");
+        expect(other).toContain("1 handover is waiting in another worktree of this repository");
+        const same = ctx(hook("session-start", real, { hook_event_name: "SessionStart", source: "clear", session_id: "sC" }));
+        expect(same).toContain("Call the resume tool now");
+      });
+
       test("with several waiting handovers, session start lists them and says to ask the owner", () => {
         const dir = repo();
         task(dir);

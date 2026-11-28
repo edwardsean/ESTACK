@@ -1,6 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { contextRatio } from "./context";
+import { checkoutOf } from "./graph";
 import type { Engine } from "./engine";
 import {
   activityAfter, buildTaskBody, latestSessionHandover, pendingHandovers, saveSessionHandover, sessionTasks,
@@ -157,7 +158,7 @@ function preBash(e: Engine, ev: HookEvent): HookOutput {
   return pre("ask", `${v.action} (pattern ${v.pattern}) for task #${t!.id} "${t!.title}": verify is settled, the owner must confirm`);
 }
 
-const STAMP_CWD = new Set(["start_task", "context_for", "find_existing", "who_uses"]);
+const STAMP_CWD = new Set(["start_task", "context_for", "find_existing", "who_uses", "handover", "resume"]);
 
 export function preToolUse(e: Engine, ev: HookEvent): HookOutput {
   const tool = ev.tool_name ?? "";
@@ -256,19 +257,25 @@ function handoverLines(e: Engine, ev: HookEvent): string[] {
       return [...compactState({ decisions: [], open_questions: [] }, tasks),
         `estack: context was compacted; these are your open tasks as they are now. ${reread}`];
     }
-    const pending = pendingHandovers(e);
+    const pending = pendingHandovers(e, checkoutOf(e, ev.cwd));
+    const n = pendingHandovers(e).length - pending.length;
+    const elsewhere = n > 0
+      ? [`estack: ${n} handover${n === 1 ? " is" : "s are"} waiting in ${n === 1 ? "another worktree" : "other worktrees"} of this repository; this session is not told to take ${
+        n === 1 ? "it" : "them"}. "estack handovers" lists them; resume one by handover_id only if the owner asks.`]
+      : [];
     if (pending.length === 1 && stillRunning(e, pending[0]) === null) {
       const h = pending[0];
-      return [`estack: a handover is waiting (#${h.id}, ${handoverKind(h)}, ${since(e, h.created_at)} ago, goal: ${handoverGoal(h)}). Call the resume tool now${
+      return [...elsewhere, `estack: a handover is waiting (#${h.id}, ${handoverKind(h)}, ${since(e, h.created_at)} ago, goal: ${handoverGoal(h)}). Call the resume tool now${
         h.kind === "task" ? ` with task_id ${h.task_id}` : ""}, then re-read the files it lists and continue.`];
     }
     if (pending.length > 0) {
       const extra = pending.length - MAX_LISTED_HANDOVERS;
-      return [...pending.slice(0, MAX_LISTED_HANDOVERS).map((h) => listLine(e, h)), ...(extra > 0 ? [`+${extra} more`] : []),
+      return [...elsewhere, ...pending.slice(0, MAX_LISTED_HANDOVERS).map((h) => listLine(e, h)), ...(extra > 0 ? [`+${extra} more`] : []),
         pending.length === 1
           ? "estack: a handover is waiting but its session may still be running; ask the owner whether to resume it, then call the resume tool with handover_id."
           : "estack: several handovers are waiting; ask the owner which one, then call the resume tool with handover_id."];
     }
+    return elsewhere;
   } catch { /* context hooks fail open */ }
   return [];
 }
@@ -286,7 +293,7 @@ export function sessionStart(e: Engine, ev: HookEvent): HookOutput {
 export function preCompact(e: Engine, ev: HookEvent): HookOutput {
   try {
     // Workers do not write session handovers; only the main session's compaction does.
-    if (!ev.agent_id && sessionTasks(e, ev.session_id).length > 0) saveSessionHandover(e, {}, { session_id: ev.session_id }, true);
+    if (!ev.agent_id && sessionTasks(e, ev.session_id).length > 0) saveSessionHandover(e, {}, { session_id: ev.session_id }, true, ev.cwd);
   } catch { /* fail open */ }
   return null;
 }

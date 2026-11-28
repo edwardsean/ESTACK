@@ -108,11 +108,12 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
       open_questions: z.array(z.string()).optional(),
       files: z.array(z.string()).optional().describe("files to re-read that git cannot see"),
       workers_done: z.boolean().optional().describe("override the check that no worker is mid-task"),
+      cwd: z.string().optional().describe("the caller's working directory; its checkout scopes who is offered the handover (stamped by the hook)"),
       actor: actorSchema,
     },
-  }, tool((e, a: { task_id?: number; goal?: string; plan?: string[]; decisions?: { what: string; why: string }[]; open_questions?: string[]; files?: string[]; workers_done?: boolean; actor?: Actor }, actor) => {
-    const { task_id, actor: _actor, ...input } = a;
-    const h = task_id !== undefined ? saveTaskHandover(e, task_id, input, actor) : saveSessionHandover(e, input, actor);
+  }, tool((e, a: { task_id?: number; goal?: string; plan?: string[]; decisions?: { what: string; why: string }[]; open_questions?: string[]; files?: string[]; workers_done?: boolean; cwd?: string; actor?: Actor }, actor) => {
+    const { task_id, actor: _actor, cwd, ...input } = a;
+    const h = task_id !== undefined ? saveTaskHandover(e, task_id, input, actor) : saveSessionHandover(e, input, actor, false, cwd);
     return { ...h, next: "Handover saved. Tell the owner: run /clear; the new session will load this automatically." };
   }));
 
@@ -121,10 +122,11 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
     inputSchema: {
       task_id: z.number().int().optional(),
       handover_id: z.number().int().optional().describe("the handover the owner chose, from the start-of-session list"),
+      cwd: z.string().optional().describe("the caller's working directory; with no selector only its checkout's handovers count (stamped by the hook)"),
       actor: actorSchema,
     },
-  }, tool((e, a: { task_id?: number; handover_id?: number; actor?: Actor }, actor) => {
-    const { handover, views } = consumeHandover(e, actor, { task_id: a.task_id, handover_id: a.handover_id });
+  }, tool((e, a: { task_id?: number; handover_id?: number; cwd?: string; actor?: Actor }, actor) => {
+    const { handover, views } = consumeHandover(e, actor, { task_id: a.task_id, handover_id: a.handover_id }, a.cwd);
     const body = handover?.body;
     const goal = (body?.kind === "session" ? (body as SessionHandoverBody).goal : "") || (views.length === 1 ? views[0].task.goal : "") || "(none recorded)";
     const next = views.map((v) => (v.next ? `#${v.task.id} ${v.next.name}` : `#${v.task.id} done`)).join(", ");
