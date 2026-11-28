@@ -2,7 +2,7 @@ import { passClaims, releaseClaims, releaseOnClose, removeOnClose, syncMerged } 
 import { mergeConflictGrants, recordMergeConflicts, recordOutcomes } from "./outcomes";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
-import { areaPath, claimInfo, gateStart, releaseStale } from "./plan";
+import { areaPath, claimInfo, gateStart, heldInArea, releaseStale, type HeldInArea } from "./plan";
 import { WORKTREE_ADD_TIMEOUT_MS, WORKTREE_SETUP_TIMEOUT_MS, ensureWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
 import {
   EngineError, STEP_EVIDENCE, actorId,
@@ -79,7 +79,7 @@ export function pushReadiness(e: Engine, branch: string): { task: Task | null; v
   return { task, verifySettled: verify?.status === "done" || verify?.status === "skipped" };
 }
 
-export interface StartResult extends TaskView { worktree_path?: string; setup?: { ok: boolean; output_tail: string } }
+export interface StartResult extends TaskView { worktree_path?: string; setup?: { ok: boolean; output_tail: string }; held_in_area: HeldInArea[] }
 
 /** The step list of a worker task: the type's steps with `pr` replaced by `merge`. */
 const workerSteps = (steps: string[]): string[] => steps.map((s) => (s === "pr" ? "merge" : s));
@@ -235,6 +235,10 @@ export function startTask(e: Engine, input: {
     else if (areas.length > 0) gateStart(e, input.actor, { fresh: { parent_id: parentId, group, areas } });
   };
   gate();
+  // Files in the task's areas that another feature already holds: a warning only, since the claim is enforced at edit time.
+  const held_in_area = heldInArea(e, {
+    id: planned?.id ?? null, parent_id: parentId, group, areas: planned ? (e.db.prepare("SELECT path FROM task_areas WHERE task_id = ? ORDER BY path").all(planned.id) as { path: string }[]).map((r) => r.path) : areas, cwd: worktree ? undefined : checkout,
+  });
   const by = actorId(input.actor);
   const now = iso(e);
 
@@ -262,7 +266,7 @@ export function startTask(e: Engine, input: {
       insertSteps(e, id, typeSteps);
       insertBinding(e, id, input.actor);
       logEvent(e, input.actor, "task_started", id, { type, title, branch });
-      return view(e, id);
+      return { ...view(e, id), held_in_area };
     });
   }
 
@@ -307,7 +311,7 @@ export function startTask(e: Engine, input: {
       insertSteps(e, id, parent ? workerSteps(typeSteps) : typeSteps);
       insertBinding(e, id, input.actor);
       logEvent(e, input.actor, "task_started", id, { type, title, branch });
-      return { ...view(e, id), worktree_path: path, ...(setup ? { setup } : {}) };
+      return { ...view(e, id), worktree_path: path, ...(setup ? { setup } : {}), held_in_area };
     });
   } catch (x) {
     // A new task stays cancelled; a planned one stays planned. No open task remains. A worktree already made is kept.

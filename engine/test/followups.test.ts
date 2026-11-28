@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import { allowEdit, checkEdit, keptWorktrees } from "../src/claims";
 import { openEngine, type Engine } from "../src/engine";
 import { initRepo } from "../src/policy";
+import { planTasks } from "../src/plan";
 import { recordOutcomes } from "../src/outcomes";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -158,5 +159,41 @@ describe("F5 status asks once", { timeout: 60_000 }, () => {
     await client.callTool({ name: "status", arguments: {} });
     expect(calls.filter((c) => c.startsWith("git fetch"))).toHaveLength(1);
     for (const f of [f1, f2]) expect(calls.filter((c) => c === `gh pr view ${f.branch} --json state`).length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("F4 held_in_area warning", { timeout: 60_000 }, () => {
+  const plan = (e: Engine, parent: Task, title: string, area: string[], group?: string) =>
+    planTasks(e, { parent_task_id: parent.id, actor: A, tasks: [{ title, type: "feature", goal: "g", done_check: "d", area, group }] });
+
+  test("plan_tasks lists files another feature holds inside the new task's areas, and not the family's", () => {
+    const dir = repo();
+    const e = openEngine(dir, { exec: fakeExec({}) });
+    const f1 = feature(e, dir, "one");
+    const f2 = feature(e, dir, "two");
+    checkEdit(e, f1, "src/a.ts");
+    checkEdit(e, f2, "src/own.ts");
+    checkEdit(e, f1, "docs/readme.md");
+    const r = plan(e, f2, "plan w", ["src"]);
+    expect(r.held_in_area).toEqual([{ path: "src/a.ts", task_id: f1.id, title: "one" }]);   // not f2's own file, not docs/
+    expect(plan(e, f2, "far", ["lib"]).held_in_area).toEqual([]);
+  });
+
+  test("start_task lists them too, and still starts the task", () => {
+    const dir = repo();
+    const e = openEngine(dir, { exec: fakeExec({}) });
+    const f1 = feature(e, dir, "one");
+    const f2 = feature(e, dir, "two");
+    checkEdit(e, f1, "src/a.ts");
+    const sibling = worker(e, f2, "sib");
+    checkEdit(e, sibling, "src/sib.ts");
+    const w = startTask(e, { title: "w", type: "feature", goal: "g", done_check: "d", actor: A, cwd: f2.cwd, parent_task_id: f2.id, area: ["src"], group: "g1" });
+    expect(w.task.status).toBe("open");
+    expect(w.held_in_area).toEqual([
+      { path: "src/a.ts", task_id: f1.id, title: "one" },
+      { path: "src/sib.ts", task_id: sibling.id, title: "sib" },   // another group: it would block the edit
+    ]);
+    const clear = startTask(e, { title: "x", type: "feature", goal: "g", done_check: "d", actor: A, cwd: f2.cwd, parent_task_id: f2.id, area: ["lib"] });
+    expect(clear.held_in_area).toEqual([]);
   });
 });
