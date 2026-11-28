@@ -14657,7 +14657,19 @@ CREATE INDEX code_queries_task_actor ON code_queries(task_id, recorded_by);
 var MIGRATION_4 = `
 ALTER TABLE handovers ADD COLUMN checkout TEXT;
 `;
-var MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4];
+var MIGRATION_5 = `
+ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN task_group TEXT;
+CREATE TABLE task_areas (task_id INTEGER NOT NULL REFERENCES tasks(id), path TEXT NOT NULL, PRIMARY KEY (task_id, path));
+CREATE TABLE task_deps (task_id INTEGER NOT NULL REFERENCES tasks(id), depends_on INTEGER NOT NULL REFERENCES tasks(id), PRIMARY KEY (task_id, depends_on));
+CREATE TABLE plan_items (task_id INTEGER NOT NULL REFERENCES tasks(id), adds TEXT NOT NULL, PRIMARY KEY (task_id, adds));
+CREATE TABLE overlap_accepts (a INTEGER NOT NULL REFERENCES tasks(id), b INTEGER NOT NULL REFERENCES tasks(id), reason TEXT NOT NULL, by TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (a, b));
+CREATE TABLE claims (id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, at TEXT NOT NULL, released_at TEXT);
+CREATE UNIQUE INDEX claims_active ON claims(kind, target) WHERE status = 'active';
+CREATE TABLE claim_grants (id INTEGER PRIMARY KEY, claim_id INTEGER NOT NULL REFERENCES claims(id), task_id INTEGER NOT NULL REFERENCES tasks(id), path TEXT NOT NULL, reason TEXT NOT NULL, by TEXT NOT NULL, at TEXT NOT NULL, outcome TEXT, outcome_at TEXT);
+CREATE INDEX claim_grants_task_path ON claim_grants(task_id, path);
+`;
+var MIGRATIONS = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5];
 function openDb(path) {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA busy_timeout=5000");
@@ -34461,7 +34473,8 @@ var STEP_EVIDENCE = {
   test: "command",
   verify: "command",
   review: "review",
-  pr: "pr"
+  pr: "pr",
+  merge: "merged"
 };
 
 // engine/src/repo.ts
@@ -34482,6 +34495,19 @@ function findRepo(cwd) {
 }
 
 // engine/src/policy.ts
+var DEFAULT_CLAIMS_EXEMPT = [
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lockb",
+  "Cargo.lock",
+  "poetry.lock",
+  "uv.lock",
+  "go.sum",
+  "Gemfile.lock",
+  "composer.lock"
+];
 var strings = external_exports.array(external_exports.string());
 var PolicySchema = external_exports.object({
   actions: external_exports.object({ auto: strings, ask: strings, deny: strings }),
@@ -34493,12 +34519,13 @@ var PolicySchema = external_exports.object({
   })),
   protected_paths: strings.default([]),
   exempt_paths: strings.default([]),
-  commands: external_exports.object({ test: external_exports.string().optional(), verify: external_exports.string().optional() }).default({}),
+  commands: external_exports.object({ test: external_exports.string().optional(), verify: external_exports.string().optional(), worktree_setup: external_exports.string().optional() }).default({}),
   handover: external_exports.object({
     threshold: external_exports.number().gt(0).max(1).default(0.5),
     window_tokens: external_exports.number().int().positive().default(2e5)
   }).default({ threshold: 0.5, window_tokens: 2e5 }),
-  code_map: external_exports.object({ enabled: external_exports.boolean().default(false), exclude: strings.default([]) }).default({ enabled: false, exclude: [] })
+  code_map: external_exports.object({ enabled: external_exports.boolean().default(false), exclude: strings.default([]) }).default({ enabled: false, exclude: [] }),
+  claims: external_exports.object({ exempt: strings.default(DEFAULT_CLAIMS_EXEMPT) }).default({ exempt: DEFAULT_CLAIMS_EXEMPT })
 });
 function parsePolicy(yamlText) {
   let raw;
@@ -34541,6 +34568,9 @@ exempt_paths: ["**/*.md", ".estack/brief.md", "docs/**"]   # editable with no ta
 commands:                 # the engine runs these itself for test and verify (section 7, Evidence)
   test:   "npm test"
   verify: "npm run build && npm run test:e2e"
+  # worktree_setup: "npm ci"   # run in each new worktree the engine makes (optional)
+claims:                   # files that parallel tasks may all edit; never held (lockfiles and the like)
+  exempt: ${JSON.stringify(DEFAULT_CLAIMS_EXEMPT)}
 code_map:                 # Graphify code map (section 9 of the design)
   enabled: ${opts.codeMap}   # false when Graphify is missing or finds no supported language
   exclude: ${JSON.stringify(opts.exclude)}      # generated or copied code, kept out of the map

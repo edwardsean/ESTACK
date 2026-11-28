@@ -12,10 +12,14 @@ export interface Policy {
   task_types: Record<string, string[]>;
   protected_paths: string[];
   exempt_paths: string[];
-  commands: { test?: string; verify?: string };
+  commands: { test?: string; verify?: string; worktree_setup?: string };
   handover: { threshold: number; window_tokens: number };
   code_map: { enabled: boolean; exclude: string[] };
+  claims: { exempt: string[] };
 }
+
+const DEFAULT_CLAIMS_EXEMPT = ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb",
+  "Cargo.lock", "poetry.lock", "uv.lock", "go.sum", "Gemfile.lock", "composer.lock"];
 
 const strings = z.array(z.string());
 const PolicySchema = z.object({
@@ -28,12 +32,13 @@ const PolicySchema = z.object({
   })),
   protected_paths: strings.default([]),
   exempt_paths: strings.default([]),
-  commands: z.object({ test: z.string().optional(), verify: z.string().optional() }).default({}),
+  commands: z.object({ test: z.string().optional(), verify: z.string().optional(), worktree_setup: z.string().optional() }).default({}),
   handover: z.object({
     threshold: z.number().gt(0).max(1).default(0.5),
     window_tokens: z.number().int().positive().default(200000),
   }).default({ threshold: 0.5, window_tokens: 200000 }),
   code_map: z.object({ enabled: z.boolean().default(false), exclude: strings.default([]) }).default({ enabled: false, exclude: [] }),
+  claims: z.object({ exempt: strings.default(DEFAULT_CLAIMS_EXEMPT) }).default({ exempt: DEFAULT_CLAIMS_EXEMPT }),
 });
 
 export function parsePolicy(yamlText: string): Policy {
@@ -79,6 +84,9 @@ exempt_paths: ["**/*.md", ".estack/brief.md", "docs/**"]   # editable with no ta
 commands:                 # the engine runs these itself for test and verify (section 7, Evidence)
   test:   "npm test"
   verify: "npm run build && npm run test:e2e"
+  # worktree_setup: "npm ci"   # run in each new worktree the engine makes (optional)
+claims:                   # files that parallel tasks may all edit; never held (lockfiles and the like)
+  exempt: ${JSON.stringify(DEFAULT_CLAIMS_EXEMPT)}
 code_map:                 # Graphify code map (section 9 of the design)
   enabled: ${opts.codeMap}   # false when Graphify is missing or finds no supported language
   exclude: ${JSON.stringify(opts.exclude)}      # generated or copied code, kept out of the map
