@@ -136,15 +136,15 @@ describe("plan_tasks", () => {
     const f2 = feature(e, dir, cto2, "Two");
     const a = planTasks(e, { parent_task_id: f1.task.id, actor: cto, tasks: [item("A", ["src/a"])] }).tasks[0].task.id;
     const b = planTasks(e, { parent_task_id: f2.task.id, actor: cto2, tasks: [item("B", ["src/b"], { depends_on: [a] })] }).tasks[0].task.id;
-    gh[`pr view ${f1.task.branch} --json state`] = { code: 0, stdout: JSON.stringify({ state: "MERGED" }) };
+    gh[`pr view ${f1.task.branch} --json state,mergeable`] = { code: 0, stdout: JSON.stringify({ state: "MERGED" }) };
     // A never ran, so even a merged feature does not finish it.
     expect(code(() => begin(e, f2, b, cto2)).code).toBe("DEPENDENCY");
     begin(e, f1, a);
     e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name = 'merge'").run(a);
     insertEvidence(e, a, "merge", "merged", true, { head: "abc123", into: f1.task.branch }, cto);
-    gh[`pr view ${f1.task.branch} --json state`] = { code: 0, stdout: JSON.stringify({ state: "OPEN" }) };
+    gh[`pr view ${f1.task.branch} --json state,mergeable`] = { code: 0, stdout: JSON.stringify({ state: "OPEN" }) };
     expect(code(() => begin(e, f2, b, cto2)).code).toBe("DEPENDENCY");
-    gh[`pr view ${f1.task.branch} --json state`] = { code: 0, stdout: JSON.stringify({ state: "MERGED" }) };
+    gh[`pr view ${f1.task.branch} --json state,mergeable`] = { code: 0, stdout: JSON.stringify({ state: "MERGED" }) };
     expect(begin(e, f2, b, cto2).task.status).toBe("open");
   });
 

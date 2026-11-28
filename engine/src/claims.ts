@@ -4,7 +4,7 @@ import type { Engine } from "./engine";
 import { isExempt, pathMatches } from "./match";
 import { normaliseName, topLevelFunctions } from "./duplicates";
 import { loadGraph } from "./graph";
-import { OutOfBudget, areaPath, mergeCheck, mergedIntoMain, prState } from "./plan";
+import { OutOfBudget, areaPath, mergeCheck, mergedIntoMain, prState, type MergeCheck } from "./plan";
 import { HOOK_GIT_TIMEOUT_MS, logEvent, ownsTask, runBounded, tx } from "./tasks";
 import { EngineError, actorId, type Actor, type Task } from "./types";
 import { WORKTREES_DIR, removeWorktree } from "./worktree";
@@ -101,9 +101,32 @@ export function releaseClaims(e: Engine, task: Task, actor: Actor, reason?: stri
  * closes. Call inside the transaction that closes it.
  */
 export function releaseOnClose(e: Engine, task_id: number, actor: Actor): void {
-  if (e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id)) return;
+  if (hasPrOrMergeStep(e, task_id)) return;
   const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id) as unknown as Task | undefined;
   if (task) releaseClaims(e, task, actor, "closed with no pr or merge step");
+}
+
+/**
+ * A worker that closed with neither a `pr` nor a `merge` step (a worker spike) is never merged, so nothing else removes
+ * its worktree: remove it now, after the closing transaction. Dirty and nested worktrees are kept and reported, never forced.
+ */
+export function removeOnClose(e: Engine, task_id: number): void {
+  const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id) as unknown as Task | undefined;
+  if (!task || task.parent_id === null || task.status !== "done") return;
+  if (hasPrOrMergeStep(e, task_id)) return;
+  removeWorktreeLogged(e, task);
+}
+
+/** True when the task has a `pr` or `merge` step, so its work reaches main and is released with it. */
+function hasPrOrMergeStep(e: Engine, task_id: number): boolean {
+  return e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id) !== undefined;
+}
+
+/** removeWorktree, where a failure is logged as a kept worktree instead of thrown (the step it follows is already recorded). */
+export function removeWorktreeLogged(e: Engine, task: Task): void {
+  try { removeWorktree(e, task); } catch (x) {
+    logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason: x instanceof Error ? x.message : String(x) });
+  }
 }
 
 /** Release one active claim and hand a file to the newest open grant. Not transactional itself. */
@@ -131,7 +154,7 @@ export const SYNC_BUDGET_MS = 10_000;
  * once per branch and origin fetched at most once per call, within SYNC_BUDGET_MS. A failing check leaves the feature
  * alone until the next call.
  */
-export function syncMerged(e: Engine, opts: { budget_ms?: number } = {}): void {
+export function syncMerged(e: Engine, opts: { budget_ms?: number; check?: MergeCheck } = {}): void {
   const rows = e.db.prepare(
     `SELECT * FROM tasks WHERE parent_id IS NULL AND status = 'done' AND (
        id IN (SELECT task_id FROM claims WHERE status = 'active') OR cwd LIKE '%/' || ? || '/%') ORDER BY id`,
@@ -141,7 +164,7 @@ export function syncMerged(e: Engine, opts: { budget_ms?: number } = {}): void {
     hasClaims: e.db.prepare("SELECT 1 FROM claims WHERE task_id = ? AND status = 'active'").get(task.id) !== undefined,
     hasTree: task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync(task.cwd),
   })).filter((x) => x.hasClaims || x.hasTree);
-  const check = mergeCheck(opts.budget_ms ?? SYNC_BUDGET_MS);
+  const check = opts.check ?? mergeCheck(opts.budget_ms ?? SYNC_BUDGET_MS);
   for (const { task, hasClaims, hasTree } of todo) {
     if (Date.now() >= check.deadline) return;
     try {

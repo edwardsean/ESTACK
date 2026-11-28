@@ -1,12 +1,13 @@
 import { existsSync } from "node:fs";
+import { SYNC_BUDGET_MS, syncMerged } from "./claims";
 import type { Engine } from "./engine";
-import { OutOfBudget, mergeCheck, mergedIntoMain, type MergeCheck } from "./plan";
+import { OutOfBudget, mergeCheck, mergedIntoMain, prMergeable, type MergeCheck } from "./plan";
 import { EVIDENCE_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, logEvent, tx } from "./tasks";
 import type { Actor, Task } from "./types";
 
 const ENGINE: Actor = { session_id: "engine" };
 type Outcome = "conflict" | "holder_failed" | "clean";
-interface Grant { id: number; claim_id: number; task_id: number; path: string; at: string }
+export interface Grant { id: number; claim_id: number; task_id: number; path: string; at: string }
 
 const getTask = (e: Engine, id: number): Task | undefined =>
   e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as unknown as Task | undefined;
@@ -49,13 +50,7 @@ function prConflicting(e: Engine, c: Ctx, f: Task): boolean {
   const known = c.mergeable.get(f.id);
   if (known !== undefined) return known;
   checkBudget(c);
-  let bad = false;
-  if (f.branch) {
-    const pr = e.exec.run("gh", ["pr", "view", f.branch, "--json", "mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-    if (pr.code === 0) {
-      try { bad = (JSON.parse(pr.stdout) as { mergeable?: unknown }).mergeable === "CONFLICTING"; } catch { /* not conflicting as far as we know */ }
-    }
-  }
+  const bad = f.branch ? prMergeable(e, c.check, f.branch) === "CONFLICTING" : false;
   c.mergeable.set(f.id, bad);
   return bad;
 }
@@ -122,13 +117,16 @@ function judge(e: Engine, c: Ctx, g: Grant): Outcome | null {
   return finished(e, c, grantee, holder) ? "clean" : null;
 }
 
+/** Write one grant's outcome, once. Not transactional itself: call it inside `tx`. */
+function writeOutcome(e: Engine, g: Grant, outcome: Outcome): void {
+  const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL")
+    .run(outcome, e.now().toISOString(), g.id);
+  if (r.changes === 1) logEvent(e, ENGINE, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
+}
+
 /** Record one grant's outcome, once. */
 function setOutcome(e: Engine, g: Grant, outcome: Outcome): void {
-  tx(e, () => {
-    const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL")
-      .run(outcome, e.now().toISOString(), g.id);
-    if (r.changes === 1) logEvent(e, ENGINE, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
-  });
+  tx(e, () => writeOutcome(e, g, outcome));
 }
 
 /**
@@ -161,24 +159,29 @@ export function mergeConflicts(e: Engine, cwd: string, branch: string, head: str
 }
 
 /**
- * A worker's merge into its feature just completed: every open grant on a path that conflicted in that merge, held by or
- * granted to the worker or the feature, is a conflict, even though the CTO resolved and committed it before the step.
- * Runs before any clean check; never throws.
+ * A worker's merge into its feature is about to be recorded: the open grants on a path that conflicted in that merge and
+ * whose both sides are inside the feature (the worker, the feature itself or another worker of it) are conflicts, even
+ * though the CTO resolved and committed the merge before the step. A cross-feature grant is not, whoever's change the
+ * path conflicted with. Runs git, so call it before the step's transaction; never throws.
  */
-export function recordMergeConflicts(e: Engine, worker: Task, feature: Task, head: string): void {
+export function mergeConflictGrants(e: Engine, worker: Task, feature: Task, head: string): Grant[] {
   try {
     const paths = new Set(mergeConflicts(e, feature.cwd && existsSync(feature.cwd) ? feature.cwd : e.repo.root, feature.branch, head));
-    if (paths.size === 0) return;
-    const involved = new Set([worker.id, feature.id]);
-    const grants = (e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all() as unknown as Grant[])
-      .filter((g) => paths.has(g.path));
-    for (const g of grants) {
-      const holder = holderAtGrant(e, g);
-      if (!involved.has(g.task_id) && !(holder !== undefined && involved.has(holder))) continue;
-      const cancelled = [g.task_id, holder].some((id) => id !== undefined && getTask(e, id)?.status === "cancelled");
-      if (!cancelled) setOutcome(e, g, "conflict");
-    }
-  } catch { /* left for recordOutcomes */ }
+    if (paths.size === 0) return [];
+    const inside = new Set([worker.id, feature.id,
+      ...(e.db.prepare("SELECT id FROM tasks WHERE parent_id = ?").all(feature.id) as { id: number }[]).map((r) => r.id)]);
+    return (e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all() as unknown as Grant[])
+      .filter((g) => paths.has(g.path)).filter((g) => {
+        const holder = holderAtGrant(e, g);
+        if (holder === undefined || !inside.has(g.task_id) || !inside.has(holder)) return false;
+        return ![g.task_id, holder].some((id) => getTask(e, id)?.status === "cancelled");
+      });
+  } catch { return []; }
+}
+
+/** Mark grants conflicts. Call it inside the transaction that records the merge step, so no status call can record clean first. */
+export function recordMergeConflicts(e: Engine, grants: Grant[]): void {
+  for (const g of grants) writeOutcome(e, g, "conflict");
 }
 
 /**
@@ -188,9 +191,9 @@ export function recordMergeConflicts(e: Engine, worker: Task, feature: Task, hea
  * or fetch; `remote: true` (status) adds the pull request and merged-into-main checks, asked once per feature. The call
  * stops when its time budget is spent, leaving the remaining grants for next time.
  */
-export function recordOutcomes(e: Engine, opts: { remote?: boolean; budget_ms?: number } = {}): void {
+export function recordOutcomes(e: Engine, opts: { remote?: boolean; budget_ms?: number; check?: MergeCheck } = {}): void {
   const budget = opts.budget_ms ?? OUTCOME_BUDGET_MS;
-  const c: Ctx = { remote: opts.remote ?? true, deadline: Date.now() + budget, check: mergeCheck(budget), mergeable: new Map(), merged: new Map() };
+  const c: Ctx = { remote: opts.remote ?? true, deadline: Date.now() + budget, check: opts.check ?? mergeCheck(budget), mergeable: new Map(), merged: new Map() };
   let grants: Grant[];
   try {
     grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all() as unknown as Grant[];
@@ -202,4 +205,12 @@ export function recordOutcomes(e: Engine, opts: { remote?: boolean; budget_ms?: 
       if (outcome) setOutcome(e, g, outcome);
     } catch { /* tried again next time */ }
   }
+}
+
+/** What status does first: merge syncing and remote outcomes, sharing one MergeCheck so origin is fetched at most once and gh asked once per branch. */
+export function refreshStatus(e: Engine): void {
+  const check = mergeCheck(SYNC_BUDGET_MS);
+  syncMerged(e, { check });
+  check.deadline = Date.now() + OUTCOME_BUDGET_MS;   // the outcomes get their own budget, whatever syncMerged used
+  recordOutcomes(e, { remote: true, check });
 }

@@ -233,7 +233,7 @@ describe("file claims", { timeout: 60_000 }, () => {
 
   test("a feature merged into main gives up its claims and its engine-made worktree, at start_task time", () => {
     const dir = repo();
-    const gh = (state: string) => ({ exec: fakeExec({ "pr view feat/1-feat --json state": { code: 0, stdout: JSON.stringify({ state }) } }) });
+    const gh = (state: string) => ({ exec: fakeExec({ "pr view feat/1-feat --json state,mergeable": { code: 0, stdout: JSON.stringify({ state }) } }) });
     const e = openEngine(dir, gh("OPEN"));
     const f = feature(e, dir, A, "feat");
     expect(f.branch).toBe("feat/1-feat");
@@ -386,8 +386,8 @@ describe("file claims", { timeout: 60_000 }, () => {
       done.push(f);
     }
     // Two have an open PR, two have none; none is merged into main.
-    responses[`pr view ${done[0].branch} --json state`] = { code: 0, stdout: JSON.stringify({ state: "OPEN" }) };
-    responses[`pr view ${done[1].branch} --json state`] = { code: 0, stdout: JSON.stringify({ state: "OPEN" }) };
+    responses[`pr view ${done[0].branch} --json state,mergeable`] = { code: 0, stdout: JSON.stringify({ state: "OPEN" }) };
+    responses[`pr view ${done[1].branch} --json state,mergeable`] = { code: 0, stdout: JSON.stringify({ state: "OPEN" }) };
     seen.gh = [];
     seen.fetches = 0;
     syncMerged(e);
@@ -405,7 +405,7 @@ describe("file claims", { timeout: 60_000 }, () => {
 
   test("a done feature whose pr was closed unmerged releases its claims with a reason", () => {
     const dir = repo();
-    const e = openEngine(dir, { exec: fakeExec({ "pr view feat/1-feat --json state": { code: 0, stdout: JSON.stringify({ state: "CLOSED" }) } }) });
+    const e = openEngine(dir, { exec: fakeExec({ "pr view feat/1-feat --json state,mergeable": { code: 0, stdout: JSON.stringify({ state: "CLOSED" }) } }) });
     const f = feature(e, dir, A, "feat");
     checkEdit(e, f, "src/a.ts");
     git(f.cwd, "commit", "--allow-empty", "-m", "work");
@@ -458,7 +458,7 @@ const code = (fn: () => unknown): EngineError => { try { fn(); } catch (x) { ret
 describe("claims fixes carried from task 5", { timeout: 60_000 }, () => {
   test("an open feature whose pr gh reports merged keeps its worktree and claims (only done tasks are synced)", () => {
     const dir = repo();
-    const e = openEngine(dir, { exec: fakeExec({ "pr view feat/1-feat --json state": { code: 0, stdout: JSON.stringify({ state: "MERGED" }) } }) });
+    const e = openEngine(dir, { exec: fakeExec({ "pr view feat/1-feat --json state,mergeable": { code: 0, stdout: JSON.stringify({ state: "MERGED" }) } }) });
     const f = feature(e, dir, A, "feat");
     checkEdit(e, f, "src/a.ts");
     git(f.cwd, "commit", "--allow-empty", "-m", "work");

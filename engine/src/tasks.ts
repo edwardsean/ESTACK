@@ -1,9 +1,9 @@
-import { passClaims, releaseClaims, releaseOnClose, syncMerged } from "./claims";
-import { recordMergeConflicts, recordOutcomes } from "./outcomes";
+import { passClaims, releaseClaims, releaseOnClose, removeOnClose, removeWorktreeLogged, syncMerged } from "./claims";
+import { mergeConflictGrants, recordMergeConflicts, recordOutcomes } from "./outcomes";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
-import { areaPath, claimInfo, gateStart, releaseStale } from "./plan";
-import { WORKTREE_ADD_TIMEOUT_MS, WORKTREE_SETUP_TIMEOUT_MS, ensureWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
+import { areaPath, claimInfo, gateStart, heldInArea, releaseStale, type HeldInArea } from "./plan";
+import { WORKTREE_ADD_TIMEOUT_MS, WORKTREE_SETUP_TIMEOUT_MS, ensureWorktree, ensureWorktreeExclude, runWorktreeSetup, slug } from "./worktree";
 import {
   EngineError, STEP_EVIDENCE, actorId,
   type Actor, type Evidence, type EvidenceKind, type Step, type Task,
@@ -79,7 +79,7 @@ export function pushReadiness(e: Engine, branch: string): { task: Task | null; v
   return { task, verifySettled: verify?.status === "done" || verify?.status === "skipped" };
 }
 
-export interface StartResult extends TaskView { worktree_path?: string; setup?: { ok: boolean; output_tail: string } }
+export interface StartResult extends TaskView { worktree_path?: string; setup?: { ok: boolean; output_tail: string }; held_in_area: HeldInArea[] }
 
 /** The step list of a worker task: the type's steps with `pr` replaced by `merge`. */
 const workerSteps = (steps: string[]): string[] => steps.map((s) => (s === "pr" ? "merge" : s));
@@ -235,6 +235,10 @@ export function startTask(e: Engine, input: {
     else if (areas.length > 0) gateStart(e, input.actor, { fresh: { parent_id: parentId, group, areas } });
   };
   gate();
+  // Files in the task's areas that another feature already holds: a warning only, since the claim is enforced at edit time.
+  const held_in_area = heldInArea(e, {
+    id: planned?.id ?? null, parent_id: parentId, group, areas: planned ? (e.db.prepare("SELECT path FROM task_areas WHERE task_id = ? ORDER BY path").all(planned.id) as { path: string }[]).map((r) => r.path) : areas, cwd: worktree ? undefined : checkout,
+  });
   const by = actorId(input.actor);
   const now = iso(e);
 
@@ -262,7 +266,7 @@ export function startTask(e: Engine, input: {
       insertSteps(e, id, typeSteps);
       insertBinding(e, id, input.actor);
       logEvent(e, input.actor, "task_started", id, { type, title, branch });
-      return view(e, id);
+      return { ...view(e, id), held_in_area };
     });
   }
 
@@ -307,7 +311,7 @@ export function startTask(e: Engine, input: {
       insertSteps(e, id, parent ? workerSteps(typeSteps) : typeSteps);
       insertBinding(e, id, input.actor);
       logEvent(e, input.actor, "task_started", id, { type, title, branch });
-      return { ...view(e, id), worktree_path: path, ...(setup ? { setup } : {}) };
+      return { ...view(e, id), worktree_path: path, ...(setup ? { setup } : {}), held_in_area };
     });
   } catch (x) {
     // A new task stays cancelled; a planned one stays planned. No open task remains. A worktree already made is kept.
@@ -437,6 +441,11 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
   if (input.evidence.kind !== required) bad(`step "${input.step}" needs ${required} evidence, got ${input.evidence.kind}`);
   // Spawning git/gh happens before BEGIN IMMEDIATE so a slow check never holds the write lock.
   const { payload, rejected } = checkEvidence(e, v, input.step, input.evidence, input.actor);
+  // The merge's conflicting paths are found here, outside the lock, and written in the same transaction as the step,
+  // so another session's status cannot record the grant clean in between.
+  const mergeFeature = input.step === "merge" && !rejected && v.task.parent_id !== null
+    ? e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task | undefined : undefined;
+  const conflicts = mergeFeature && typeof payload.head === "string" ? mergeConflictGrants(e, v.task, mergeFeature, payload.head) : [];
   const result = tx(e, () => {
     // Re-check under the write lock: the task may have moved while the evidence was checked.
     assertNext(view(e, input.task_id), input.step);
@@ -448,6 +457,7 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
     const closed = finishStep(e, v.task.id, input.step, input.actor);
     logEvent(e, input.actor, "step_done", v.task.id, { step: input.step, kind: required, closed });
     if (input.step === "merge" && v.task.parent_id !== null) {
+      recordMergeConflicts(e, conflicts);
       const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task;
       // A cancelled or finished feature has no one to hold the files: they are released, not passed.
       if (feature.status === "open") passClaims(e, v.task, feature, input.actor);
@@ -457,15 +467,11 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
   });
   if (!result) return bad(rejected ?? "evidence rejected");
   if (input.step === "merge") {
-    // Paths that conflicted in this merge make their grants conflicts, before the clean check below can call them clean.
-    const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task | undefined;
-    if (feature && typeof payload.head === "string") recordMergeConflicts(e, v.task, feature, payload.head);
     // The worker is merged: its worktree goes (kept if dirty). The step is already recorded, so a failure here does not undo it.
-    try { removeWorktree(e, v.task); } catch (x) {
-      logEvent(e, { session_id: "engine" }, "worktree_kept", v.task.id, { path: v.task.cwd, reason: x instanceof Error ? x.message : String(x) });
-    }
+    removeWorktreeLogged(e, v.task);
     logEvent(e, input.actor, "task_merged", v.task.id, { into: payload.into });
   }
+  if (result.task.status === "done") removeOnClose(e, v.task.id);
   recordOutcomes(e, { remote: false });
   return result;
 }

@@ -3,7 +3,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Engine } from "./engine";
 import { normaliseName, topLevelFunctions } from "./duplicates";
 import { loadGraph } from "./graph";
-import { releaseClaims } from "./claims";
+import { hasGrant, releaseClaims } from "./claims";
 import {
   EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, STALE_CLAIM_MS, defaultBranch, getTask, logEvent, ownsTask, runBounded, tx, type TaskView,
 } from "./tasks";
@@ -119,6 +119,31 @@ function others(e: Engine, s: Subject): Subject[] {
     .map((t) => subjectOf(e, t));
 }
 
+export interface HeldInArea { path: string; task_id: number; title: string }
+
+/**
+ * Active file claims inside a task's areas that the task would be blocked by at edit time: held by a task that is not
+ * itself, its parent or child, its group under the same feature, or (when `cwd` is given, a task with no worktree of its
+ * own) in the same checkout, and that has not granted it the file. A warning for the CTO, never a refusal.
+ */
+export function heldInArea(e: Engine, s: { id: number | null; parent_id: number | null; group: string | null; areas: string[]; cwd?: string }): HeldInArea[] {
+  if (s.areas.length === 0) return [];
+  const rows = e.db.prepare(
+    `SELECT c.target AS path, t.* FROM claims c JOIN tasks t ON t.id = c.task_id
+     WHERE c.kind = 'file' AND c.status = 'active' ORDER BY c.id`,
+  ).all() as unknown as (Task & { path: string })[];
+  const out: HeldInArea[] = [];
+  for (const { path, ...holder } of rows) {
+    if (!s.areas.some((a) => a === "" || path === a || path.startsWith(`${a}/`))) continue;
+    const family = holder.id === s.id || holder.id === s.parent_id || (s.id !== null && holder.parent_id === s.id);
+    const sameGroup = s.group !== null && holder.task_group === s.group && holder.parent_id === s.parent_id;
+    const sameCheckout = s.cwd !== undefined && holder.cwd === s.cwd;
+    const granted = s.id !== null && hasGrant(e, s.id, path);
+    if (!family && !sameGroup && !sameCheckout && !granted) out.push({ path, task_id: holder.id, title: holder.title });
+  }
+  return out;
+}
+
 function overlapsOf(e: Engine, s: Subject): Overlap[] {
   const raw = [...others(e, s).flatMap((o) => between(s, o)), ...existing(e, s)];
   return raw.map((o) => ({ ...o, resolved: isResolved(e, o) }));
@@ -144,7 +169,7 @@ export function releaseStale(e: Engine): void {
   }
 }
 
-export function planTasks(e: Engine, input: { parent_task_id: number; tasks: PlanTaskInput[]; actor: Actor }): { tasks: TaskView[]; overlaps: Overlap[] } {
+export function planTasks(e: Engine, input: { parent_task_id: number; tasks: PlanTaskInput[]; actor: Actor }): { tasks: TaskView[]; overlaps: Overlap[]; held_in_area: HeldInArea[] } {
   releaseStale(e);
   const parent = getRow(e, input.parent_task_id);
   if (!parent || !ownsTask(e, input.actor.session_id, parent.id)) {
@@ -201,7 +226,12 @@ export function planTasks(e: Engine, input: { parent_task_id: number; tasks: Pla
     return seen.has(k) ? false : (seen.add(k), true);
   });
   for (const o of overlaps) if (!o.resolved) logEvent(e, input.actor, "overlap_found", o.a, o);
-  return { tasks: ids.map((id) => getTask(e, id)), overlaps };
+  // Planned tasks are workers, each with its own worktree, so no checkout is shared with a holder.
+  const held = new Map<string, HeldInArea>();
+  for (const [i, id] of ids.entries()) {
+    for (const h of heldInArea(e, { id, parent_id: parent.id, group: input.tasks[i].group ?? null, areas: areas[i] })) held.set(`${h.task_id}/${h.path}`, h);
+  }
+  return { tasks: ids.map((id) => getTask(e, id)), overlaps, held_in_area: [...held.values()] };
 }
 
 export function acceptOverlap(e: Engine, input: { a: number; b: number; reason: string; by: string; owner: boolean; actor?: Actor }): void {
@@ -285,25 +315,33 @@ export class OutOfBudget extends Error {}
  * One call's view of merge state: gh is asked once per branch, origin is fetched at most once and main is looked up once,
  * and nothing more is asked after the deadline (OutOfBudget).
  */
-export interface MergeCheck { deadline: number; states: Map<string, string | null>; main?: string | null }
-export const mergeCheck = (budget_ms = Infinity): MergeCheck => ({ deadline: Date.now() + budget_ms, states: new Map() });
+export interface PrInfo { state: string | null; mergeable: string | null }
+export interface MergeCheck { deadline: number; prs: Map<string, PrInfo>; main?: string | null }
+export const mergeCheck = (budget_ms = Infinity): MergeCheck => ({ deadline: Date.now() + budget_ms, prs: new Map() });
 
-/** The state gh reports for the branch's pull request (OPEN, CLOSED, MERGED), or null when it has none; asked once per branch per check. */
-export function prState(e: Engine, c: MergeCheck, branch: string): string | null {
-  const known = c.states.get(branch);
-  if (known !== undefined) return known;
+/** What gh reports for the branch's pull request (state and mergeable), nulls when it has none; one gh call per branch per check. */
+function prInfo(e: Engine, c: MergeCheck, branch: string): PrInfo {
+  const known = c.prs.get(branch);
+  if (known) return known;
   if (Date.now() >= c.deadline) throw new OutOfBudget();
-  const pr = e.exec.run("gh", ["pr", "view", branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-  let state: string | null = null;
+  const pr = e.exec.run("gh", ["pr", "view", branch, "--json", "state,mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  const info: PrInfo = { state: null, mergeable: null };
   if (pr.code === 0) {
     try {
-      const s = (JSON.parse(pr.stdout) as { state?: unknown }).state;
-      if (typeof s === "string") state = s;
-    } catch { /* no state as far as we know */ }
+      const j = JSON.parse(pr.stdout) as { state?: unknown; mergeable?: unknown };
+      if (typeof j.state === "string") info.state = j.state;
+      if (typeof j.mergeable === "string") info.mergeable = j.mergeable;
+    } catch { /* nothing known */ }
   }
-  c.states.set(branch, state);
-  return state;
+  c.prs.set(branch, info);
+  return info;
 }
+
+/** The state gh reports for the branch's pull request (OPEN, CLOSED, MERGED), or null when it has none. */
+export const prState = (e: Engine, c: MergeCheck, branch: string): string | null => prInfo(e, c, branch).state;
+
+/** The mergeable value gh reports (MERGEABLE, CONFLICTING, UNKNOWN), or null. */
+export const prMergeable = (e: Engine, c: MergeCheck, branch: string): string | null => prInfo(e, c, branch).mergeable;
 
 /** The ref main is: origin/<default> after one bounded fetch, or the local default branch without origin; null with no default branch. */
 function mainRef(e: Engine, c: MergeCheck): string | null {

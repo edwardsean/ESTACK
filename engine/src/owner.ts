@@ -1,4 +1,4 @@
-import { allowEdit, keptWorktrees, releaseClaim, releaseClaims, releaseOnClose, releaseTaskClaims, type KeptWorktree } from "./claims";
+import { allowEdit, keptWorktrees, releaseClaim, releaseClaims, releaseOnClose, releaseTaskClaims, removeOnClose, type KeptWorktree } from "./claims";
 import { acceptOverlap } from "./plan";
 import type { Engine } from "./engine";
 import { getTask, logEvent, tx, type TaskView } from "./tasks";
@@ -21,7 +21,7 @@ function needReason(reason: string): void {
 export function skipStep(e: Engine, input: { task_id: number; step: string; reason: string }, env: NodeJS.ProcessEnv): TaskView {
   assertOwner(env);
   needReason(input.reason);
-  return tx(e, () => {
+  const view = tx(e, () => {
     const v = getTask(e, input.task_id);
     if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
     if (!v.next || v.next.name !== input.step) {
@@ -36,6 +36,8 @@ export function skipStep(e: Engine, input: { task_id: number; step: string; reas
     if (closed) releaseOnClose(e, input.task_id, OWNER);
     return getTask(e, input.task_id);
   });
+  if (view.task.status === "done") removeOnClose(e, input.task_id);
+  return view;
 }
 
 export interface CancelResult extends TaskView { cancelled: number[]; kept_worktrees: KeptWorktree[] }
