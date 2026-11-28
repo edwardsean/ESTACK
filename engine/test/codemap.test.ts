@@ -6,7 +6,9 @@ import { openEngine } from "../src/engine";
 import { initRepo } from "../src/policy";
 import { loadGraph } from "../src/graph";
 import { MAX_LIST, contextFor, descriptionWords, findExisting, runCodeQuery, whoUses, type ContextResult, type FindResult, type WhoUsesResult } from "../src/codemap";
-import { inProgressFunctions } from "../src/duplicates";
+import { MAX_IN_PROGRESS_TASKS, inProgressFunctions } from "../src/duplicates";
+import type { Engine } from "../src/engine";
+import type { Task } from "../src/types";
 import { startTask } from "../src/tasks";
 import { EngineError } from "../src/types";
 import { makeRepo, writeFakeGraph } from "./helpers";
@@ -191,6 +193,8 @@ describe("codemap", () => {
 describe("code map across worktrees", () => {
   const SA = { session_id: "sa" };
   const SB = { session_id: "sb" };
+  const headOf = (cwd: string) => execFileSync("git", ["rev-parse", "HEAD"], { cwd }).toString().trim();
+  const row = (e: Engine, id: number) => e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as unknown as Task;
   function two() {
     const dir = makeRepo();
     initRepo(dir);
@@ -211,7 +215,7 @@ describe("code map across worktrees", () => {
     execFileSync("git", ["add", "-A"], { cwd: b.cwd });
     execFileSync("git", ["commit", "-m", "beta helper"], { cwd: b.cwd, stdio: "ignore" });
     writeFakeGraph(b.cwd, [...base, fileNode("t", "src/totals.ts"), fn("tot", "computeInvoiceTotal", "src/totals.ts", 1)],
-      [link("u", "fmt", "contains", "src/utils.ts", 1), link("t", "tot", "contains", "src/totals.ts", 1)]);
+      [link("u", "fmt", "contains", "src/utils.ts", 1), link("t", "tot", "contains", "src/totals.ts", 1)], headOf(b.cwd));
     return { dir, e, a, b };
   }
 
@@ -233,7 +237,7 @@ describe("code map across worktrees", () => {
     put(w.cwd, "src/gamma.ts", "export function computeGammaThing(x: number) {\n  return x;\n}\n");
     execFileSync("git", ["add", "-A"], { cwd: w.cwd });
     execFileSync("git", ["commit", "-m", "gamma"], { cwd: w.cwd, stdio: "ignore" });
-    writeFakeGraph(w.cwd, [fileNode("g", "src/gamma.ts"), fn("gt", "computeGammaThing", "src/gamma.ts", 1)], [link("g", "gt", "contains", "src/gamma.ts", 1)]);
+    writeFakeGraph(w.cwd, [fileNode("g", "src/gamma.ts"), fn("gt", "computeGammaThing", "src/gamma.ts", 1)], [link("g", "gt", "contains", "src/gamma.ts", 1)], headOf(w.cwd));
     const fromA = runCodeQuery(e, { tool: "find_existing", arg: "gamma", actor: SA, cwd: a.cwd }) as FindResult;
     expect(fromA.matches.filter((m) => m.task_id !== undefined)).toEqual([]);
     const fromB = runCodeQuery(e, { tool: "find_existing", arg: "gamma", actor: SB, cwd: b.cwd }) as FindResult;
@@ -245,8 +249,46 @@ describe("code map across worktrees", () => {
   test("a task whose graph is missing is skipped", () => {
     const { e, a, b } = two();
     rmSync(join(b.cwd, "graphify-out"), { recursive: true });
-    expect(inProgressFunctions(e, a.id)).toEqual([]);
+    expect(inProgressFunctions(e, row(e, a.id))).toEqual([]);
     expect(inProgressFunctions(e, null).map((x) => x.task_id)).toEqual([]);
+  });
+
+  test("a task whose graph is older than its branch head is skipped", () => {
+    const { e, a, b } = two();
+    expect(inProgressFunctions(e, row(e, a.id)).map((x) => x.task_id)).toEqual([b.id]);
+    writeFakeGraph(b.cwd, [fileNode("t", "src/totals.ts"), fn("tot", "computeInvoiceTotal", "src/totals.ts", 1)],
+      [link("t", "tot", "contains", "src/totals.ts", 1)], "0000000");
+    expect(inProgressFunctions(e, row(e, a.id))).toEqual([]);
+  });
+
+  test("at most MAX_IN_PROGRESS_TASKS open tasks are scanned, newest first", () => {
+    const { e, b } = two();
+    const ins = e.db.prepare(
+      `INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at)
+       SELECT title, type, goal, done_check, status, branch || '-' || ?, cwd, base_sha, created_by, created_at FROM tasks WHERE id = ?`);
+    for (let i = 0; i < MAX_IN_PROGRESS_TASKS; i++) ins.run(String(i), b.id);
+    const ids = new Set(inProgressFunctions(e, null).map((x) => x.task_id));
+    expect(ids.size).toBeLessThanOrEqual(MAX_IN_PROGRESS_TASKS);
+    expect(ids.has(b.id)).toBe(false);
+  });
+
+  test("a task whose worktree folder is gone is skipped", () => {
+    const { e, a, b } = two();
+    rmSync(b.cwd, { recursive: true, force: true });
+    expect(inProgressFunctions(e, row(e, a.id))).toEqual([]);
+    expect(runCodeQuery(e, { tool: "find_existing", arg: "invoice", actor: SA, cwd: a.cwd })).toBeTruthy();
+  });
+
+  test("context_for leaves out the caller's own and its family's claims", () => {
+    const { e, a, b } = two();
+    const w = startTask(e, { title: "Delta", type: "feature", goal: "g", done_check: "d", actor: SA, cwd: a.cwd, worktree: true, parent_task_id: a.id }).task;
+    const at = e.now().toISOString();
+    const ins = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', ?, 'active', ?)");
+    ins.run(a.id, "src/mine.ts", at);
+    ins.run(w.id, "src/child.ts", at);
+    ins.run(b.id, "src/theirs.ts", at);
+    const r = runCodeQuery(e, { tool: "context_for", arg: "src/", actor: SA, cwd: a.cwd }) as ContextResult;
+    expect(r.claims).toEqual([{ path: "src/theirs.ts", task_id: b.id }]);
   });
 
   test("context_for lists active claims in the area", () => {

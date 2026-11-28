@@ -4,7 +4,7 @@ import type { Engine } from "./engine";
 import { START_TASK_BUILD_TIMEOUT_MS, buildGraph, checkoutLabel, checkoutOf, loadGraph, type Graph, type GraphEdge, type GraphNode } from "./graph";
 import { inProgressFunctions, taskLabel } from "./duplicates";
 import { HOOK_GIT_TIMEOUT_MS, runBounded, type TaskView } from "./tasks";
-import { EngineError, actorId, type Actor } from "./types";
+import { EngineError, actorId, type Actor, type Task } from "./types";
 
 export const MAX_LIST = 40;
 export const MAX_MATCHES = 15;
@@ -167,21 +167,24 @@ export function findExisting(e: Engine, g: Graph, label: string, description: st
   return result;
 }
 
-function activeClaims(e: Engine): ClaimHit[] {
-  return e.db.prepare("SELECT target AS path, task_id FROM claims WHERE kind = 'file' AND status = 'active' ORDER BY target, task_id").all() as unknown as ClaimHit[];
+function callerTask(e: Engine, taskId: number | null): Task | null {
+  return taskId === null ? null : (e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as unknown as Task | undefined) ?? null;
 }
 
-/** Other open tasks' new helpers, leaving out the caller's own task and its parent and children (visible through merges, or its own). */
-function othersWork(e: Engine, taskId: number | null): OtherFn[] {
-  const skip = new Set<number>();
-  if (taskId !== null) {
-    skip.add(taskId);
-    const own = e.db.prepare("SELECT parent_id FROM tasks WHERE id = ?").get(taskId) as { parent_id: number | null } | undefined;
-    if (own?.parent_id != null) skip.add(own.parent_id);
-    for (const c of e.db.prepare("SELECT id FROM tasks WHERE parent_id = ?").all(taskId) as { id: number }[]) skip.add(c.id);
-  }
-  return inProgressFunctions(e, taskId).filter((o) => !skip.has(o.task_id));
+/** Active file claims, leaving out the caller's own task, its parent's and its children's. */
+function activeClaims(e: Engine, caller: Task | null): ClaimHit[] {
+  const rows = e.db.prepare(
+    `SELECT c.target AS path, c.task_id FROM claims c
+     WHERE c.kind = 'file' AND c.status = 'active' ORDER BY c.target, c.task_id`,
+  ).all() as unknown as ClaimHit[];
+  if (!caller) return rows;
+  const family = new Set<number>([caller.id]);
+  if (caller.parent_id !== null) family.add(caller.parent_id);
+  for (const c of e.db.prepare("SELECT id FROM tasks WHERE parent_id = ?").all(caller.id) as { id: number }[]) family.add(c.id);
+  return rows.filter((c) => !family.has(c.task_id));
 }
+
+const othersWork = (e: Engine, caller: Task | null): OtherFn[] => inProgressFunctions(e, caller);
 
 export type CodeTool = "context_for" | "find_existing" | "who_uses";
 const RESULT_CAP = 20000;
@@ -219,10 +222,11 @@ export function runCodeQuery(e: Engine, input: { tool: CodeTool; arg: string; ac
     const label = checkoutLabel(e, checkout);
     const g = loadGraph(checkout);
     if (!g) throw new EngineError("MAP_BROKEN", `no code map for ${label} yet: run "estack map update" there, or start a task in it`);
+    const caller = callerTask(e, taskId);
     version = `${g.graphify_version}@${g.built_at_commit}`;
-    const result = input.tool === "context_for" ? contextFor(g, label, input.arg, activeClaims(e))
-      : input.tool === "who_uses" ? whoUses(g, label, input.arg, othersWork(e, taskId))
-      : findExisting(e, g, label, input.arg, othersWork(e, taskId));
+    const result = input.tool === "context_for" ? contextFor(g, label, input.arg, activeClaims(e, caller))
+      : input.tool === "who_uses" ? whoUses(g, label, input.arg, othersWork(e, caller))
+      : findExisting(e, g, label, input.arg, othersWork(e, caller));
     log(true, JSON.stringify(result));
     return result;
   } catch (x) {

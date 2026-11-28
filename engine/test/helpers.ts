@@ -43,14 +43,14 @@ function hasGraphify(): boolean {
 export const HAS_GRAPHIFY: boolean = hasGraphify();
 
 /** Write graphify-out/graph.json in Graphify's shape plus estack-files.json. */
-export function writeFakeGraph(checkout: string, nodes: object[], links: object[]): void {
+export function writeFakeGraph(checkout: string, nodes: object[], links: object[], builtAt = "abc1234"): void {
   const out = join(checkout, "graphify-out");
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, "graph.json"), JSON.stringify({
     directed: true, multigraph: false,
     graph: { schema_version: 1, graphify_version: "0.9.121" },
-    built_at_commit: "abc1234", nodes, links,
+    built_at_commit: builtAt, nodes, links,
   }));
   const files = [...new Set((nodes as { source_file?: string }[]).map((n) => n.source_file).filter((f): f is string => !!f))].sort();
-  writeFileSync(join(out, "estack-files.json"), JSON.stringify({ built_at_commit: "abc1234", graphify_version: "0.9.121", files }));
+  writeFileSync(join(out, "estack-files.json"), JSON.stringify({ built_at_commit: builtAt, graphify_version: "0.9.121", files }));
 }
