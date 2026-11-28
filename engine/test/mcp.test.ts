@@ -119,6 +119,22 @@ describe("mcp server", () => {
       expect(q[0]).toMatchObject({ task_id: out.task.id, auto: 1, ok: 1, recorded_by: "s1/A" });
     });
 
+    test("a planned worker started without an area gets the context of its first planned area", async () => {
+      const dir = mapRepo();
+      execFileSync("git", ["add", "-A", "-f"], { cwd: dir });
+      execFileSync("git", ["commit", "-q", "-m", "map"], { cwd: dir });
+      const { call } = await connect(dir);
+      const cto = { session_id: "s1" };
+      const f = JSON.parse((await call("start_task", { title: "F", type: "feature", goal: "g", done_check: "d", worktree: true, cwd: dir, actor: cto })).text);
+      const p = JSON.parse((await call("plan_tasks", { parent_task_id: f.task.id, actor: cto, tasks: [{ title: "W", type: "feature", goal: "g", done_check: "d", area: ["src", "lib"] }] })).text);
+      const r = await call("start_task", { task_id: p.tasks[0].task.id, cwd: dir, actor: cto });
+      expect(r.isError, r.text).toBe(false);
+      const out = JSON.parse(r.text);
+      expect(out.map_note).toBeUndefined();
+      expect(out.context.area).toBe("src");
+      expect(rows(dir).filter((q) => q.task_id === out.task.id)).toMatchObject([{ tool: "context_for", input: "src", auto: 1, ok: 1 }]);
+    });
+
     test("start_task without an area asks for context_for", async () => {
       const { call } = await connect(mapRepo());
       const out = JSON.parse((await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", actor: A })).text);

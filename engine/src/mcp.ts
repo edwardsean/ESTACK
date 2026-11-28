@@ -73,7 +73,10 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
       title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor,
       worktree: a.worktree, parent_task_id: a.parent_task_id, area, group: a.group, task_id: a.task_id,
     });
-    return { ...v, ...taskContext(e, v, area?.[0], actor) };
+    // A planned task started by id alone gets the context of the first area it was planned with.
+    const stored = e.db.prepare("SELECT path FROM task_areas WHERE task_id = ? ORDER BY rowid LIMIT 1").get(v.task.id) as { path: string } | undefined;
+    const first = area?.[0] ?? (stored ? stored.path || "." : undefined);
+    return { ...v, ...taskContext(e, v, first, actor) };
   }));
 
   const codeTool = (name: CodeTool, argName: string, description: string, argHelp: string) =>

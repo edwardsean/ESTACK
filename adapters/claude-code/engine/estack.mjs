@@ -46892,7 +46892,9 @@ function createServer(cwd, deps = {}) {
       group: a.group,
       task_id: a.task_id
     });
-    return { ...v, ...taskContext(e, v, area?.[0], actor) };
+    const stored = e.db.prepare("SELECT path FROM task_areas WHERE task_id = ? ORDER BY rowid LIMIT 1").get(v.task.id);
+    const first = area?.[0] ?? (stored ? stored.path || "." : void 0);
+    return { ...v, ...taskContext(e, v, first, actor) };
   }));
   const codeTool = (name, argName, description, argHelp) => server.registerTool(name, {
     description,
