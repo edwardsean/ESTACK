@@ -112,7 +112,7 @@ function others(e: Engine, s: Subject): Subject[] {
   return rows
     .filter((t) => !(t.status === "starting" && claimInfo(e, t.id).stale && claimInfo(e, t.id).from === "new"))
     // A group is scoped to its feature: the same name under another feature hides nothing.
-    .filter((t) => t.id !== s.id && !(s.group !== null && t.task_group === s.group && t.parent_id === s.parent_id)
+    .filter((t) => t.id !== s.id && !(s.group !== null && s.parent_id !== null && t.task_group === s.group && t.parent_id === s.parent_id)
       && t.id !== s.parent_id && !(s.id !== null && t.parent_id === s.id))
     .map((t) => subjectOf(e, t));
 }
@@ -129,7 +129,21 @@ export function overlapsFor(e: Engine, task_id: number): Overlap[] {
   return overlapsOf(e, subjectOf(e, t));
 }
 
+/** A fresh start that died leaves a `starting` row nothing will ever finish: cancel it, atomically, once it is stale. */
+export function releaseStale(e: Engine): void {
+  const rows = e.db.prepare("SELECT id FROM tasks WHERE status = 'starting'").all() as { id: number }[];
+  for (const { id } of rows) {
+    tx(e, () => {
+      const c = claimInfo(e, id);
+      if (!c.stale || c.from !== "new") return;
+      const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'starting'").run(id);
+      if (r.changes === 1) logEvent(e, { session_id: "engine" }, "task_released", id, { from: "new", stale: true });
+    });
+  }
+}
+
 export function planTasks(e: Engine, input: { parent_task_id: number; tasks: PlanTaskInput[]; actor: Actor }): { tasks: TaskView[]; overlaps: Overlap[] } {
+  releaseStale(e);
   const parent = getRow(e, input.parent_task_id);
   if (!parent || !ownsTask(e, input.actor.session_id, parent.id)) {
     throw new EngineError("NO_TASK", `task ${input.parent_task_id} is not yours to plan under`);
@@ -259,8 +273,10 @@ export function dependencyState(e: Engine, task_id: number): { finished: boolean
   return deps.map(({ d }) => {
     const dep = getRow(e, d);
     if (!dep) return { finished: false, detail: `task #${d} does not exist` };
-    if (dep.status === "starting" && !(claimInfo(e, d).stale && claimInfo(e, d).from === "new")) {
-      return { finished: false, detail: `task #${d} is being started; try again when it is open` };
+    if (dep.status === "starting") {
+      const c = claimInfo(e, d);
+      if (!c.stale) return { finished: false, detail: `task #${d} is being started; try again when it is open` };
+      if (c.from === "planned") return { finished: false, detail: `task #${d}'s start went stale; its CTO must start it again or withdraw it` };
     }
     if (dep.status === "cancelled" || dep.status === "starting") return { finished: false, detail: `task #${d} was cancelled; withdraw this task or plan it again` };
     if (me.parent_id !== null && dep.parent_id === me.parent_id) {
@@ -301,9 +317,16 @@ export function gateStart(e: Engine, actor: Actor, what: { planned: Task } | { f
   }
 }
 
+/** Tasks a start is working on, and whether the start has gone stale, for status. */
+export function startingTasks(e: Engine): { task: Task; stale: boolean }[] {
+  releaseStale(e);
+  const rows = e.db.prepare("SELECT * FROM tasks WHERE status = 'starting' ORDER BY id").all() as unknown as Task[];
+  return rows.map((task) => ({ task, stale: claimInfo(e, task.id).stale }));
+}
+
 /** Planned tasks with their dependencies and unresolved overlaps, for status. */
 export function plannedTasks(e: Engine): { task: Task; depends_on: number[]; overlaps: Overlap[] }[] {
-  const rows = e.db.prepare("SELECT * FROM tasks WHERE status IN ('planned','starting') ORDER BY id").all() as unknown as Task[];
+  const rows = e.db.prepare("SELECT * FROM tasks WHERE status = 'planned' ORDER BY id").all() as unknown as Task[];
   return rows.map((task) => ({
     task,
     depends_on: (e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ? ORDER BY depends_on").all(task.id) as { d: number }[]).map((r) => r.d),

@@ -18,7 +18,7 @@ import {
   type FolderShare,
 } from "./graph";
 import { listOpen } from "./tasks";
-import { plannedTasks } from "./plan";
+import { plannedTasks, startingTasks } from "./plan";
 import { EngineError } from "./types";
 
 export interface Io { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => void; err: (s: string) => void; stdin?: string; exec?: Exec }
@@ -70,18 +70,21 @@ const CLI_ACTOR = { session_id: "cli" };
 
 function status(e: Engine, json: boolean, out: (s: string) => void): void {
   const open = listOpen(e);
+  const starting = startingTasks(e);
   const planned = plannedTasks(e);
   if (json) {
     const shown = open.map((t) => ({ ...t.task, steps: t.steps.map((s) => ({ name: s.name, status: s.status })), next: t.next?.name ?? null }));
     const waiting = planned.map((p) => ({ ...p.task, steps: [], next: null, depends_on: p.depends_on, overlaps: p.overlaps }));
-    return out(JSON.stringify([...shown, ...waiting], null, 2) + "\n");
+    const busy = starting.map((s) => ({ ...s.task, steps: [], next: null, stale: s.stale }));
+    return out(JSON.stringify([...shown, ...busy, ...waiting], null, 2) + "\n");
   }
-  if (open.length === 0 && planned.length === 0) return out("no open tasks\n");
+  if (open.length === 0 && planned.length === 0 && starting.length === 0) return out("no open tasks\n");
   for (const t of open) {
     out(`#${t.task.id} [${t.task.type}] ${t.task.title} (${t.task.branch})\n`);
     out("  " + t.steps.map((s) => `${s.name}:${s.status}`).join(" ") + "\n");
     out(`  next: ${t.next?.name ?? "none"}\n`);
   }
+  for (const s of starting) out(`#${s.task.id} [starting] ${s.task.title}${s.stale ? " (the start went stale; start it again or withdraw it)" : ""}\n`);
   for (const p of planned) {
     out(`#${p.task.id} [${p.task.status}] ${p.task.title} (under #${p.task.parent_id})\n`);
     if (p.depends_on.length > 0) out(`  depends on: ${p.depends_on.map((d) => `#${d}`).join(", ")}\n`);

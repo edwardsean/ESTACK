@@ -126,7 +126,7 @@ describe("worktrees", () => {
   test("a failed worktree leaves no open task", () => {
     const { dir, e } = setup();
     git(dir, "branch", "feat/1-add-invoice-totals");
-    expect(code(() => feature(e, dir))).toBe("NOT_A_REPO");
+    expect(code(() => feature(e, dir))).toBe("POLICY_INVALID");
     expect(e.db.prepare("SELECT status FROM tasks WHERE id = 1").get()).toEqual({ status: "cancelled" });
     expect(e.db.prepare("SELECT COUNT(*) c FROM tasks WHERE status = 'open'").get()).toEqual({ c: 0 });
     expect(e.db.prepare("SELECT COUNT(*) c FROM events WHERE kind = 'worktree_failed'").get()).toEqual({ c: 1 });

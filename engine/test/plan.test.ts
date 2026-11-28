@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
 import { initRepo } from "../src/policy";
-import { acceptOverlap, overlapsFor, planTasks, withdrawTask, type PlanTaskInput } from "../src/plan";
+import { acceptOverlap, overlapsFor, planTasks, startingTasks, withdrawTask, type PlanTaskInput } from "../src/plan";
 import { getTask, insertEvidence, startTask, STALE_CLAIM_MS } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
 import { realExec } from "../src/exec";
@@ -364,5 +364,96 @@ describe("review fixes", () => {
     expect(loop.code).toBe("DEPENDENCY");
     expect(loop.message).toContain("circle");
     expect(e.db.prepare("SELECT COUNT(*) c FROM tasks WHERE status = 'planned'").get()).toEqual({ c: 0 });
+  });
+
+  describe("fix round 2", () => {
+    function made() {
+      const { dir, e } = setup();
+      const f = feature(e, dir, cto);
+      const a = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [item("A", ["src/a"])] }).tasks[0].task.id;
+      return { dir, e, f, a };
+    }
+    const strand = (e: Engine, id: number) => {
+      e.db.prepare("UPDATE tasks SET status = 'starting', cwd = '', branch = '' WHERE id = ?").run(id);
+      e.db.prepare("INSERT INTO events (at, actor, kind, task_id, payload_json) VALUES (?, 's1/main', 'task_claimed', ?, '{\"from\":\"planned\"}')").run(new Date().toISOString(), id);
+    };
+    const age = (e: Engine) => { e.now = () => new Date(Date.now() + STALE_CLAIM_MS + 60_000); };
+
+    test("a stale claim whose worktree was already made is recovered by reusing it", () => {
+      const { e, f, a } = made();
+      // A start that dies right after `git worktree add`.
+      const real = e.exec;
+      e.exec = { ...real, run(file, args, opts) {
+        if (file === "git" && args[0] === "rev-parse" && args[1] === "HEAD") throw new Error("killed");
+        return real.run(file, args, opts);
+      } };
+      expect(() => begin(e, f, a)).toThrow("killed");
+      e.exec = real;
+      const path = join(f.task.cwd, ".estack", "worktrees", `${a}-a`);
+      expect(existsSync(path)).toBe(true);
+      strand(e, a);
+      age(e);
+      const v = begin(e, f, a);
+      expect(v.task).toMatchObject({ status: "open", cwd: path, branch: `task/${a}-a` });
+      expect(git(path, "branch", "--show-current")).toBe(`task/${a}-a`);
+      expect(e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'worktree_created' AND task_id = ? ORDER BY id DESC LIMIT 1").get(a))
+        .toMatchObject({ p: expect.stringContaining('"reused":true') });
+    });
+
+    test("something else at the worktree path, or the branch without its worktree, is refused with what to do", () => {
+      const { e, f, a } = made();
+      const path = join(f.task.cwd, ".estack", "worktrees", `${a}-a`);
+      mkdirSync(path, { recursive: true });
+      const e1 = code(() => begin(e, f, a));
+      expect(e1.code).toBe("POLICY_INVALID");
+      expect(e1.message).toContain(path);
+      expect(e1.message).toContain(`git branch -d task/${a}-a`);
+      expect(getTask(e, a).task.status).toBe("planned");
+      execFileSync("rmdir", [path]);
+      git(f.task.cwd, "branch", `task/${a}-a`);
+      const e2 = code(() => begin(e, f, a));
+      expect(e2.message).toContain(`branch task/${a}-a already exists without its worktree`);
+    });
+
+    test("a worker's areas are read against its feature, from any checkout", () => {
+      const { dir, e, f } = made();
+      mkdirSync(join(f.task.cwd, "src", "a"), { recursive: true });
+      // Started from the main checkout, with an absolute path into the feature's worktree.
+      const err = code(() => startTask(e, { title: "W", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, worktree: true, parent_task_id: f.task.id, area: [join(f.task.cwd, "src/a/x.ts")] }));
+      expect(err.code).toBe("OVERLAP");
+      expect(err.message).toContain("src/a contains src/a/x.ts");
+    });
+
+    test("another CTO cannot start a fresh worker under a feature it does not own", () => {
+      const { dir, e, f } = made();
+      const err = code(() => startTask(e, { title: "W", type: "feature", goal: "g", done_check: "d", actor: cto2, cwd: dir, worktree: true, parent_task_id: f.task.id, area: ["src/q"] }));
+      expect(err.code).toBe("OWNER_ONLY");
+      expect(e.db.prepare("SELECT COUNT(*) c FROM tasks WHERE title = 'W'").get()).toEqual({ c: 0 });
+    });
+
+    test("parentless tasks with the same group still overlap", () => {
+      const { dir, e } = setup();
+      const w = (title: string, actor: Actor) => startTask(e, { title, type: "feature", goal: "g", done_check: "d", actor, cwd: dir, area: ["src/o"], group: "g" });
+      w("One", cto);
+      expect(code(() => w("Two", cto2)).code).toBe("OVERLAP");
+    });
+
+    test("status shows starting tasks on their own; a stale fresh one is cancelled, and a dependent is told", () => {
+      const { dir, e, f, a } = made();
+      const id = Number(e.db.prepare("INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES ('Top', 'feature', 'g', 'd', 'starting', '', '', '', 's1/main', 'now')").run().lastInsertRowid);
+      e.db.prepare("INSERT INTO events (at, actor, kind, task_id, payload_json) VALUES (?, 's1/main', 'task_claimed', ?, '{\"from\":\"new\"}')").run(new Date().toISOString(), id);
+      expect(startingTasks(e).map((s) => [s.task.id, s.stale])).toEqual([[id, false]]);
+      expect(getTask(e, id).task.status).toBe("starting");
+      age(e);
+      expect(startingTasks(e)).toEqual([]);
+      expect(getTask(e, id).task.status).toBe("cancelled");
+      expect(e.db.prepare("SELECT kind FROM events WHERE task_id = ? ORDER BY id DESC LIMIT 1").get(id)).toEqual({ kind: "task_released" });
+      // A dependent of a stale planned claim.
+      const b = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [item("B", ["src/b"], { depends_on: [a] })] }).tasks[0].task.id;
+      strand(e, a);
+      const err = code(() => begin(e, f, b));
+      expect(err.message).toContain(`task #${a}'s start went stale; its CTO must start it again or withdraw it`);
+      void dir;
+    });
   });
 });

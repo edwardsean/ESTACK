@@ -1,7 +1,7 @@
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
-import { areaPath, claimInfo, gateStart } from "./plan";
-import { WORKTREE_SETUP_TIMEOUT_MS, createWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
+import { areaPath, claimInfo, gateStart, releaseStale } from "./plan";
+import { WORKTREE_SETUP_TIMEOUT_MS, ensureWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
 import {
   EngineError, STEP_EVIDENCE, actorId,
   type Actor, type Evidence, type EvidenceKind, type Step, type Task,
@@ -155,6 +155,7 @@ export function startTask(e: Engine, input: {
   title?: string; type?: string; goal?: string; done_check?: string; actor: Actor; cwd?: string; branch?: string;
   worktree?: boolean; parent_task_id?: number; area?: string[]; group?: string; task_id?: number;
 }): StartResult {
+  releaseStale(e);
   // A planned task is promoted in place: its stored title, type, goal and parent win over the call's.
   let planned: Task | undefined;
   if (input.task_id !== undefined) {
@@ -187,9 +188,17 @@ export function startTask(e: Engine, input: {
   if (!typeSteps) throw new EngineError("POLICY_INVALID", `unknown task type "${type}"`);
   if (input.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input.branch}`);
   let parent: Task | null = null;
-  if (parentId !== null && input.worktree) {
-    parent = (e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(parentId) as unknown as Task | undefined) ?? null;
-    if (!parent) throw new EngineError("NO_TASK", `no task with id ${parentId}`);
+  let parentRow: Task | null = null;
+  if (parentId !== null) {
+    parentRow = (e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(parentId) as unknown as Task | undefined) ?? null;
+    if (!parentRow) throw new EngineError("NO_TASK", `no task with id ${parentId}`);
+    // A worker under a feature makes its caller a CTO of the worker, so only the feature's CTO may start one.
+    if (!planned && !ownsTask(e, input.actor.session_id, parentRow.id)) {
+      throw new EngineError("OWNER_ONLY", `task #${parentRow.id} belongs to another CTO; only its CTO can start a task under it`);
+    }
+  }
+  if (parentRow && input.worktree) {
+    parent = parentRow;
     if (parent.status !== "open") throw new EngineError("TASK_CLOSED", `parent task ${parent.id} is ${parent.status}`);
   }
   // The task's worktree is the top level of the caller's checkout, so checks run where the work happens.
@@ -197,7 +206,8 @@ export function startTask(e: Engine, input: {
   if (top.code !== 0) throw new EngineError("NOT_A_REPO", `not a git repository: ${input.cwd ?? e.cwd}`);
   const checkout = top.stdout.trim();
   // Overlaps are checked for a planned task and for any task started with an area; a planned task also waits for its dependencies.
-  const areas = (input.area ?? []).map((p) => areaPath(checkout, p));
+  // A worker's areas are read against its feature's checkout, a feature's against its own, wherever the call came from.
+  const areas = (input.area ?? []).map((p) => areaPath(parentRow ? parentRow.cwd : checkout, p));
   const gate = () => {
     if (planned) gateStart(e, input.actor, { planned });
     else if (areas.length > 0) gateStart(e, input.actor, { fresh: { parent_id: parentId, group, areas } });
@@ -263,9 +273,9 @@ export function startTask(e: Engine, input: {
   const branch = `${parent ? "task" : "feat"}/${name}`;
   try {
     // The start point is the resolved sha, so the new branch tracks no upstream.
-    const path = createWorktree(e, { under: checkout, name, branch, base: from.sha });
+    const { path, reused } = ensureWorktree(e, { under: checkout, name, branch, base: from.sha });
     ensureWorktreeExclude(e);
-    logEvent(e, input.actor, "worktree_created", id, { path, branch, base: from.ref });
+    logEvent(e, input.actor, "worktree_created", id, { path, branch, base: from.ref, ...(reused ? { reused: true } : {}) });
     const setup = runWorktreeSetup(e, path);
     if (setup && !setup.ok) logEvent(e, input.actor, "worktree_setup_failed", id, { output_tail: setup.output_tail });
     const base_sha = runBounded(e, path, "git", ["rev-parse", "HEAD"]).stdout.trim() || from.sha;

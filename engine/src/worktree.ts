@@ -28,6 +28,34 @@ export function createWorktree(e: Engine, input: { under: string; name: string; 
   return path;
 }
 
+/**
+ * The worktree for a task: made now, or reused when an earlier start (one that died or failed after `git worktree add`)
+ * already made it at the expected path on the expected branch. Anything else in the way is refused, never forced away.
+ */
+export function ensureWorktree(e: Engine, input: { under: string; name: string; branch: string; base: string }): { path: string; reused: boolean } {
+  const path = join(input.under, WORKTREES_DIR, input.name);
+  const list = runBounded(e, input.under, "git", ["worktree", "list", "--porcelain"]);
+  let here: { branch: string | null } | null = null;
+  if (list.code === 0) {
+    for (const block of list.stdout.split("\n\n")) {
+      const lines = block.split("\n");
+      if (lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length) === path) {
+        here = { branch: lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null };
+      }
+    }
+  }
+  const byHand = `remove it by hand (git worktree remove ${path}, then git branch -d ${input.branch}) and start the task again`;
+  if (here) {
+    if (here.branch === `refs/heads/${input.branch}`) return { path, reused: true };
+    throw new EngineError("POLICY_INVALID", `${path} is a worktree on ${here.branch ?? "no branch"}, not ${input.branch}; ${byHand}`);
+  }
+  if (existsSync(path)) throw new EngineError("POLICY_INVALID", `${path} already exists and is not the worktree of ${input.branch}; ${byHand}`);
+  if (runBounded(e, input.under, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${input.branch}^{commit}`]).code === 0) {
+    throw new EngineError("POLICY_INVALID", `branch ${input.branch} already exists without its worktree; ${byHand}`);
+  }
+  return { path: createWorktree(e, input), reused: false };
+}
+
 /** Run the policy's worktree_setup in the new worktree; null when there is none. */
 export function runWorktreeSetup(e: Engine, cwd: string): { ok: boolean; output_tail: string } | null {
   const command = e.policy.commands.worktree_setup;

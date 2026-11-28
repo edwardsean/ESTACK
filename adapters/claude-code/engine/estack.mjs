@@ -35003,7 +35003,7 @@ function claimInfo(e, task_id) {
 }
 function others(e, s) {
   const rows = e.db.prepare("SELECT * FROM tasks WHERE status IN ('open','planned','starting') ORDER BY id").all();
-  return rows.filter((t) => !(t.status === "starting" && claimInfo(e, t.id).stale && claimInfo(e, t.id).from === "new")).filter((t) => t.id !== s.id && !(s.group !== null && t.task_group === s.group && t.parent_id === s.parent_id) && t.id !== s.parent_id && !(s.id !== null && t.parent_id === s.id)).map((t) => subjectOf(e, t));
+  return rows.filter((t) => !(t.status === "starting" && claimInfo(e, t.id).stale && claimInfo(e, t.id).from === "new")).filter((t) => t.id !== s.id && !(s.group !== null && s.parent_id !== null && t.task_group === s.group && t.parent_id === s.parent_id) && t.id !== s.parent_id && !(s.id !== null && t.parent_id === s.id)).map((t) => subjectOf(e, t));
 }
 function overlapsOf(e, s) {
   const raw = [...others(e, s).flatMap((o) => between(s, o)), ...existing(e, s)];
@@ -35014,7 +35014,19 @@ function overlapsFor(e, task_id) {
   if (!t) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
   return overlapsOf(e, subjectOf(e, t));
 }
+function releaseStale(e) {
+  const rows = e.db.prepare("SELECT id FROM tasks WHERE status = 'starting'").all();
+  for (const { id } of rows) {
+    tx(e, () => {
+      const c = claimInfo(e, id);
+      if (!c.stale || c.from !== "new") return;
+      const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'starting'").run(id);
+      if (r.changes === 1) logEvent(e, { session_id: "engine" }, "task_released", id, { from: "new", stale: true });
+    });
+  }
+}
 function planTasks(e, input2) {
+  releaseStale(e);
   const parent = getRow(e, input2.parent_task_id);
   if (!parent || !ownsTask(e, input2.actor.session_id, parent.id)) {
     throw new EngineError("NO_TASK", `task ${input2.parent_task_id} is not yours to plan under`);
@@ -35138,8 +35150,10 @@ function dependencyState(e, task_id) {
   return deps.map(({ d }) => {
     const dep = getRow(e, d);
     if (!dep) return { finished: false, detail: `task #${d} does not exist` };
-    if (dep.status === "starting" && !(claimInfo(e, d).stale && claimInfo(e, d).from === "new")) {
-      return { finished: false, detail: `task #${d} is being started; try again when it is open` };
+    if (dep.status === "starting") {
+      const c = claimInfo(e, d);
+      if (!c.stale) return { finished: false, detail: `task #${d} is being started; try again when it is open` };
+      if (c.from === "planned") return { finished: false, detail: `task #${d}'s start went stale; its CTO must start it again or withdraw it` };
     }
     if (dep.status === "cancelled" || dep.status === "starting") return { finished: false, detail: `task #${d} was cancelled; withdraw this task or plan it again` };
     if (me.parent_id !== null && dep.parent_id === me.parent_id) {
@@ -35174,8 +35188,13 @@ ${lines2.join("\n")}${hint}`);
     if (!logged) logEvent(e, actor, "dependency_finished", planned.id, { depends_on: d });
   }
 }
+function startingTasks(e) {
+  releaseStale(e);
+  const rows = e.db.prepare("SELECT * FROM tasks WHERE status = 'starting' ORDER BY id").all();
+  return rows.map((task) => ({ task, stale: claimInfo(e, task.id).stale }));
+}
 function plannedTasks(e) {
-  const rows = e.db.prepare("SELECT * FROM tasks WHERE status IN ('planned','starting') ORDER BY id").all();
+  const rows = e.db.prepare("SELECT * FROM tasks WHERE status = 'planned' ORDER BY id").all();
   return rows.map((task) => ({
     task,
     depends_on: e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ? ORDER BY depends_on").all(task.id).map((r) => r.d),
@@ -35200,6 +35219,29 @@ function createWorktree(e, input2) {
   const r = runBounded(e, input2.under, "git", ["worktree", "add", "-b", input2.branch, path, input2.base]);
   if (r.code !== 0) throw new EngineError("NOT_A_REPO", (r.stderr || r.stdout).trim() || "git worktree add failed");
   return path;
+}
+function ensureWorktree(e, input2) {
+  const path = join5(input2.under, WORKTREES_DIR, input2.name);
+  const list = runBounded(e, input2.under, "git", ["worktree", "list", "--porcelain"]);
+  let here = null;
+  if (list.code === 0) {
+    for (const block of list.stdout.split("\n\n")) {
+      const lines2 = block.split("\n");
+      if (lines2.find((l) => l.startsWith("worktree "))?.slice("worktree ".length) === path) {
+        here = { branch: lines2.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null };
+      }
+    }
+  }
+  const byHand = `remove it by hand (git worktree remove ${path}, then git branch -d ${input2.branch}) and start the task again`;
+  if (here) {
+    if (here.branch === `refs/heads/${input2.branch}`) return { path, reused: true };
+    throw new EngineError("POLICY_INVALID", `${path} is a worktree on ${here.branch ?? "no branch"}, not ${input2.branch}; ${byHand}`);
+  }
+  if (existsSync4(path)) throw new EngineError("POLICY_INVALID", `${path} already exists and is not the worktree of ${input2.branch}; ${byHand}`);
+  if (runBounded(e, input2.under, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${input2.branch}^{commit}`]).code === 0) {
+    throw new EngineError("POLICY_INVALID", `branch ${input2.branch} already exists without its worktree; ${byHand}`);
+  }
+  return { path: createWorktree(e, input2), reused: false };
 }
 function runWorktreeSetup(e, cwd) {
   const command = e.policy.commands.worktree_setup;
@@ -35325,6 +35367,7 @@ function claimPlanned(e, id, actor) {
   logEvent(e, actor, "task_claimed", id, { from: "planned" });
 }
 function startTask(e, input2) {
+  releaseStale(e);
   let planned;
   if (input2.task_id !== void 0) {
     planned = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input2.task_id);
@@ -35354,15 +35397,22 @@ function startTask(e, input2) {
   if (!typeSteps) throw new EngineError("POLICY_INVALID", `unknown task type "${type}"`);
   if (input2.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input2.branch}`);
   let parent = null;
-  if (parentId !== null && input2.worktree) {
-    parent = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(parentId) ?? null;
-    if (!parent) throw new EngineError("NO_TASK", `no task with id ${parentId}`);
+  let parentRow = null;
+  if (parentId !== null) {
+    parentRow = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(parentId) ?? null;
+    if (!parentRow) throw new EngineError("NO_TASK", `no task with id ${parentId}`);
+    if (!planned && !ownsTask(e, input2.actor.session_id, parentRow.id)) {
+      throw new EngineError("OWNER_ONLY", `task #${parentRow.id} belongs to another CTO; only its CTO can start a task under it`);
+    }
+  }
+  if (parentRow && input2.worktree) {
+    parent = parentRow;
     if (parent.status !== "open") throw new EngineError("TASK_CLOSED", `parent task ${parent.id} is ${parent.status}`);
   }
   const top = runBounded(e, input2.cwd ?? e.cwd, "git", ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0) throw new EngineError("NOT_A_REPO", `not a git repository: ${input2.cwd ?? e.cwd}`);
   const checkout = top.stdout.trim();
-  const areas = (input2.area ?? []).map((p) => areaPath(checkout, p));
+  const areas = (input2.area ?? []).map((p) => areaPath(parentRow ? parentRow.cwd : checkout, p));
   const gate = () => {
     if (planned) gateStart(e, input2.actor, { planned });
     else if (areas.length > 0) gateStart(e, input2.actor, { fresh: { parent_id: parentId, group, areas } });
@@ -35418,9 +35468,9 @@ function startTask(e, input2) {
   const name = `${id}-${slug(title)}`;
   const branch = `${parent ? "task" : "feat"}/${name}`;
   try {
-    const path = createWorktree(e, { under: checkout, name, branch, base: from.sha });
+    const { path, reused } = ensureWorktree(e, { under: checkout, name, branch, base: from.sha });
     ensureWorktreeExclude(e);
-    logEvent(e, input2.actor, "worktree_created", id, { path, branch, base: from.ref });
+    logEvent(e, input2.actor, "worktree_created", id, { path, branch, base: from.ref, ...reused ? { reused: true } : {} });
     const setup = runWorktreeSetup(e, path);
     if (setup && !setup.ok) logEvent(e, input2.actor, "worktree_setup_failed", id, { output_tail: setup.output_tail });
     const base_sha = runBounded(e, path, "git", ["rev-parse", "HEAD"]).stdout.trim() || from.sha;
@@ -46739,13 +46789,15 @@ function num(s, what) {
 var CLI_ACTOR = { session_id: "cli" };
 function status(e, json2, out) {
   const open2 = listOpen(e);
+  const starting = startingTasks(e);
   const planned = plannedTasks(e);
   if (json2) {
     const shown = open2.map((t) => ({ ...t.task, steps: t.steps.map((s) => ({ name: s.name, status: s.status })), next: t.next?.name ?? null }));
     const waiting = planned.map((p) => ({ ...p.task, steps: [], next: null, depends_on: p.depends_on, overlaps: p.overlaps }));
-    return out(JSON.stringify([...shown, ...waiting], null, 2) + "\n");
+    const busy = starting.map((s) => ({ ...s.task, steps: [], next: null, stale: s.stale }));
+    return out(JSON.stringify([...shown, ...busy, ...waiting], null, 2) + "\n");
   }
-  if (open2.length === 0 && planned.length === 0) return out("no open tasks\n");
+  if (open2.length === 0 && planned.length === 0 && starting.length === 0) return out("no open tasks\n");
   for (const t of open2) {
     out(`#${t.task.id} [${t.task.type}] ${t.task.title} (${t.task.branch})
 `);
@@ -46753,6 +46805,8 @@ function status(e, json2, out) {
     out(`  next: ${t.next?.name ?? "none"}
 `);
   }
+  for (const s of starting) out(`#${s.task.id} [starting] ${s.task.title}${s.stale ? " (the start went stale; start it again or withdraw it)" : ""}
+`);
   for (const p of planned) {
     out(`#${p.task.id} [${p.task.status}] ${p.task.title} (under #${p.task.parent_id})
 `);
