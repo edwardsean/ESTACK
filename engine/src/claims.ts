@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
 import type { Engine } from "./engine";
 import { isExempt, pathMatches } from "./match";
+import { normaliseName, topLevelFunctions } from "./duplicates";
+import { loadGraph } from "./graph";
 import { mergedIntoMain } from "./plan";
-import { EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, logEvent, tx } from "./tasks";
-import { EngineError, type Actor, type Task } from "./types";
+import { EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, logEvent, ownsTask, runBounded, tx } from "./tasks";
+import { EngineError, actorId, type Actor, type Task } from "./types";
 import { WORKTREES_DIR, removeWorktree } from "./worktree";
 
 export type EditVerdict = { ok: true } | { ok: false; holder: Task; claim_id: number };
@@ -146,4 +148,117 @@ function prClosed(e: Engine, task: Task): boolean {
   const pr = e.exec.run("gh", ["pr", "view", task.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
   if (pr.code !== 0) return false;
   try { return (JSON.parse(pr.stdout) as { state?: unknown }).state === "CLOSED"; } catch { return false; }
+}
+
+export interface ClaimStatus {
+  path: string;
+  holder: { task_id: number; title: string; goal: string; cwd: string } | null;
+  diff: string;
+  note?: string;
+  grants: { task_id: number; reason: string; by: string; at: string }[];
+}
+export const MAX_CLAIM_DIFF = 8000;
+
+/** Who holds a file, what the holder changed in it (committed or not, from its base), and who has been allowed in. */
+export function claimStatus(e: Engine, path: string): ClaimStatus {
+  const held = holderOf(e, path);
+  if (!held) return { path, holder: null, diff: "", grants: [] };
+  const { task } = held;
+  const grants = e.db.prepare(
+    "SELECT task_id, reason, by, at FROM claim_grants WHERE claim_id = ? AND path = ? ORDER BY id",
+  ).all(held.claim_id, path) as unknown as ClaimStatus["grants"];
+  const out: ClaimStatus = { path, holder: { task_id: task.id, title: task.title, goal: task.goal, cwd: task.cwd }, diff: "", grants };
+  if (!existsSync(task.cwd)) return { ...out, note: `the holder's worktree is gone (${task.cwd}), so its changes cannot be shown` };
+  const r = runBounded(e, task.cwd, "git", ["diff", "--no-color", task.base_sha, "--", path], HOOK_GIT_TIMEOUT_MS);
+  if (r.code !== 0) return { ...out, note: `could not read the holder's changes: ${r.stderr.trim()}` };
+  out.diff = r.stdout.length > MAX_CLAIM_DIFF ? `${r.stdout.slice(0, MAX_CLAIM_DIFF)}\n(truncated)` : r.stdout;
+  return out;
+}
+
+/** The CTO of both the holder and the task (or the owner) lets the task edit a held file. */
+export function allowEdit(e: Engine, input: { task_id: number; path: string; reason: string; actor?: Actor; owner: boolean }): void {
+  const reason = input.reason?.trim();
+  if (!reason) throw new EngineError("BAD_EVIDENCE", "a reason is required");
+  const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input.task_id) as unknown as Task | undefined;
+  if (!task) throw new EngineError("NO_TASK", `no task with id ${input.task_id}`);
+  const held = holderOf(e, input.path);
+  if (!held) throw new EngineError("BAD_EVIDENCE", `${input.path} is not held by any task`);
+  const by = input.owner ? "owner" : actorId(input.actor ?? { session_id: "unknown" });
+  if (!input.owner) {
+    const s = input.actor?.session_id;
+    if (!s || !ownsTask(e, s, task.id) || !ownsTask(e, s, held.task.id)) {
+      throw new EngineError("OWNER_ONLY",
+        `only the CTO of both task #${task.id} and the holder, task #${held.task.id}, can allow this; the owner runs: estack allow --task ${task.id} --path ${input.path} --reason <text>`);
+    }
+  }
+  tx(e, () => {
+    e.db.prepare("INSERT INTO claim_grants (claim_id, task_id, path, reason, by, at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(held.claim_id, task.id, input.path, reason, by, iso(e));
+    logEvent(e, input.actor ?? { session_id: "owner" }, "claim_granted", task.id, { path: input.path, holder: held.task.id, by });
+  });
+}
+
+/** Owner only (the caller checks): free a held file, for a hold nobody is working on any more. */
+export function releaseClaim(e: Engine, path: string, reason: string): void {
+  if (!reason || !reason.trim()) throw new EngineError("BAD_EVIDENCE", "a reason is required");
+  const held = holderOf(e, path);
+  if (!held) throw new EngineError("BAD_EVIDENCE", `${path} is not held by any task`);
+  tx(e, () => {
+    e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso(e), held.claim_id);
+    logEvent(e, { session_id: "owner" }, "claim_released", held.task.id, { claim_id: held.claim_id, kind: "file", path, reason });
+  });
+}
+
+/** Claim the name of a shared helper a task is about to write, unless it already exists or another task claimed it. */
+export function claimSymbol(e: Engine, input: { task_id: number; name: string; file: string; actor: Actor }):
+  { status: "claimed" } | { status: "exists"; file: string; line: number } | { status: "claimed_by"; task_id: number } {
+  const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input.task_id) as unknown as Task | undefined;
+  if (!task) throw new EngineError("NO_TASK", `no task with id ${input.task_id}`);
+  if (!input.name.trim()) throw new EngineError("BAD_EVIDENCE", "a name is required");
+  const want = normaliseName(input.name);
+  const parent = task.parent_id === null ? undefined
+    : e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(task.parent_id) as { cwd: string } | undefined;
+  const g = loadGraph(task.cwd) ?? (parent ? loadGraph(parent.cwd) : null);
+  const hit = g ? topLevelFunctions(g).find((n) => normaliseName(n.name) === want) : undefined;
+  if (hit) return { status: "exists", file: hit.file, line: hit.line };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const rows = e.db.prepare("SELECT task_id, target FROM claims WHERE kind = 'new_symbol' AND status = 'active'")
+      .all() as { task_id: number; target: string }[];
+    const mine = rows.find((r) => normaliseName(r.target) === want);
+    if (mine) return mine.task_id === task.id ? { status: "claimed" } : { status: "claimed_by", task_id: mine.task_id };
+    try {
+      tx(e, () => {
+        const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'new_symbol', ?, 'active', ?)")
+          .run(task.id, input.name, iso(e));
+        logEvent(e, input.actor, "symbol_claimed", task.id, { name: input.name, file: input.file, claim_id: Number(r.lastInsertRowid) });
+      });
+      return { status: "claimed" };
+    } catch (x) {
+      if (!(x instanceof Error) || !/UNIQUE constraint failed/.test(x.message)) throw x;
+    }
+  }
+  throw new EngineError("HELD", `could not claim ${input.name}: its claim keeps changing hands; try again`);
+}
+
+export interface ActiveClaim { kind: string; target: string; task_id: number; title: string }
+export interface KeptWorktree { task_id: number; title: string; path: string; reason: string }
+
+/** Every active claim, files then helper names, with the holding task. */
+export function activeClaims(e: Engine): ActiveClaim[] {
+  return e.db.prepare(
+    `SELECT c.kind, c.target, c.task_id, t.title FROM claims c JOIN tasks t ON t.id = c.task_id
+     WHERE c.status = 'active' ORDER BY c.kind, c.target`,
+  ).all() as unknown as ActiveClaim[];
+}
+
+/** Worktrees the engine tried to remove and kept (still on disk), with the latest reason. */
+export function keptWorktrees(e: Engine): KeptWorktree[] {
+  const rows = e.db.prepare(
+    `SELECT t.id AS task_id, t.title, t.cwd AS path,
+       (SELECT payload_json FROM events v WHERE v.kind = 'worktree_kept' AND v.task_id = t.id ORDER BY v.id DESC LIMIT 1) AS p
+     FROM tasks t WHERE t.id IN (SELECT task_id FROM events WHERE kind = 'worktree_kept') ORDER BY t.id`,
+  ).all() as unknown as { task_id: number; title: string; path: string; p: string }[];
+  return rows.filter((r) => existsSync(r.path)).map((r) => ({
+    task_id: r.task_id, title: r.title, path: r.path, reason: String((JSON.parse(r.p) as { reason?: unknown }).reason ?? ""),
+  }));
 }

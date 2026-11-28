@@ -6,7 +6,7 @@ import { openEngine } from "./engine";
 import { runHook, type HookEvent } from "./hooks";
 import { runCheck } from "./checks";
 import { serveStdio } from "./mcp";
-import { assertOwner, cancelTask, recordOverride, skipStep } from "./owner";
+import { assertOwner, cancelTask, ownerAcceptOverlap, ownerAllowEdit, ownerRelease, recordOverride, skipStep } from "./owner";
 import { preCommit, prePush, installGitHooks } from "./githooks";
 import { afterCommit } from "./duplicates";
 import { defaultPolicyYaml, initRepo, loadPolicy } from "./policy";
@@ -17,7 +17,7 @@ import {
   BUILD_TIMEOUT_MS, INSTALL_HINT, buildGraph, checkoutLabel, checkoutOf, folderShares, graphifyVersion, loadGraph, suggestExcludes, versionSupported,
   type FolderShare,
 } from "./graph";
-import { syncMerged } from "./claims";
+import { activeClaims, keptWorktrees, syncMerged } from "./claims";
 import { listOpen } from "./tasks";
 import { plannedTasks, startingTasks } from "./plan";
 import { EngineError } from "./types";
@@ -34,6 +34,9 @@ const USAGE = `usage: estack <command>
   skip --task <id> --step <name> --reason <text>     (owner only)
   cancel --task <id> --reason <text>                 (owner only)
   override <action> --reason <text> [--task <id>]    (owner only)
+  allow --task <id> --path <path> --reason <text>    (owner only: let a task edit a held file)
+  allow --task <a> --with <b> --reason <text>        (owner only: accept an overlap between two tasks)
+  release --path <path> --reason <text>              (owner only: free a stale hold)
   map <update|status|suggest> [--json]                     (the Graphify code map)
   hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
@@ -74,13 +77,19 @@ function status(e: Engine, json: boolean, out: (s: string) => void): void {
   const open = listOpen(e);
   const starting = startingTasks(e);
   const planned = plannedTasks(e);
+  const claims = activeClaims(e);
+  const kept = keptWorktrees(e);
   if (json) {
     const shown = open.map((t) => ({ ...t.task, steps: t.steps.map((s) => ({ name: s.name, status: s.status })), next: t.next?.name ?? null }));
     const waiting = planned.map((p) => ({ ...p.task, steps: [], next: null, depends_on: p.depends_on, overlaps: p.overlaps }));
     const busy = starting.map((s) => ({ ...s.task, steps: [], next: null, stale: s.stale }));
-    return out(JSON.stringify([...shown, ...busy, ...waiting], null, 2) + "\n");
+    return out(JSON.stringify({
+      tasks: [...shown, ...busy, ...waiting], claims,
+      kept_worktrees: kept.map((k) => ({ task_id: k.task_id, title: k.title, path: k.path, reason: k.reason })),
+    }, null, 2) + "\n");
   }
-  if (open.length === 0 && planned.length === 0 && starting.length === 0) return out("no open tasks\n");
+  if (open.length === 0 && planned.length === 0 && starting.length === 0 && claims.length === 0 && kept.length === 0) return out("no open tasks\n");
+  if (open.length === 0 && planned.length === 0 && starting.length === 0) out("no open tasks\n");
   for (const t of open) {
     out(`#${t.task.id} [${t.task.type}] ${t.task.title} (${t.task.branch})\n`);
     out("  " + t.steps.map((s) => `${s.name}:${s.status}`).join(" ") + "\n");
@@ -92,6 +101,8 @@ function status(e: Engine, json: boolean, out: (s: string) => void): void {
     if (p.depends_on.length > 0) out(`  depends on: ${p.depends_on.map((d) => `#${d}`).join(", ")}\n`);
     for (const o of p.overlaps) out(`  overlap (${o.kind}): ${o.kind === "exists" ? o.detail : `#${o.a} and #${o.b}, ${o.detail}`}\n`);
   }
+  for (const c of claims) out(`claim: ${c.target} held by #${c.task_id} ${c.title}${c.kind === "file" ? "" : ` (${c.kind})`}\n`);
+  for (const k of kept) out(`kept worktree: ${k.path} (#${k.task_id} ${k.title}): ${k.reason}\n`);
 }
 
 function handovers(e: Engine, json: boolean, out: (s: string) => void): void {
@@ -280,6 +291,30 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       assertOwner(io.env);
       recordOverride(openEngine(io.cwd), a, io.env);
       io.out(`recorded override for ${a.action}\n`);
+      return 0;
+    }
+    case "allow": {
+      const { opt } = parse(rest, ["task", "path", "with", "reason"]);
+      const task_id = num(need(opt, "task"), "--task");
+      const reason = need(opt, "reason");
+      if ((opt.path === undefined) === (opt.with === undefined)) throw new Usage("allow needs --path <path> or --with <task>, not both");
+      assertOwner(io.env);
+      if (opt.with !== undefined) {
+        const b = num(opt.with, "--with");
+        ownerAcceptOverlap(openEngine(io.cwd), { a: task_id, b, reason }, io.env);
+        io.out(`accepted the overlap between tasks ${Math.min(task_id, b)} and ${Math.max(task_id, b)}\n`);
+      } else {
+        ownerAllowEdit(openEngine(io.cwd), { task_id, path: opt.path, reason }, io.env);
+        io.out(`allowed task ${task_id} to edit ${opt.path}\n`);
+      }
+      return 0;
+    }
+    case "release": {
+      const { opt } = parse(rest, ["path", "reason"]);
+      const a = { path: need(opt, "path"), reason: need(opt, "reason") };
+      assertOwner(io.env);
+      ownerRelease(openEngine(io.cwd), a, io.env);
+      io.out(`released ${a.path}\n`);
       return 0;
     }
     case "map": {

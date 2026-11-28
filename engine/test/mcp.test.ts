@@ -36,10 +36,10 @@ function initedRepo(): string {
 }
 
 describe("mcp server", () => {
-  test("lists exactly the thirteen tools", async () => {
+  test("lists exactly the sixteen tools", async () => {
     const { client } = await connect(initedRepo());
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(["accept_overlap", "complete_step", "context_for", "dismiss_duplicate", "find_existing", "handover", "plan_tasks", "resume", "run_check", "start_task", "status", "who_uses", "withdraw_task"]);
+    expect(names).toEqual(["accept_overlap", "allow_edit", "claim_status", "claim_symbol", "complete_step", "context_for", "dismiss_duplicate", "find_existing", "handover", "plan_tasks", "resume", "run_check", "start_task", "status", "who_uses", "withdraw_task"]);
   });
 
   test("dismiss_duplicate by the author is refused", async () => {
@@ -291,5 +291,37 @@ describe("mcp server", () => {
     expect(bindings()).toHaveLength(2);
     expect((await call("status", { task_id: f.id, actor: B })).isError).toBe(false);
     expect(bindings(f.id)).toEqual([{ session_id: "s1", agent_id: null, role: "cto" }]);
+  });
+
+  test("claim_status, allow_edit and claim_symbol work through the server, and status lists claims", async () => {
+    const dir = initedRepo();
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "estack"], { cwd: dir });
+    const { call } = await connect(dir);
+    const cto = { session_id: "s1" };
+    const other = { session_id: "s2" };
+    const mk = async (title: string, actor: object) =>
+      JSON.parse((await call("start_task", { title, type: "feature", goal: `goal of ${title}`, done_check: "d", cwd: dir, worktree: true, actor })).text).task;
+    const t1 = await mk("One", cto);
+    const t2 = await mk("Two", other);
+    const t3 = await mk("Three", cto);
+    const db = new DatabaseSync(join(dir, ".estack", "state.db"));
+    try {
+      db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', 'src/a.ts', 'active', 'now')").run(t1.id);
+    } finally { db.close(); }
+    const st = JSON.parse((await call("claim_status", { path: "src/a.ts", actor: cto })).text);
+    expect(st.holder).toMatchObject({ task_id: t1.id, goal: "goal of One" });
+    const refused = await call("allow_edit", { task_id: t2.id, path: "src/a.ts", reason: "x", actor: other });
+    expect(refused.text).toMatch(new RegExp(`^OWNER_ONLY: .*estack allow --task ${t2.id} --path src/a.ts --reason <text>`));
+    expect((await call("allow_edit", { task_id: t3.id, path: "src/a.ts", reason: "needs it", actor: cto })).isError).toBe(false);
+    expect(JSON.parse((await call("claim_status", { path: "src/a.ts" })).text).grants).toHaveLength(1);
+    expect(JSON.parse((await call("claim_symbol", { task_id: t1.id, name: "parseMoney", file: "src/m.ts", actor: cto })).text)).toEqual({ status: "claimed" });
+    expect(JSON.parse((await call("claim_symbol", { task_id: t3.id, name: "parseMoney", file: "src/n.ts", actor: cto })).text)).toEqual({ status: "claimed_by", task_id: t1.id });
+    const all = JSON.parse((await call("status", {})).text);
+    expect(all.tasks.map((t: { task: { id: number } }) => t.task.id)).toEqual([t1.id, t2.id, t3.id]);
+    expect(all.claims).toEqual([
+      { kind: "file", target: "src/a.ts", task_id: t1.id, title: "One" },
+      { kind: "new_symbol", target: "parseMoney", task_id: t1.id, title: "One" }]);
+    expect(all.kept_worktrees).toEqual([]);
   });
 });

@@ -139,16 +139,19 @@ along with `.estack/brief.md`, which the owner fills in. Every change appends a
 row to an events log.
 
 **MCP tools.** The plugin registers an `estack` MCP server (`core/.mcp.json`)
-that exposes ten tools: `start_task`, `status`, `complete_step`,
-`run_check`, `handover` and `resume`, and for the code map `context_for`,
-`find_existing`, `who_uses` and `dismiss_duplicate`. For `test` and `verify` the engine runs the command fixed in
+that exposes sixteen tools: `start_task`, `status`, `complete_step`,
+`run_check`, `handover` and `resume`, for the code map `context_for`,
+`find_existing`, `who_uses` and `dismiss_duplicate`, and for parallel work
+`plan_tasks`, `accept_overlap`, `withdraw_task`, `claim_status`, `allow_edit`
+and `claim_symbol`. For `test` and `verify` the engine runs the command fixed in
 `policy.yaml` itself, in the task's worktree, and never trusts evidence
 described in words.
 
 **CLI.** Run `npm link` once in the estack clone to get `estack` on your PATH,
 or call `node --no-warnings adapters/claude-code/engine/estack.mjs`. Commands:
 `init`, `status [--json]`, `handovers`, `run --task <id> --step <test|verify>`, `skip`,
-`cancel`, `override`, `map update|status|suggest` (build the code map, show it,
+`cancel`, `override`, `allow` and `release` (owner only: let a task into a held
+file, accept an overlap across CTOs, free a stale hold), `map update|status|suggest` (build the code map, show it,
 suggest what to exclude), and `mcp`, plus `git-hook` and `map-hook`, which the
 installed git hooks call. Exit codes: 0 on success, 1 for an engine or
 internal error, 2 for a usage error, and 3 when `run` ran the check but it

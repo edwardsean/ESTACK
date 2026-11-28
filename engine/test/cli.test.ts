@@ -5,6 +5,8 @@ import { describe, expect, test } from "vitest";
 import { main } from "../src/cli";
 import { openEngine } from "../src/engine";
 import { saveSessionHandover, saveTaskHandover } from "../src/handover";
+import { checkEdit } from "../src/claims";
+import { removeWorktree } from "../src/worktree";
 import { getTask, startTask } from "../src/tasks";
 import { HAS_GRAPHIFY, fakeExec, makeRepo, writeFakeGraph } from "./helpers";
 import { realExec, type Exec } from "../src/exec";
@@ -314,5 +316,69 @@ describe("cli init and the code map", () => {
     writeFileSync(join(dir, "dist", "a.js"), "x\n");
     execFileSync("git", ["add", "."], { cwd: dir });
     expect(run(dir, ["map", "suggest"]).out).toBe("dist/**  (named dist)\n");
+  });
+
+  describe("claims", { timeout: 60_000 }, () => {
+    function two() {
+      const dir = makeRepo();
+      expect(run(dir, ["init"]).status).toBe(0);
+      execFileSync("git", ["add", "-A"], { cwd: dir });
+      execFileSync("git", ["commit", "-q", "-m", "estack"], { cwd: dir });
+      const e = openEngine(dir);
+      const mk = (title: string, s: string) => startTask(e, { title, type: "feature", goal: `goal ${title}`, done_check: "d", actor: { session_id: s }, cwd: dir, worktree: true }).task;
+      return { dir, e, t1: mk("one", "sa"), t2: mk("two", "sb") };
+    }
+
+    test("estack allow is refused inside Claude Code and works from a terminal", () => {
+      const { dir, e, t1, t2 } = two();
+      checkEdit(e, t1, "src/a.ts");
+      const args = ["allow", "--task", String(t2.id), "--path", "src/a.ts", "--reason", "needs it"];
+      const refused = run(dir, args, { CLAUDECODE: "1" });
+      expect(refused.status).toBe(1);
+      expect(refused.err).toContain("owner-only");
+      expect(checkEdit(e, t2, "src/a.ts", undefined, false).ok).toBe(false);
+      const ok = run(dir, args);
+      expect(ok.status).toBe(0);
+      expect(ok.out).toBe(`allowed task ${t2.id} to edit src/a.ts\n`);
+      expect(checkEdit(e, t2, "src/a.ts").ok).toBe(true);
+    });
+
+    test("estack allow --with accepts an overlap across CTOs", () => {
+      const { dir, e, t1, t2 } = two();
+      const args = ["allow", "--task", String(t1.id), "--with", String(t2.id), "--reason", "different files"];
+      expect(run(dir, args, { CLAUDECODE: "1" }).status).toBe(1);
+      const ok = run(dir, args);
+      expect(ok.status).toBe(0);
+      expect(ok.out).toBe(`accepted the overlap between tasks ${t1.id} and ${t2.id}\n`);
+      expect(e.db.prepare("SELECT a, b, by FROM overlap_accepts").all()).toEqual([{ a: t1.id, b: t2.id, by: "owner" }]);
+      expect(run(dir, ["allow", "--task", "1", "--reason", "x"]).status).toBe(2);
+    });
+
+    test("estack release frees a stale hold", () => {
+      const { dir, e, t1, t2 } = two();
+      checkEdit(e, t1, "src/a.ts");
+      const args = ["release", "--path", "src/a.ts", "--reason", "stale"];
+      expect(run(dir, args, { CLAUDECODE: "1" }).status).toBe(1);
+      expect(checkEdit(e, t2, "src/a.ts", undefined, false).ok).toBe(false);
+      const ok = run(dir, args);
+      expect(ok.status).toBe(0);
+      expect(ok.out).toBe("released src/a.ts\n");
+      expect(checkEdit(e, t2, "src/a.ts").ok).toBe(true);
+    });
+
+    test("status lists claims and kept worktrees", () => {
+      const { dir, e, t1 } = two();
+      checkEdit(e, t1, "src/a.ts");
+      e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(t1.id);
+      writeFileSync(join(t1.cwd, "dirty.txt"), "x");
+      expect(removeWorktree(e, t1)).toBe("kept");
+      const text = run(dir, ["status"]).out;
+      expect(text).toContain(`claim: src/a.ts held by #${t1.id} one`);
+      expect(text).toContain(`kept worktree: ${t1.cwd} (#${t1.id} one): uncommitted changes`);
+      const json = JSON.parse(run(dir, ["status", "--json"]).out);
+      expect(json.claims).toEqual([{ kind: "file", target: "src/a.ts", task_id: t1.id, title: "one" }]);
+      expect(json.kept_worktrees).toEqual([{ task_id: t1.id, title: "one", path: t1.cwd, reason: "uncommitted changes" }]);
+      expect(json.tasks.map((t: { id: number }) => t.id)).toHaveLength(1);
+    });
   });
 });

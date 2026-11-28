@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { checkEdit, hasGrant, holderOf, isClaimExempt, passClaims, releaseClaims, syncMerged } from "../src/claims";
+import { MAX_CLAIM_DIFF, allowEdit, checkEdit, claimStatus, claimSymbol, hasGrant, holderOf, isClaimExempt, passClaims, releaseClaim, releaseClaims, syncMerged } from "../src/claims";
 import { openEngine, type Engine } from "../src/engine";
 import { preCommit } from "../src/githooks";
 import { runHook, type HookEvent } from "../src/hooks";
@@ -10,7 +10,8 @@ import { cancelTask } from "../src/owner";
 import { initRepo } from "../src/policy";
 import { completeStep, insertEvidence, startTask } from "../src/tasks";
 import type { Actor, Task } from "../src/types";
-import { fakeExec, makeRepo } from "./helpers";
+import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { EngineError } from "../src/types";
 
 const A: Actor = { session_id: "sa" };
 const B: Actor = { session_id: "sb" };
@@ -341,5 +342,127 @@ describe("file claims", { timeout: 60_000 }, () => {
     writeFileSync(join(git(t2.cwd, "rev-parse", "--path-format=absolute", "--git-dir"), "MERGE_HEAD"), git(t2.cwd, "rev-parse", "HEAD") + "\n");
     expect(preCommit(e, t2.cwd)).toBeNull();
     expect(claims(e)).toHaveLength(1);
+  });
+});
+
+const code = (fn: () => unknown): EngineError => { try { fn(); } catch (x) { return x as EngineError; } throw new Error("did not throw"); };
+
+describe("claims fixes carried from task 5", { timeout: 60_000 }, () => {
+  test("an open feature whose pr gh reports merged keeps its worktree and claims (only done tasks are synced)", () => {
+    const dir = repo();
+    const e = openEngine(dir, { exec: fakeExec({ "pr view feat/1-feat --json state": { code: 0, stdout: JSON.stringify({ state: "MERGED" }) } }) });
+    const f = feature(e, dir, A, "feat");
+    checkEdit(e, f, "src/a.ts");
+    git(f.cwd, "commit", "--allow-empty", "-m", "work");
+    git(dir, "merge", "--no-ff", "-m", "m", f.branch);
+    syncMerged(e);
+    expect(claims(e)).toEqual([{ task_id: f.id, target: "src/a.ts", status: "active" }]);
+    expect(existsSync(f.cwd)).toBe(true);
+  });
+
+  test("pre-commit refuses a path another task took between its two passes", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, B, "two");
+    mkdirSync(join(t2.cwd, "src"), { recursive: true });
+    for (const f of ["src/a.ts", "src/b.ts"]) {
+      writeFileSync(join(t2.cwd, f), "x\n");
+      git(t2.cwd, "add", f);
+    }
+    // Taking src/a.ts is the moment another task takes src/b.ts.
+    e.db.exec(`CREATE TRIGGER race BEFORE INSERT ON claims WHEN NEW.target = 'src/a.ts' BEGIN
+      INSERT INTO claims (task_id, kind, target, status, at) VALUES (${t1.id}, 'file', 'src/b.ts', 'active', 'x'); END`);
+    const r = preCommit(e, t2.cwd);
+    expect(r).toContain(`src/b.ts is held by task #${t1.id}`);
+  });
+});
+
+describe("deciding on held files and helper names", { timeout: 60_000 }, () => {
+  test("claim_status shows the holder's goal and its changes, committed and not", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one", "build the thing");
+    expect(claimStatus(e, "src/a.ts")).toEqual({ path: "src/a.ts", holder: null, diff: "", grants: [] });
+    checkEdit(e, t1, "src/a.ts");
+    mkdirSync(join(t1.cwd, "src"), { recursive: true });
+    writeFileSync(join(t1.cwd, "src/a.ts"), "committed line\n");
+    git(t1.cwd, "add", "src/a.ts");
+    git(t1.cwd, "commit", "-m", "a");
+    writeFileSync(join(t1.cwd, "src/a.ts"), "committed line\nuncommitted line\n");
+    const s = claimStatus(e, "src/a.ts");
+    expect(s.holder).toEqual({ task_id: t1.id, title: "one", goal: "build the thing", cwd: t1.cwd });
+    expect(s.diff).toContain("+committed line");
+    expect(s.diff).toContain("+uncommitted line");
+    writeFileSync(join(t1.cwd, "src/a.ts"), "y".repeat(MAX_CLAIM_DIFF * 2) + "\n");
+    const big = claimStatus(e, "src/a.ts");
+    expect(big.diff.endsWith("(truncated)")).toBe(true);
+    expect(big.diff.length).toBeLessThan(MAX_CLAIM_DIFF + 40);
+    rmSync(t1.cwd, { recursive: true, force: true });
+    const gone = claimStatus(e, "src/a.ts");
+    expect(gone.diff).toBe("");
+    expect(gone.note).toMatch(/worktree is gone/);
+  });
+
+  test("the owning CTO allows an edit and the task then edits freely", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, A, "two");
+    checkEdit(e, t1, "src/a.ts");
+    expect(checkEdit(e, t2, "src/a.ts").ok).toBe(false);
+    expect(code(() => allowEdit(e, { task_id: t2.id, path: "src/a.ts", reason: " ", actor: A, owner: false })).code).toBe("BAD_EVIDENCE");
+    allowEdit(e, { task_id: t2.id, path: "src/a.ts", reason: "needs the type", actor: A, owner: false });
+    expect(checkEdit(e, t2, "src/a.ts")).toEqual({ ok: true });
+    expect(claimStatus(e, "src/a.ts").grants).toEqual([{ task_id: t2.id, reason: "needs the type", by: "sa/main", at: expect.any(String) }]);
+    expect(JSON.parse(kinds(e, "claim_granted")[0].p)).toEqual({ path: "src/a.ts", holder: t1.id, by: "sa/main" });
+    expect(code(() => allowEdit(e, { task_id: t2.id, path: "src/free.ts", reason: "x", actor: A, owner: false })).message).toMatch(/not held/);
+  });
+
+  test("across CTOs allow_edit names the owner command", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, B, "two");
+    checkEdit(e, t1, "src/a.ts");
+    const x = code(() => allowEdit(e, { task_id: t2.id, path: "src/a.ts", reason: "x", actor: B, owner: false }));
+    expect(x.code).toBe("OWNER_ONLY");
+    expect(x.message).toContain(`estack allow --task ${t2.id} --path src/a.ts --reason <text>`);
+    allowEdit(e, { task_id: t2.id, path: "src/a.ts", reason: "ok", actor: { session_id: "owner" }, owner: true });
+    expect(checkEdit(e, t2, "src/a.ts").ok).toBe(true);
+  });
+
+  test("release frees a stale hold, and a path nobody holds is an error", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, B, "two");
+    checkEdit(e, t1, "src/a.ts");
+    releaseClaim(e, "src/a.ts", "stale");
+    expect(claims(e)).toEqual([{ task_id: t1.id, target: "src/a.ts", status: "released" }]);
+    expect(JSON.parse(kinds(e, "claim_released")[0].p)).toMatchObject({ path: "src/a.ts", reason: "stale" });
+    expect(checkEdit(e, t2, "src/a.ts").ok).toBe(true);
+    expect(code(() => releaseClaim(e, "src/zzz.ts", "x")).message).toMatch(/not held/);
+    expect(code(() => releaseClaim(e, "src/a.ts", " ")).code).toBe("BAD_EVIDENCE");
+  });
+
+  test("claim_symbol returns the existing helper, another task's claim, or claims it", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = feature(e, dir, A, "feat");
+    const w = worker(e, f, A, "work");
+    const w2 = worker(e, f, A, "more");
+    // Only the parent has a graph: the worker falls back to it.
+    writeFakeGraph(f.cwd,
+      [{ id: "file:src/utils.ts", label: "utils.ts", source_file: "src/utils.ts", source_location: "L1" },
+        { id: "fd", label: "formatDate()", source_file: "src/utils.ts", source_location: "L7" }],
+      [{ source: "file:src/utils.ts", target: "fd", relation: "contains", confidence: "EXTRACTED", source_file: "src/utils.ts", source_location: "L7" }]);
+    expect(claimSymbol(e, { task_id: w.id, name: "format_date", file: "src/new.ts", actor: A })).toEqual({ status: "exists", file: "src/utils.ts", line: 7 });
+    expect(claimSymbol(e, { task_id: w.id, name: "parseMoney", file: "src/money.ts", actor: A })).toEqual({ status: "claimed" });
+    expect(claimSymbol(e, { task_id: w2.id, name: "parse_money", file: "src/other.ts", actor: A })).toEqual({ status: "claimed_by", task_id: w.id });
+    expect(claimSymbol(e, { task_id: w.id, name: "parseMoney", file: "src/money.ts", actor: A })).toEqual({ status: "claimed" });
+    expect(e.db.prepare("SELECT task_id, kind, target, status FROM claims WHERE kind = 'new_symbol'").all()).toEqual([
+      { task_id: w.id, kind: "new_symbol", target: "parseMoney", status: "active" }]);
+    expect(JSON.parse(kinds(e, "symbol_claimed")[0].p)).toMatchObject({ name: "parseMoney", file: "src/money.ts" });
   });
 });

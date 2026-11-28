@@ -1,4 +1,5 @@
-import { releaseClaims } from "./claims";
+import { allowEdit, releaseClaim, releaseClaims } from "./claims";
+import { acceptOverlap } from "./plan";
 import type { Engine } from "./engine";
 import { getTask, logEvent, tx, type TaskView } from "./tasks";
 import { EngineError, type Actor } from "./types";
@@ -63,4 +64,23 @@ export function recordOverride(e: Engine, input: { action: string; reason: strin
       .run(input.task_id ?? null, input.action, "", "owner", e.now().toISOString());
     logEvent(e, OWNER, "override", input.task_id ?? null, { action: input.action, reason: input.reason });
   });
+}
+
+/** Owner: let a task edit a file another task holds. */
+export function ownerAllowEdit(e: Engine, input: { task_id: number; path: string; reason: string }, env: NodeJS.ProcessEnv): void {
+  assertOwner(env);
+  allowEdit(e, { ...input, actor: OWNER, owner: true });
+}
+
+/** Owner: accept an overlap between two tasks, across CTOs. */
+export function ownerAcceptOverlap(e: Engine, input: { a: number; b: number; reason: string }, env: NodeJS.ProcessEnv): void {
+  assertOwner(env);
+  needReason(input.reason);
+  acceptOverlap(e, { ...input, by: "owner", owner: true, actor: OWNER });
+}
+
+/** Owner: free a stale hold on a file. */
+export function ownerRelease(e: Engine, input: { path: string; reason: string }, env: NodeJS.ProcessEnv): void {
+  assertOwner(env);
+  releaseClaim(e, input.path, input.reason);
 }

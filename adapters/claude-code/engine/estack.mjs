@@ -34715,20 +34715,296 @@ function isExempt(relPath, policy) {
   return policy.exempt_paths.some((p) => pathMatches(relPath, p));
 }
 
-// engine/src/plan.ts
-import { existsSync as existsSync5, realpathSync as realpathSync2 } from "node:fs";
-import { dirname as dirname2, isAbsolute, relative, resolve, sep } from "node:path";
-
 // engine/src/duplicates.ts
 import { readFileSync as readFileSync3 } from "node:fs";
 import { join as join6 } from "node:path";
 
 // engine/src/graph.ts
-import { appendFileSync, existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { appendFileSync, existsSync as existsSync5, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { basename, join as join5 } from "node:path";
 
+// engine/src/plan.ts
+import { existsSync as existsSync3, realpathSync as realpathSync2 } from "node:fs";
+import { dirname as dirname2, isAbsolute, relative, resolve, sep } from "node:path";
+var getRow = (e, id) => e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+function subjectOf(e, t) {
+  const col = (sql) => e.db.prepare(sql).all(t.id).map((r) => r.v);
+  return {
+    id: t.id,
+    parent_id: t.parent_id,
+    group: t.task_group,
+    areas: col("SELECT path v FROM task_areas WHERE task_id = ? ORDER BY path"),
+    items: col("SELECT adds v FROM plan_items WHERE task_id = ? ORDER BY adds")
+  };
+}
+function realish(p) {
+  if (existsSync3(p)) return realpathSync2(p);
+  const up = dirname2(p);
+  return up === p ? p : resolve(realish(up), p.slice(up.length).replace(/^[\\/]+/, ""));
+}
+function areaPath(checkout, path) {
+  const root = realish(checkout);
+  const rel = relative(root, realish(resolve(root, path))).split(sep).join("/");
+  if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
+    throw new EngineError("POLICY_INVALID", `${path} is outside the checkout ${checkout}; give a path inside it`);
+  }
+  return rel;
+}
+function areaClash(x, y) {
+  const a = x;
+  const b = y;
+  if (a === b) return `both change ${a === "" ? "the whole repository" : a}`;
+  if (a === "") return `the whole repository contains ${b}`;
+  if (b === "") return `the whole repository contains ${a}`;
+  if (b.startsWith(`${a}/`)) return `${a} contains ${b}`;
+  if (a.startsWith(`${b}/`)) return `${b} contains ${a}`;
+  return null;
+}
+function between(s, o) {
+  const sid = s.id ?? 0;
+  const oid = o.id ?? 0;
+  const [a, b] = sid < oid ? [sid, oid] : [oid, sid];
+  const out = [];
+  for (const x of s.areas) {
+    for (const y of o.areas) {
+      const detail = areaClash(x, y);
+      if (detail) out.push({ a, b, kind: "area", detail });
+    }
+  }
+  for (const n of s.items) if (o.items.includes(n)) out.push({ a, b, kind: "adds", detail: `both plan to add ${n}` });
+  return out;
+}
+function existing(e, s) {
+  if (s.id === null || s.items.length === 0 || s.parent_id === null) return [];
+  const parent = getRow(e, s.parent_id);
+  const g = parent ? loadGraph(parent.cwd) : null;
+  if (!g) return [];
+  const fns = topLevelFunctions(g);
+  const out = [];
+  for (const name of s.items) {
+    const hit = fns.find((n) => normaliseName(n.name) === normaliseName(name));
+    if (hit) out.push({ a: s.id, b: s.id, kind: "exists", detail: `reuse ${hit.name} at ${hit.file}:${hit.line} instead` });
+  }
+  return out;
+}
+function isResolved(e, o) {
+  if (e.db.prepare("SELECT 1 FROM overlap_accepts WHERE a = ? AND b = ?").get(o.a, o.b)) return true;
+  if (o.kind === "exists") return false;
+  return e.db.prepare(
+    "SELECT 1 FROM task_deps WHERE (task_id = ?1 AND depends_on = ?2) OR (task_id = ?2 AND depends_on = ?1)"
+  ).get(o.a, o.b) !== void 0;
+}
+function claimInfo(e, task_id) {
+  const row = e.db.prepare("SELECT at, payload_json p FROM events WHERE kind = 'task_claimed' AND task_id = ? ORDER BY id DESC LIMIT 1").get(task_id);
+  if (!row) return { from: "new", stale: true };
+  const from = JSON.parse(row.p).from === "planned" ? "planned" : "new";
+  return { from, stale: e.now().getTime() - new Date(row.at).getTime() > STALE_CLAIM_MS };
+}
+function others(e, s) {
+  const rows = e.db.prepare("SELECT * FROM tasks WHERE status IN ('open','planned','starting') ORDER BY id").all();
+  return rows.filter((t) => !(t.status === "starting" && claimInfo(e, t.id).stale && claimInfo(e, t.id).from === "new")).filter((t) => t.id !== s.id && !(s.group !== null && s.parent_id !== null && t.task_group === s.group && t.parent_id === s.parent_id) && t.id !== s.parent_id && !(s.id !== null && t.parent_id === s.id)).map((t) => subjectOf(e, t));
+}
+function overlapsOf(e, s) {
+  const raw = [...others(e, s).flatMap((o) => between(s, o)), ...existing(e, s)];
+  return raw.map((o) => ({ ...o, resolved: isResolved(e, o) }));
+}
+function overlapsFor(e, task_id) {
+  const t = getRow(e, task_id);
+  if (!t) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
+  return overlapsOf(e, subjectOf(e, t));
+}
+function releaseStale(e) {
+  const rows = e.db.prepare("SELECT id FROM tasks WHERE status = 'starting'").all();
+  for (const { id } of rows) {
+    tx(e, () => {
+      const c = claimInfo(e, id);
+      if (!c.stale || c.from !== "new") return;
+      const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'starting'").run(id);
+      if (r.changes === 1) logEvent(e, { session_id: "engine" }, "task_released", id, { from: "new", stale: true });
+    });
+  }
+}
+function planTasks(e, input2) {
+  releaseStale(e);
+  const parent = getRow(e, input2.parent_task_id);
+  if (!parent || !ownsTask(e, input2.actor.session_id, parent.id)) {
+    throw new EngineError("NO_TASK", `task ${input2.parent_task_id} is not yours to plan under`);
+  }
+  if (parent.status !== "open") throw new EngineError("TASK_CLOSED", `parent task ${parent.id} is ${parent.status}`);
+  for (const t of input2.tasks) {
+    if (!e.policy.task_types[t.type]) throw new EngineError("POLICY_INVALID", `unknown task type "${t.type}"`);
+  }
+  const areas = input2.tasks.map((t) => t.area.map((p) => areaPath(parent.cwd, p)));
+  const by = actorId(input2.actor);
+  const now = e.now().toISOString();
+  const ids = tx(e, () => {
+    const made = [];
+    for (const [i, t] of input2.tasks.entries()) {
+      const id = Number(e.db.prepare(
+        "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'planned', '', ?, '', ?, ?, ?, ?)"
+      ).run(t.title, t.type, t.goal, t.done_check, parent.cwd, by, now, parent.id, t.group ?? null).lastInsertRowid);
+      made.push(id);
+      for (const p of areas[i]) e.db.prepare("INSERT OR IGNORE INTO task_areas (task_id, path) VALUES (?, ?)").run(id, p);
+      for (const n of t.adds ?? []) e.db.prepare("INSERT OR IGNORE INTO plan_items (task_id, adds) VALUES (?, ?)").run(id, n);
+    }
+    input2.tasks.forEach((t, i) => {
+      for (const d of t.depends_on ?? []) {
+        const dep = typeof d === "number" ? d : made[Number(/^#(\d+)$/.exec(d)?.[1]) - 1];
+        if (dep === void 0 || Number.isNaN(dep) || !getRow(e, dep)) {
+          throw new EngineError("NO_TASK", `task ${input2.tasks[i].title} depends on ${d}, which is not a task`);
+        }
+        if (dep === made[i]) throw new EngineError("DEPENDENCY", `task ${input2.tasks[i].title} cannot depend on itself`);
+        if (dep === parent.id) {
+          throw new EngineError("DEPENDENCY", `task ${input2.tasks[i].title} cannot depend on its own feature #${parent.id}: the feature waits for its tasks, so neither could start`);
+        }
+        e.db.prepare("INSERT OR IGNORE INTO task_deps (task_id, depends_on) VALUES (?, ?)").run(made[i], dep);
+      }
+      logEvent(e, input2.actor, "task_planned", made[i], { title: t.title, area: t.area, adds: t.adds ?? [] });
+    });
+    const next = (id) => e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ?").all(id).map((r) => r.d);
+    for (const id of made) {
+      const seen2 = /* @__PURE__ */ new Set();
+      const walk = (n, trail) => {
+        for (const d of next(n)) {
+          if (d === id) throw new EngineError("DEPENDENCY", `these tasks depend on each other in a circle: ${[...trail, n, id].map((x) => `#${x}`).join(" -> ")}`);
+          if (!seen2.has(d)) {
+            seen2.add(d);
+            walk(d, [...trail, n]);
+          }
+        }
+      };
+      walk(id, []);
+    }
+    return made;
+  });
+  const seen = /* @__PURE__ */ new Set();
+  const overlaps = ids.flatMap((id) => overlapsFor(e, id)).filter((o) => {
+    const k = `${o.a}/${o.b}/${o.kind}/${o.detail}`;
+    return seen.has(k) ? false : (seen.add(k), true);
+  });
+  for (const o of overlaps) if (!o.resolved) logEvent(e, input2.actor, "overlap_found", o.a, o);
+  return { tasks: ids.map((id) => getTask(e, id)), overlaps };
+}
+function acceptOverlap(e, input2) {
+  const [a, b] = input2.a <= input2.b ? [input2.a, input2.b] : [input2.b, input2.a];
+  for (const id of [a, b]) if (!getRow(e, id)) throw new EngineError("NO_TASK", `no task with id ${id}`);
+  if (!input2.owner) {
+    const s = input2.actor?.session_id;
+    if (!s || !ownsTask(e, s, a) || !ownsTask(e, s, b)) {
+      throw new EngineError(
+        "OWNER_ONLY",
+        `only the CTO of both tasks can accept this overlap; the owner runs: estack allow --task ${a} --with ${b} --reason <text>`
+      );
+    }
+  }
+  tx(e, () => {
+    e.db.prepare("INSERT OR REPLACE INTO overlap_accepts (a, b, reason, by, at) VALUES (?, ?, ?, ?, ?)").run(a, b, input2.reason, input2.by, e.now().toISOString());
+    logEvent(e, input2.actor ?? { session_id: input2.by }, "overlap_accepted", a, { a, b, reason: input2.reason, by: input2.by, owner: input2.owner });
+  });
+}
+function withdrawTask(e, task_id, actor) {
+  tx(e, () => {
+    const t = getRow(e, task_id);
+    if (!t) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
+    if (!ownsTask(e, actor.session_id, task_id)) throw new EngineError("OWNER_ONLY", `only the CTO of task ${task_id} can withdraw it`);
+    if (t.status === "starting") {
+      const c = claimInfo(e, task_id);
+      if (!c.stale) throw new EngineError("TASK_CLOSED", `task #${task_id} is being started; try again when it is open`);
+      if (c.from !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is cancelled; only a planned task can be withdrawn`);
+      e.db.prepare("UPDATE tasks SET status = 'planned', cwd = (SELECT cwd FROM tasks p WHERE p.id = tasks.parent_id), branch = '' WHERE id = ? AND status = 'starting'").run(task_id);
+      logEvent(e, actor, "task_released", task_id, {});
+      return;
+    }
+    if (t.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${t.status}; only a planned task can be withdrawn`);
+    e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'planned'").run(task_id);
+    logEvent(e, actor, "task_withdrawn", task_id, {});
+  });
+}
+function mergedIntoMain(e, task, opts = {}) {
+  const feature = task.parent_id === null ? task : getRow(e, task.parent_id);
+  if (!feature) return false;
+  const last = (kind, field) => {
+    const row = e.db.prepare("SELECT payload_json p FROM evidence WHERE task_id = ? AND kind = ? AND ok = 1 ORDER BY id DESC LIMIT 1").get(task.id, kind);
+    const v = row ? JSON.parse(row.p)[field] : void 0;
+    return typeof v === "string" ? v : null;
+  };
+  const sha = task.parent_id === null ? last("commit", "sha") : last("merged", "head");
+  if (!sha) return false;
+  if (feature.branch) {
+    const pr = e.exec.run("gh", ["pr", "view", feature.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+    if (pr.code === 0) {
+      try {
+        if (JSON.parse(pr.stdout).state === "MERGED") return true;
+      } catch {
+      }
+    }
+  }
+  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
+  if (hasOrigin && !opts.fetched) e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  const main2 = hasOrigin ? "refs/remotes/origin/main" : "refs/heads/main";
+  return e.exec.run("git", ["merge-base", "--is-ancestor", sha, main2], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
+}
+function dependencyState(e, task_id) {
+  const me = getRow(e, task_id);
+  if (!me) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
+  const deps = e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ? ORDER BY depends_on").all(task_id);
+  return deps.map(({ d }) => {
+    const dep = getRow(e, d);
+    if (!dep) return { finished: false, detail: `task #${d} does not exist` };
+    if (dep.status === "starting") {
+      const c = claimInfo(e, d);
+      if (!c.stale) return { finished: false, detail: `task #${d} is being started; try again when it is open` };
+      if (c.from === "planned") return { finished: false, detail: `task #${d}'s start went stale; its CTO must start it again or withdraw it` };
+    }
+    if (dep.status === "cancelled" || dep.status === "starting") return { finished: false, detail: `task #${d} was cancelled; withdraw this task or plan it again` };
+    if (me.parent_id !== null && dep.parent_id === me.parent_id) {
+      const merge2 = e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'merge'").get(d);
+      const finished2 = merge2?.status === "done";
+      return { finished: finished2, detail: finished2 ? `task #${d} is merged into the feature` : `task #${d} (${dep.title}) is not merged into the feature yet` };
+    }
+    const feature = dep.parent_id === null ? dep : getRow(e, dep.parent_id) ?? dep;
+    const finished = mergedIntoMain(e, dep);
+    return { finished, detail: finished ? `task #${d} is merged into main` : `task #${d} (${dep.title}) waits for its feature #${feature.id} to merge into main` };
+  });
+}
+function gateStart(e, actor, what) {
+  const planned = "planned" in what ? what.planned : null;
+  const s = planned ? subjectOf(e, planned) : { ...what.fresh, id: null, items: [] };
+  const open2 = overlapsOf(e, s).filter((o) => !o.resolved);
+  if (open2.length > 0) {
+    const lines2 = open2.map((o) => o.kind === "exists" ? `  ${o.detail}` : `  #${o.a} and #${o.b} (${o.kind}): ${o.detail}`);
+    const hint = planned ? `; resolve with accept_overlap, or the owner runs estack allow --task <a> --with <b> --reason <text>` : "; plan the work with plan_tasks and a dependency, or pick a different area";
+    throw new EngineError("OVERLAP", `unresolved overlaps:
+${lines2.join("\n")}${hint}`);
+  }
+  if (!planned) return;
+  const state = dependencyState(e, planned.id);
+  const waiting = state.filter((d) => !d.finished);
+  if (waiting.length > 0) {
+    throw new EngineError("DEPENDENCY", waiting.map((d) => d.detail).join("; "));
+  }
+  const rows = e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ?").all(planned.id);
+  for (const { d } of rows) {
+    const logged = e.db.prepare("SELECT 1 FROM events WHERE kind = 'dependency_finished' AND task_id = ? AND payload_json = ?").get(planned.id, JSON.stringify({ depends_on: d }));
+    if (!logged) logEvent(e, actor, "dependency_finished", planned.id, { depends_on: d });
+  }
+}
+function startingTasks(e) {
+  releaseStale(e);
+  const rows = e.db.prepare("SELECT * FROM tasks WHERE status = 'starting' ORDER BY id").all();
+  return rows.map((task) => ({ task, stale: claimInfo(e, task.id).stale }));
+}
+function plannedTasks(e) {
+  const rows = e.db.prepare("SELECT * FROM tasks WHERE status = 'planned' ORDER BY id").all();
+  return rows.map((task) => ({
+    task,
+    depends_on: e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ? ORDER BY depends_on").all(task.id).map((r) => r.d),
+    overlaps: overlapsFor(e, task.id).filter((o) => !o.resolved)
+  }));
+}
+
 // engine/src/worktree.ts
-import { existsSync as existsSync3 } from "node:fs";
+import { existsSync as existsSync4 } from "node:fs";
 import { join as join4 } from "node:path";
 var WORKTREES_DIR = ".estack/worktrees";
 var WORKTREE_SETUP_TIMEOUT_MS = 6e5;
@@ -34762,7 +35038,7 @@ function ensureWorktree(e, input2) {
   const byHand = `remove it by hand (git worktree remove ${path}, then git branch -d ${input2.branch}) and start the task again`;
   const here = blocks.find((b) => b.path === path);
   if (here) {
-    if (here.prunable || !existsSync3(path)) {
+    if (here.prunable || !existsSync4(path)) {
       throw new EngineError("POLICY_INVALID", `${path} is a worktree git lists but whose folder is gone; inspect it with git worktree list, clear it with git worktree prune, and start the task again`);
     }
     if (here.locked) {
@@ -34772,7 +35048,7 @@ function ensureWorktree(e, input2) {
     if (!input2.reuse) throw new EngineError("POLICY_INVALID", `${path} already exists from earlier work that is not this task's; ${byHand}`);
     return { path, reused: true };
   }
-  if (existsSync3(path)) throw new EngineError("POLICY_INVALID", `${path} already exists and is not the worktree of ${input2.branch}; ${byHand}`);
+  if (existsSync4(path)) throw new EngineError("POLICY_INVALID", `${path} already exists and is not the worktree of ${input2.branch}; ${byHand}`);
   if (runBounded(e, input2.under, "git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).code === 0) {
     const holder = blocks.find((b) => b.branch === ref);
     throw new EngineError("POLICY_INVALID", holder ? `branch ${input2.branch} is checked out in ${holder.path}, not at ${path}; remove that worktree by hand (git worktree remove ${holder.path}) and start the task again` : `branch ${input2.branch} already exists without its worktree; delete it by hand (git branch -d ${input2.branch}) and start the task again`);
@@ -34797,7 +35073,7 @@ function removeWorktree(e, task) {
   };
   if (task.cwd === "") return "missing";
   if (!task.cwd.includes(`/${WORKTREES_DIR}/`)) return keep("not engine-made");
-  if (!existsSync3(task.cwd)) return "missing";
+  if (!existsSync4(task.cwd)) return "missing";
   const list = runBounded(e, e.repo.root, "git", ["worktree", "list", "--porcelain"]);
   if (list.code !== 0) return keep("could not list worktrees");
   const nested = list.stdout.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice("worktree ".length)).some((p) => p.startsWith(task.cwd + "/"));
@@ -34807,7 +35083,7 @@ function removeWorktree(e, task) {
   const rm = runBounded(e, e.repo.root, "git", ["worktree", "remove", task.cwd]);
   if (rm.code !== 0) return keep(rm.stderr.trim());
   const parent = task.parent_id === null ? void 0 : e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(task.parent_id);
-  const from = parent?.cwd && existsSync3(parent.cwd) ? parent.cwd : e.repo.root;
+  const from = parent?.cwd && existsSync4(parent.cwd) ? parent.cwd : e.repo.root;
   const br = runBounded(e, from, "git", ["branch", "-d", task.branch]);
   logEvent(e, ENGINE, "worktree_removed", task.id, { path: task.cwd, branch: task.branch, branch_deleted: br.code === 0 });
   return "removed";
@@ -35198,7 +35474,7 @@ function appendExclude(e, checkout, wanted) {
   const info = join5(r.stdout.trim(), "info");
   const file2 = join5(info, "exclude");
   mkdirSync2(info, { recursive: true });
-  const have = existsSync4(file2) ? readFileSync2(file2, "utf8") : "";
+  const have = existsSync5(file2) ? readFileSync2(file2, "utf8") : "";
   const present = new Set(have.split("\n"));
   const missing = wanted.filter((l) => !present.has(l));
   if (missing.length) appendFileSync(file2, (have === "" || have.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
@@ -35527,284 +35803,6 @@ function dismissDuplicate(e, input2) {
   return e.db.prepare("SELECT * FROM duplicates WHERE id = ?").get(d.id);
 }
 
-// engine/src/plan.ts
-var getRow = (e, id) => e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
-function subjectOf(e, t) {
-  const col = (sql) => e.db.prepare(sql).all(t.id).map((r) => r.v);
-  return {
-    id: t.id,
-    parent_id: t.parent_id,
-    group: t.task_group,
-    areas: col("SELECT path v FROM task_areas WHERE task_id = ? ORDER BY path"),
-    items: col("SELECT adds v FROM plan_items WHERE task_id = ? ORDER BY adds")
-  };
-}
-function realish(p) {
-  if (existsSync5(p)) return realpathSync2(p);
-  const up = dirname2(p);
-  return up === p ? p : resolve(realish(up), p.slice(up.length).replace(/^[\\/]+/, ""));
-}
-function areaPath(checkout, path) {
-  const root = realish(checkout);
-  const rel = relative(root, realish(resolve(root, path))).split(sep).join("/");
-  if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
-    throw new EngineError("POLICY_INVALID", `${path} is outside the checkout ${checkout}; give a path inside it`);
-  }
-  return rel;
-}
-function areaClash(x, y) {
-  const a = x;
-  const b = y;
-  if (a === b) return `both change ${a === "" ? "the whole repository" : a}`;
-  if (a === "") return `the whole repository contains ${b}`;
-  if (b === "") return `the whole repository contains ${a}`;
-  if (b.startsWith(`${a}/`)) return `${a} contains ${b}`;
-  if (a.startsWith(`${b}/`)) return `${b} contains ${a}`;
-  return null;
-}
-function between(s, o) {
-  const sid = s.id ?? 0;
-  const oid = o.id ?? 0;
-  const [a, b] = sid < oid ? [sid, oid] : [oid, sid];
-  const out = [];
-  for (const x of s.areas) {
-    for (const y of o.areas) {
-      const detail = areaClash(x, y);
-      if (detail) out.push({ a, b, kind: "area", detail });
-    }
-  }
-  for (const n of s.items) if (o.items.includes(n)) out.push({ a, b, kind: "adds", detail: `both plan to add ${n}` });
-  return out;
-}
-function existing(e, s) {
-  if (s.id === null || s.items.length === 0 || s.parent_id === null) return [];
-  const parent = getRow(e, s.parent_id);
-  const g = parent ? loadGraph(parent.cwd) : null;
-  if (!g) return [];
-  const fns = topLevelFunctions(g);
-  const out = [];
-  for (const name of s.items) {
-    const hit = fns.find((n) => normaliseName(n.name) === normaliseName(name));
-    if (hit) out.push({ a: s.id, b: s.id, kind: "exists", detail: `reuse ${hit.name} at ${hit.file}:${hit.line} instead` });
-  }
-  return out;
-}
-function isResolved(e, o) {
-  if (e.db.prepare("SELECT 1 FROM overlap_accepts WHERE a = ? AND b = ?").get(o.a, o.b)) return true;
-  if (o.kind === "exists") return false;
-  return e.db.prepare(
-    "SELECT 1 FROM task_deps WHERE (task_id = ?1 AND depends_on = ?2) OR (task_id = ?2 AND depends_on = ?1)"
-  ).get(o.a, o.b) !== void 0;
-}
-function claimInfo(e, task_id) {
-  const row = e.db.prepare("SELECT at, payload_json p FROM events WHERE kind = 'task_claimed' AND task_id = ? ORDER BY id DESC LIMIT 1").get(task_id);
-  if (!row) return { from: "new", stale: true };
-  const from = JSON.parse(row.p).from === "planned" ? "planned" : "new";
-  return { from, stale: e.now().getTime() - new Date(row.at).getTime() > STALE_CLAIM_MS };
-}
-function others(e, s) {
-  const rows = e.db.prepare("SELECT * FROM tasks WHERE status IN ('open','planned','starting') ORDER BY id").all();
-  return rows.filter((t) => !(t.status === "starting" && claimInfo(e, t.id).stale && claimInfo(e, t.id).from === "new")).filter((t) => t.id !== s.id && !(s.group !== null && s.parent_id !== null && t.task_group === s.group && t.parent_id === s.parent_id) && t.id !== s.parent_id && !(s.id !== null && t.parent_id === s.id)).map((t) => subjectOf(e, t));
-}
-function overlapsOf(e, s) {
-  const raw = [...others(e, s).flatMap((o) => between(s, o)), ...existing(e, s)];
-  return raw.map((o) => ({ ...o, resolved: isResolved(e, o) }));
-}
-function overlapsFor(e, task_id) {
-  const t = getRow(e, task_id);
-  if (!t) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
-  return overlapsOf(e, subjectOf(e, t));
-}
-function releaseStale(e) {
-  const rows = e.db.prepare("SELECT id FROM tasks WHERE status = 'starting'").all();
-  for (const { id } of rows) {
-    tx(e, () => {
-      const c = claimInfo(e, id);
-      if (!c.stale || c.from !== "new") return;
-      const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'starting'").run(id);
-      if (r.changes === 1) logEvent(e, { session_id: "engine" }, "task_released", id, { from: "new", stale: true });
-    });
-  }
-}
-function planTasks(e, input2) {
-  releaseStale(e);
-  const parent = getRow(e, input2.parent_task_id);
-  if (!parent || !ownsTask(e, input2.actor.session_id, parent.id)) {
-    throw new EngineError("NO_TASK", `task ${input2.parent_task_id} is not yours to plan under`);
-  }
-  if (parent.status !== "open") throw new EngineError("TASK_CLOSED", `parent task ${parent.id} is ${parent.status}`);
-  for (const t of input2.tasks) {
-    if (!e.policy.task_types[t.type]) throw new EngineError("POLICY_INVALID", `unknown task type "${t.type}"`);
-  }
-  const areas = input2.tasks.map((t) => t.area.map((p) => areaPath(parent.cwd, p)));
-  const by = actorId(input2.actor);
-  const now = e.now().toISOString();
-  const ids = tx(e, () => {
-    const made = [];
-    for (const [i, t] of input2.tasks.entries()) {
-      const id = Number(e.db.prepare(
-        "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'planned', '', ?, '', ?, ?, ?, ?)"
-      ).run(t.title, t.type, t.goal, t.done_check, parent.cwd, by, now, parent.id, t.group ?? null).lastInsertRowid);
-      made.push(id);
-      for (const p of areas[i]) e.db.prepare("INSERT OR IGNORE INTO task_areas (task_id, path) VALUES (?, ?)").run(id, p);
-      for (const n of t.adds ?? []) e.db.prepare("INSERT OR IGNORE INTO plan_items (task_id, adds) VALUES (?, ?)").run(id, n);
-    }
-    input2.tasks.forEach((t, i) => {
-      for (const d of t.depends_on ?? []) {
-        const dep = typeof d === "number" ? d : made[Number(/^#(\d+)$/.exec(d)?.[1]) - 1];
-        if (dep === void 0 || Number.isNaN(dep) || !getRow(e, dep)) {
-          throw new EngineError("NO_TASK", `task ${input2.tasks[i].title} depends on ${d}, which is not a task`);
-        }
-        if (dep === made[i]) throw new EngineError("DEPENDENCY", `task ${input2.tasks[i].title} cannot depend on itself`);
-        if (dep === parent.id) {
-          throw new EngineError("DEPENDENCY", `task ${input2.tasks[i].title} cannot depend on its own feature #${parent.id}: the feature waits for its tasks, so neither could start`);
-        }
-        e.db.prepare("INSERT OR IGNORE INTO task_deps (task_id, depends_on) VALUES (?, ?)").run(made[i], dep);
-      }
-      logEvent(e, input2.actor, "task_planned", made[i], { title: t.title, area: t.area, adds: t.adds ?? [] });
-    });
-    const next = (id) => e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ?").all(id).map((r) => r.d);
-    for (const id of made) {
-      const seen2 = /* @__PURE__ */ new Set();
-      const walk = (n, trail) => {
-        for (const d of next(n)) {
-          if (d === id) throw new EngineError("DEPENDENCY", `these tasks depend on each other in a circle: ${[...trail, n, id].map((x) => `#${x}`).join(" -> ")}`);
-          if (!seen2.has(d)) {
-            seen2.add(d);
-            walk(d, [...trail, n]);
-          }
-        }
-      };
-      walk(id, []);
-    }
-    return made;
-  });
-  const seen = /* @__PURE__ */ new Set();
-  const overlaps = ids.flatMap((id) => overlapsFor(e, id)).filter((o) => {
-    const k = `${o.a}/${o.b}/${o.kind}/${o.detail}`;
-    return seen.has(k) ? false : (seen.add(k), true);
-  });
-  for (const o of overlaps) if (!o.resolved) logEvent(e, input2.actor, "overlap_found", o.a, o);
-  return { tasks: ids.map((id) => getTask(e, id)), overlaps };
-}
-function acceptOverlap(e, input2) {
-  const [a, b] = input2.a <= input2.b ? [input2.a, input2.b] : [input2.b, input2.a];
-  for (const id of [a, b]) if (!getRow(e, id)) throw new EngineError("NO_TASK", `no task with id ${id}`);
-  if (!input2.owner) {
-    const s = input2.actor?.session_id;
-    if (!s || !ownsTask(e, s, a) || !ownsTask(e, s, b)) {
-      throw new EngineError(
-        "OWNER_ONLY",
-        `only the CTO of both tasks can accept this overlap; the owner runs: estack allow --task ${a} --with ${b} --reason <text>`
-      );
-    }
-  }
-  tx(e, () => {
-    e.db.prepare("INSERT OR REPLACE INTO overlap_accepts (a, b, reason, by, at) VALUES (?, ?, ?, ?, ?)").run(a, b, input2.reason, input2.by, e.now().toISOString());
-    logEvent(e, input2.actor ?? { session_id: input2.by }, "overlap_accepted", a, { a, b, reason: input2.reason, by: input2.by, owner: input2.owner });
-  });
-}
-function withdrawTask(e, task_id, actor) {
-  tx(e, () => {
-    const t = getRow(e, task_id);
-    if (!t) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
-    if (!ownsTask(e, actor.session_id, task_id)) throw new EngineError("OWNER_ONLY", `only the CTO of task ${task_id} can withdraw it`);
-    if (t.status === "starting") {
-      const c = claimInfo(e, task_id);
-      if (!c.stale) throw new EngineError("TASK_CLOSED", `task #${task_id} is being started; try again when it is open`);
-      if (c.from !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is cancelled; only a planned task can be withdrawn`);
-      e.db.prepare("UPDATE tasks SET status = 'planned', cwd = (SELECT cwd FROM tasks p WHERE p.id = tasks.parent_id), branch = '' WHERE id = ? AND status = 'starting'").run(task_id);
-      logEvent(e, actor, "task_released", task_id, {});
-      return;
-    }
-    if (t.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${task_id} is ${t.status}; only a planned task can be withdrawn`);
-    e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'planned'").run(task_id);
-    logEvent(e, actor, "task_withdrawn", task_id, {});
-  });
-}
-function mergedIntoMain(e, task, opts = {}) {
-  const feature = task.parent_id === null ? task : getRow(e, task.parent_id);
-  if (!feature) return false;
-  const last = (kind, field) => {
-    const row = e.db.prepare("SELECT payload_json p FROM evidence WHERE task_id = ? AND kind = ? AND ok = 1 ORDER BY id DESC LIMIT 1").get(task.id, kind);
-    const v = row ? JSON.parse(row.p)[field] : void 0;
-    return typeof v === "string" ? v : null;
-  };
-  const sha = task.parent_id === null ? last("commit", "sha") : last("merged", "head");
-  if (!sha) return false;
-  if (feature.branch) {
-    const pr = e.exec.run("gh", ["pr", "view", feature.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-    if (pr.code === 0) {
-      try {
-        if (JSON.parse(pr.stdout).state === "MERGED") return true;
-      } catch {
-      }
-    }
-  }
-  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
-  if (hasOrigin && !opts.fetched) e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
-  const main2 = hasOrigin ? "refs/remotes/origin/main" : "refs/heads/main";
-  return e.exec.run("git", ["merge-base", "--is-ancestor", sha, main2], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
-}
-function dependencyState(e, task_id) {
-  const me = getRow(e, task_id);
-  if (!me) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
-  const deps = e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ? ORDER BY depends_on").all(task_id);
-  return deps.map(({ d }) => {
-    const dep = getRow(e, d);
-    if (!dep) return { finished: false, detail: `task #${d} does not exist` };
-    if (dep.status === "starting") {
-      const c = claimInfo(e, d);
-      if (!c.stale) return { finished: false, detail: `task #${d} is being started; try again when it is open` };
-      if (c.from === "planned") return { finished: false, detail: `task #${d}'s start went stale; its CTO must start it again or withdraw it` };
-    }
-    if (dep.status === "cancelled" || dep.status === "starting") return { finished: false, detail: `task #${d} was cancelled; withdraw this task or plan it again` };
-    if (me.parent_id !== null && dep.parent_id === me.parent_id) {
-      const merge2 = e.db.prepare("SELECT status FROM steps WHERE task_id = ? AND name = 'merge'").get(d);
-      const finished2 = merge2?.status === "done";
-      return { finished: finished2, detail: finished2 ? `task #${d} is merged into the feature` : `task #${d} (${dep.title}) is not merged into the feature yet` };
-    }
-    const feature = dep.parent_id === null ? dep : getRow(e, dep.parent_id) ?? dep;
-    const finished = mergedIntoMain(e, dep);
-    return { finished, detail: finished ? `task #${d} is merged into main` : `task #${d} (${dep.title}) waits for its feature #${feature.id} to merge into main` };
-  });
-}
-function gateStart(e, actor, what) {
-  const planned = "planned" in what ? what.planned : null;
-  const s = planned ? subjectOf(e, planned) : { ...what.fresh, id: null, items: [] };
-  const open2 = overlapsOf(e, s).filter((o) => !o.resolved);
-  if (open2.length > 0) {
-    const lines2 = open2.map((o) => o.kind === "exists" ? `  ${o.detail}` : `  #${o.a} and #${o.b} (${o.kind}): ${o.detail}`);
-    const hint = planned ? `; resolve with accept_overlap, or the owner runs estack allow --task <a> --with <b> --reason <text>` : "; plan the work with plan_tasks and a dependency, or pick a different area";
-    throw new EngineError("OVERLAP", `unresolved overlaps:
-${lines2.join("\n")}${hint}`);
-  }
-  if (!planned) return;
-  const state = dependencyState(e, planned.id);
-  const waiting = state.filter((d) => !d.finished);
-  if (waiting.length > 0) {
-    throw new EngineError("DEPENDENCY", waiting.map((d) => d.detail).join("; "));
-  }
-  const rows = e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ?").all(planned.id);
-  for (const { d } of rows) {
-    const logged = e.db.prepare("SELECT 1 FROM events WHERE kind = 'dependency_finished' AND task_id = ? AND payload_json = ?").get(planned.id, JSON.stringify({ depends_on: d }));
-    if (!logged) logEvent(e, actor, "dependency_finished", planned.id, { depends_on: d });
-  }
-}
-function startingTasks(e) {
-  releaseStale(e);
-  const rows = e.db.prepare("SELECT * FROM tasks WHERE status = 'starting' ORDER BY id").all();
-  return rows.map((task) => ({ task, stale: claimInfo(e, task.id).stale }));
-}
-function plannedTasks(e) {
-  const rows = e.db.prepare("SELECT * FROM tasks WHERE status = 'planned' ORDER BY id").all();
-  return rows.map((task) => ({
-    task,
-    depends_on: e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ? ORDER BY depends_on").all(task.id).map((r) => r.d),
-    overlaps: overlapsFor(e, task.id).filter((o) => !o.resolved)
-  }));
-}
-
 // engine/src/claims.ts
 var ENGINE2 = { session_id: "engine" };
 var iso2 = (e) => e.now().toISOString();
@@ -35910,6 +35908,97 @@ function prClosed(e, task) {
   } catch {
     return false;
   }
+}
+var MAX_CLAIM_DIFF = 8e3;
+function claimStatus(e, path) {
+  const held = holderOf(e, path);
+  if (!held) return { path, holder: null, diff: "", grants: [] };
+  const { task } = held;
+  const grants = e.db.prepare(
+    "SELECT task_id, reason, by, at FROM claim_grants WHERE claim_id = ? AND path = ? ORDER BY id"
+  ).all(held.claim_id, path);
+  const out = { path, holder: { task_id: task.id, title: task.title, goal: task.goal, cwd: task.cwd }, diff: "", grants };
+  if (!existsSync6(task.cwd)) return { ...out, note: `the holder's worktree is gone (${task.cwd}), so its changes cannot be shown` };
+  const r = runBounded(e, task.cwd, "git", ["diff", "--no-color", task.base_sha, "--", path], HOOK_GIT_TIMEOUT_MS);
+  if (r.code !== 0) return { ...out, note: `could not read the holder's changes: ${r.stderr.trim()}` };
+  out.diff = r.stdout.length > MAX_CLAIM_DIFF ? `${r.stdout.slice(0, MAX_CLAIM_DIFF)}
+(truncated)` : r.stdout;
+  return out;
+}
+function allowEdit(e, input2) {
+  const reason = input2.reason?.trim();
+  if (!reason) throw new EngineError("BAD_EVIDENCE", "a reason is required");
+  const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input2.task_id);
+  if (!task) throw new EngineError("NO_TASK", `no task with id ${input2.task_id}`);
+  const held = holderOf(e, input2.path);
+  if (!held) throw new EngineError("BAD_EVIDENCE", `${input2.path} is not held by any task`);
+  const by = input2.owner ? "owner" : actorId(input2.actor ?? { session_id: "unknown" });
+  if (!input2.owner) {
+    const s = input2.actor?.session_id;
+    if (!s || !ownsTask(e, s, task.id) || !ownsTask(e, s, held.task.id)) {
+      throw new EngineError(
+        "OWNER_ONLY",
+        `only the CTO of both task #${task.id} and the holder, task #${held.task.id}, can allow this; the owner runs: estack allow --task ${task.id} --path ${input2.path} --reason <text>`
+      );
+    }
+  }
+  tx(e, () => {
+    e.db.prepare("INSERT INTO claim_grants (claim_id, task_id, path, reason, by, at) VALUES (?, ?, ?, ?, ?, ?)").run(held.claim_id, task.id, input2.path, reason, by, iso2(e));
+    logEvent(e, input2.actor ?? { session_id: "owner" }, "claim_granted", task.id, { path: input2.path, holder: held.task.id, by });
+  });
+}
+function releaseClaim(e, path, reason) {
+  if (!reason || !reason.trim()) throw new EngineError("BAD_EVIDENCE", "a reason is required");
+  const held = holderOf(e, path);
+  if (!held) throw new EngineError("BAD_EVIDENCE", `${path} is not held by any task`);
+  tx(e, () => {
+    e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso2(e), held.claim_id);
+    logEvent(e, { session_id: "owner" }, "claim_released", held.task.id, { claim_id: held.claim_id, kind: "file", path, reason });
+  });
+}
+function claimSymbol(e, input2) {
+  const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input2.task_id);
+  if (!task) throw new EngineError("NO_TASK", `no task with id ${input2.task_id}`);
+  if (!input2.name.trim()) throw new EngineError("BAD_EVIDENCE", "a name is required");
+  const want = normaliseName(input2.name);
+  const parent = task.parent_id === null ? void 0 : e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(task.parent_id);
+  const g = loadGraph(task.cwd) ?? (parent ? loadGraph(parent.cwd) : null);
+  const hit = g ? topLevelFunctions(g).find((n) => normaliseName(n.name) === want) : void 0;
+  if (hit) return { status: "exists", file: hit.file, line: hit.line };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const rows = e.db.prepare("SELECT task_id, target FROM claims WHERE kind = 'new_symbol' AND status = 'active'").all();
+    const mine = rows.find((r) => normaliseName(r.target) === want);
+    if (mine) return mine.task_id === task.id ? { status: "claimed" } : { status: "claimed_by", task_id: mine.task_id };
+    try {
+      tx(e, () => {
+        const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'new_symbol', ?, 'active', ?)").run(task.id, input2.name, iso2(e));
+        logEvent(e, input2.actor, "symbol_claimed", task.id, { name: input2.name, file: input2.file, claim_id: Number(r.lastInsertRowid) });
+      });
+      return { status: "claimed" };
+    } catch (x) {
+      if (!(x instanceof Error) || !/UNIQUE constraint failed/.test(x.message)) throw x;
+    }
+  }
+  throw new EngineError("HELD", `could not claim ${input2.name}: its claim keeps changing hands; try again`);
+}
+function activeClaims(e) {
+  return e.db.prepare(
+    `SELECT c.kind, c.target, c.task_id, t.title FROM claims c JOIN tasks t ON t.id = c.task_id
+     WHERE c.status = 'active' ORDER BY c.kind, c.target`
+  ).all();
+}
+function keptWorktrees(e) {
+  const rows = e.db.prepare(
+    `SELECT t.id AS task_id, t.title, t.cwd AS path,
+       (SELECT payload_json FROM events v WHERE v.kind = 'worktree_kept' AND v.task_id = t.id ORDER BY v.id DESC LIMIT 1) AS p
+     FROM tasks t WHERE t.id IN (SELECT task_id FROM events WHERE kind = 'worktree_kept') ORDER BY t.id`
+  ).all();
+  return rows.filter((r) => existsSync6(r.path)).map((r) => ({
+    task_id: r.task_id,
+    title: r.title,
+    path: r.path,
+    reason: String(JSON.parse(r.p).reason ?? "")
+  }));
 }
 
 // engine/src/context.ts
@@ -46658,12 +46747,27 @@ function createServer(cwd, deps = {}) {
     return getTask(e, a.task_id);
   }));
   server.registerTool("status", {
-    description: "Show one task (with task_id) or all open tasks.",
+    description: "Show one task (with task_id), or all open tasks with the active claims and kept worktrees.",
     inputSchema: { task_id: external_exports.number().int().optional(), actor: actorSchema }
   }, tool((e, a) => {
     syncMerged(e);
-    return a.task_id !== void 0 ? getTask(e, a.task_id) : listOpen(e);
+    return a.task_id !== void 0 ? getTask(e, a.task_id) : { tasks: listOpen(e), claims: activeClaims(e), kept_worktrees: keptWorktrees(e) };
   }));
+  server.registerTool("claim_status", {
+    description: "Who holds a file, the holder's goal, what it changed in the file (committed and not) and who was allowed in. Use it before deciding on allow_edit.",
+    inputSchema: { path: external_exports.string().describe("the file, relative to the checkout root"), actor: actorSchema }
+  }, tool((e, a) => claimStatus(e, a.path)));
+  server.registerTool("allow_edit", {
+    description: "Let a task edit a file another task holds. Only the CTO of both tasks can; across CTOs the owner runs estack allow.",
+    inputSchema: { task_id: external_exports.number().int().describe("the task that may edit"), path: external_exports.string(), reason: external_exports.string(), actor: actorSchema }
+  }, tool((e, a, actor) => {
+    allowEdit(e, { task_id: a.task_id, path: a.path, reason: a.reason, actor, owner: false });
+    return { allowed: { task_id: a.task_id, path: a.path } };
+  }));
+  server.registerTool("claim_symbol", {
+    description: "Claim the name of a shared helper before you write it. Returns the existing helper to reuse, the task that already claimed the name, or claimed.",
+    inputSchema: { task_id: external_exports.number().int(), name: external_exports.string(), file: external_exports.string().describe("where you will put it"), actor: actorSchema }
+  }, tool((e, a, actor) => claimSymbol(e, { task_id: a.task_id, name: a.name, file: a.file, actor })));
   server.registerTool("complete_step", {
     description: "Complete the task's next step with evidence of the kind that step requires.",
     inputSchema: { task_id: external_exports.number().int(), step: external_exports.string(), evidence: evidenceSchema, actor: actorSchema }
@@ -46773,6 +46877,19 @@ function recordOverride(e, input2, env) {
     logEvent(e, OWNER, "override", input2.task_id ?? null, { action: input2.action, reason: input2.reason });
   });
 }
+function ownerAllowEdit(e, input2, env) {
+  assertOwner(env);
+  allowEdit(e, { ...input2, actor: OWNER, owner: true });
+}
+function ownerAcceptOverlap(e, input2, env) {
+  assertOwner(env);
+  needReason(input2.reason);
+  acceptOverlap(e, { ...input2, by: "owner", owner: true, actor: OWNER });
+}
+function ownerRelease(e, input2, env) {
+  assertOwner(env);
+  releaseClaim(e, input2.path, input2.reason);
+}
 
 // engine/src/githooks.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
@@ -46879,8 +46996,12 @@ function preCommit(e, cwd) {
     if (!verdict.ok) refused.push(heldMessage(p, verdict.holder));
   }
   if (refused.length > 0) return refused.join("\n");
-  for (const p of paths) checkEdit(e, open2, p, git2);
-  return null;
+  const lost = [];
+  for (const p of paths) {
+    const verdict = checkEdit(e, open2, p, git2);
+    if (!verdict.ok) lost.push(heldMessage(p, verdict.holder));
+  }
+  return lost.length > 0 ? lost.join("\n") : null;
 }
 var ZEROS = /^0+$/;
 function prePush(e, cwd, stdin) {
@@ -46908,6 +47029,9 @@ var USAGE = `usage: estack <command>
   skip --task <id> --step <name> --reason <text>     (owner only)
   cancel --task <id> --reason <text>                 (owner only)
   override <action> --reason <text> [--task <id>]    (owner only)
+  allow --task <id> --path <path> --reason <text>    (owner only: let a task edit a held file)
+  allow --task <a> --with <b> --reason <text>        (owner only: accept an overlap between two tasks)
+  release --path <path> --reason <text>              (owner only: free a stale hold)
   map <update|status|suggest> [--json]                     (the Graphify code map)
   hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
@@ -46945,13 +47069,20 @@ function status(e, json2, out) {
   const open2 = listOpen(e);
   const starting = startingTasks(e);
   const planned = plannedTasks(e);
+  const claims = activeClaims(e);
+  const kept = keptWorktrees(e);
   if (json2) {
     const shown = open2.map((t) => ({ ...t.task, steps: t.steps.map((s) => ({ name: s.name, status: s.status })), next: t.next?.name ?? null }));
     const waiting = planned.map((p) => ({ ...p.task, steps: [], next: null, depends_on: p.depends_on, overlaps: p.overlaps }));
     const busy = starting.map((s) => ({ ...s.task, steps: [], next: null, stale: s.stale }));
-    return out(JSON.stringify([...shown, ...busy, ...waiting], null, 2) + "\n");
+    return out(JSON.stringify({
+      tasks: [...shown, ...busy, ...waiting],
+      claims,
+      kept_worktrees: kept.map((k) => ({ task_id: k.task_id, title: k.title, path: k.path, reason: k.reason }))
+    }, null, 2) + "\n");
   }
-  if (open2.length === 0 && planned.length === 0 && starting.length === 0) return out("no open tasks\n");
+  if (open2.length === 0 && planned.length === 0 && starting.length === 0 && claims.length === 0 && kept.length === 0) return out("no open tasks\n");
+  if (open2.length === 0 && planned.length === 0 && starting.length === 0) out("no open tasks\n");
   for (const t of open2) {
     out(`#${t.task.id} [${t.task.type}] ${t.task.title} (${t.task.branch})
 `);
@@ -46969,6 +47100,10 @@ function status(e, json2, out) {
     for (const o of p.overlaps) out(`  overlap (${o.kind}): ${o.kind === "exists" ? o.detail : `#${o.a} and #${o.b}, ${o.detail}`}
 `);
   }
+  for (const c of claims) out(`claim: ${c.target} held by #${c.task_id} ${c.title}${c.kind === "file" ? "" : ` (${c.kind})`}
+`);
+  for (const k of kept) out(`kept worktree: ${k.path} (#${k.task_id} ${k.title}): ${k.reason}
+`);
 }
 function handovers(e, json2, out) {
   const all = pendingHandovers(e);
@@ -47174,6 +47309,33 @@ function dispatch(cmd, rest, io) {
       assertOwner(io.env);
       recordOverride(openEngine(io.cwd), a, io.env);
       io.out(`recorded override for ${a.action}
+`);
+      return 0;
+    }
+    case "allow": {
+      const { opt } = parse4(rest, ["task", "path", "with", "reason"]);
+      const task_id = num(need(opt, "task"), "--task");
+      const reason = need(opt, "reason");
+      if (opt.path === void 0 === (opt.with === void 0)) throw new Usage("allow needs --path <path> or --with <task>, not both");
+      assertOwner(io.env);
+      if (opt.with !== void 0) {
+        const b = num(opt.with, "--with");
+        ownerAcceptOverlap(openEngine(io.cwd), { a: task_id, b, reason }, io.env);
+        io.out(`accepted the overlap between tasks ${Math.min(task_id, b)} and ${Math.max(task_id, b)}
+`);
+      } else {
+        ownerAllowEdit(openEngine(io.cwd), { task_id, path: opt.path, reason }, io.env);
+        io.out(`allowed task ${task_id} to edit ${opt.path}
+`);
+      }
+      return 0;
+    }
+    case "release": {
+      const { opt } = parse4(rest, ["path", "reason"]);
+      const a = { path: need(opt, "path"), reason: need(opt, "reason") };
+      assertOwner(io.env);
+      ownerRelease(openEngine(io.cwd), a, io.env);
+      io.out(`released ${a.path}
 `);
       return 0;
     }

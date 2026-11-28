@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { syncMerged } from "./claims";
+import { activeClaims, allowEdit, claimStatus, claimSymbol, keptWorktrees, syncMerged } from "./claims";
 import { runCheck } from "./checks";
 import { openEngine, type Engine } from "./engine";
 import type { Exec } from "./exec";
@@ -128,12 +128,31 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
   }));
 
   server.registerTool("status", {
-    description: "Show one task (with task_id) or all open tasks.",
+    description: "Show one task (with task_id), or all open tasks with the active claims and kept worktrees.",
     inputSchema: { task_id: z.number().int().optional(), actor: actorSchema },
   }, tool((e, a: { task_id?: number; actor?: Actor }) => {
     syncMerged(e);
-    return a.task_id !== undefined ? getTask(e, a.task_id) : listOpen(e);
+    return a.task_id !== undefined ? getTask(e, a.task_id) : { tasks: listOpen(e), claims: activeClaims(e), kept_worktrees: keptWorktrees(e) };
   }));
+
+  server.registerTool("claim_status", {
+    description: "Who holds a file, the holder's goal, what it changed in the file (committed and not) and who was allowed in. Use it before deciding on allow_edit.",
+    inputSchema: { path: z.string().describe("the file, relative to the checkout root"), actor: actorSchema },
+  }, tool((e, a: { path: string; actor?: Actor }) => claimStatus(e, a.path)));
+
+  server.registerTool("allow_edit", {
+    description: "Let a task edit a file another task holds. Only the CTO of both tasks can; across CTOs the owner runs estack allow.",
+    inputSchema: { task_id: z.number().int().describe("the task that may edit"), path: z.string(), reason: z.string(), actor: actorSchema },
+  }, tool((e, a: { task_id: number; path: string; reason: string; actor?: Actor }, actor) => {
+    allowEdit(e, { task_id: a.task_id, path: a.path, reason: a.reason, actor, owner: false });
+    return { allowed: { task_id: a.task_id, path: a.path } };
+  }));
+
+  server.registerTool("claim_symbol", {
+    description: "Claim the name of a shared helper before you write it. Returns the existing helper to reuse, the task that already claimed the name, or claimed.",
+    inputSchema: { task_id: z.number().int(), name: z.string(), file: z.string().describe("where you will put it"), actor: actorSchema },
+  }, tool((e, a: { task_id: number; name: string; file: string; actor?: Actor }, actor) =>
+    claimSymbol(e, { task_id: a.task_id, name: a.name, file: a.file, actor })));
 
   server.registerTool("complete_step", {
     description: "Complete the task's next step with evidence of the kind that step requires.",
