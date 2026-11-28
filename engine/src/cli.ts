@@ -18,6 +18,7 @@ import {
   type FolderShare,
 } from "./graph";
 import { listOpen } from "./tasks";
+import { plannedTasks } from "./plan";
 import { EngineError } from "./types";
 
 export interface Io { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => void; err: (s: string) => void; stdin?: string; exec?: Exec }
@@ -69,12 +70,22 @@ const CLI_ACTOR = { session_id: "cli" };
 
 function status(e: Engine, json: boolean, out: (s: string) => void): void {
   const open = listOpen(e);
-  if (json) return out(JSON.stringify(open.map((t) => ({ ...t.task, steps: t.steps.map((s) => ({ name: s.name, status: s.status })), next: t.next?.name ?? null })), null, 2) + "\n");
-  if (open.length === 0) return out("no open tasks\n");
+  const planned = plannedTasks(e);
+  if (json) {
+    const shown = open.map((t) => ({ ...t.task, steps: t.steps.map((s) => ({ name: s.name, status: s.status })), next: t.next?.name ?? null }));
+    const waiting = planned.map((p) => ({ ...p.task, steps: [], next: null, depends_on: p.depends_on, overlaps: p.overlaps }));
+    return out(JSON.stringify([...shown, ...waiting], null, 2) + "\n");
+  }
+  if (open.length === 0 && planned.length === 0) return out("no open tasks\n");
   for (const t of open) {
     out(`#${t.task.id} [${t.task.type}] ${t.task.title} (${t.task.branch})\n`);
     out("  " + t.steps.map((s) => `${s.name}:${s.status}`).join(" ") + "\n");
     out(`  next: ${t.next?.name ?? "none"}\n`);
+  }
+  for (const p of planned) {
+    out(`#${p.task.id} [planned] ${p.task.title} (under #${p.task.parent_id})\n`);
+    if (p.depends_on.length > 0) out(`  depends on: ${p.depends_on.map((d) => `#${d}`).join(", ")}\n`);
+    for (const o of p.overlaps) out(`  overlap (${o.kind}): ${o.kind === "exists" ? o.detail : `#${o.a} and #${o.b}, ${o.detail}`}\n`);
   }
 }
 

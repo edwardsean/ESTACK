@@ -8,7 +8,8 @@ import { consumeHandover, saveSessionHandover, saveTaskHandover, type SessionHan
 import { dismissDuplicate } from "./duplicates";
 import { runCodeQuery, taskContext, type CodeTool } from "./codemap";
 import { bindWorker, completeStep, ownsTask, getTask, listOpen, startTask } from "./tasks";
-import { EngineError, type Actor } from "./types";
+import { acceptOverlap, planTasks, withdrawTask, type PlanTaskInput } from "./plan";
+import { EngineError, actorId, type Actor } from "./types";
 
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -92,6 +93,38 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
     inputSchema: { duplicate_id: z.number().int(), reason: z.string(), actor: actorSchema },
   }, tool((e, a: { duplicate_id: number; reason: string; actor?: Actor }, actor) =>
     dismissDuplicate(e, { id: a.duplicate_id, reason: a.reason, actor })));
+
+  server.registerTool("plan_tasks", {
+    description: "Record the worker tasks of a feature you own before starting them: each task's areas, the helpers it will add, and what it depends on. Returns the overlaps between tasks and with existing helpers.",
+    inputSchema: {
+      parent_task_id: z.number().int().describe("the feature these tasks belong to"),
+      tasks: z.array(z.object({
+        title: z.string(), type: z.string(), goal: z.string(), done_check: z.string(),
+        area: z.array(z.string()).describe("the folders or files the task will change"),
+        adds: z.array(z.string()).optional().describe("names of shared helpers the task plans to add"),
+        depends_on: z.array(z.union([z.number().int(), z.string()])).optional().describe('task ids, or "#2" for the second task in this batch'),
+        group: z.string().optional().describe("tasks in one group are one piece of work and never overlap each other"),
+      })),
+      actor: actorSchema,
+    },
+  }, tool((e, a: { parent_task_id: number; tasks: PlanTaskInput[]; actor?: Actor }, actor) =>
+    planTasks(e, { parent_task_id: a.parent_task_id, tasks: a.tasks, actor })));
+
+  server.registerTool("accept_overlap", {
+    description: "Accept an overlap between two tasks you are the CTO of. Between other CTOs' tasks only the owner can (estack allow).",
+    inputSchema: { a: z.number().int(), b: z.number().int(), reason: z.string(), actor: actorSchema },
+  }, tool((e, a: { a: number; b: number; reason: string; actor?: Actor }, actor) => {
+    acceptOverlap(e, { a: a.a, b: a.b, reason: a.reason, by: actorId(actor), owner: false, actor });
+    return { accepted: [Math.min(a.a, a.b), Math.max(a.a, a.b)] };
+  }));
+
+  server.registerTool("withdraw_task", {
+    description: "Cancel a planned task you own that has not started.",
+    inputSchema: { task_id: z.number().int(), actor: actorSchema },
+  }, tool((e, a: { task_id: number; actor?: Actor }, actor) => {
+    withdrawTask(e, a.task_id, actor);
+    return getTask(e, a.task_id);
+  }));
 
   server.registerTool("status", {
     description: "Show one task (with task_id) or all open tasks.",

@@ -1,5 +1,6 @@
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
+import { gateStart } from "./plan";
 import { createWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
 import {
   EngineError, STEP_EVIDENCE, actorId,
@@ -131,7 +132,17 @@ function featureBase(e: Engine, checkout: string): { ref: string; sha: string } 
   return { ref: "main", sha: m.stdout.trim() };
 }
 
-const HOOK_FETCH_TIMEOUT_MS = 20_000;
+export const HOOK_FETCH_TIMEOUT_MS = 20_000;
+
+/** Branch marker of a planned task a start_task call has claimed (status cancelled until it opens or fails back to planned). */
+const STARTING = "(starting)";
+const alreadyStarting = (id: number) => new EngineError("TASK_CLOSED", `task #${id} is already being started`);
+
+/** Claim a planned task for this call in one statement; a second caller finds it gone. */
+function claimPlanned(e: Engine, id: number): void {
+  const r = e.db.prepare("UPDATE tasks SET status = 'cancelled', branch = ? WHERE id = ? AND status = 'planned'").run(STARTING, id);
+  if (r.changes !== 1) throw alreadyStarting(id);
+}
 
 export function startTask(e: Engine, input: {
   title?: string; type?: string; goal?: string; done_check?: string; actor: Actor; cwd?: string; branch?: string;
@@ -142,6 +153,7 @@ export function startTask(e: Engine, input: {
   if (input.task_id !== undefined) {
     planned = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(input.task_id) as unknown as Task | undefined;
     if (!planned) throw new EngineError("NO_TASK", `no task with id ${input.task_id}`);
+    if (planned.status === "cancelled" && planned.branch === STARTING) throw alreadyStarting(planned.id);
     if (planned.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${planned.id} is ${planned.status}, not planned`);
   }
   const field = (name: "title" | "type" | "goal" | "done_check"): string => {
@@ -158,6 +170,9 @@ export function startTask(e: Engine, input: {
   const group = planned ? planned.task_group : input.group ?? null;
   const typeSteps = e.policy.task_types[type];
   if (!typeSteps) throw new EngineError("POLICY_INVALID", `unknown task type "${type}"`);
+  // Overlaps are checked for a planned task and for any task started with an area; a planned task also waits for its dependencies.
+  if (planned) gateStart(e, input.actor, { planned });
+  else if (input.area && input.area.length > 0) gateStart(e, input.actor, { fresh: { parent_id: parentId, group, areas: input.area } });
   if (input.branch?.startsWith("-")) throw new EngineError("POLICY_INVALID", `invalid branch name: ${input.branch}`);
   let parent: Task | null = null;
   if (parentId !== null && input.worktree) {
@@ -184,7 +199,8 @@ export function startTask(e: Engine, input: {
       let id: number;
       if (planned) {
         id = planned.id;
-        e.db.prepare("UPDATE tasks SET status = 'open', branch = ?, cwd = ?, base_sha = ? WHERE id = ?").run(branch, checkout, base_sha, id);
+        const r = e.db.prepare("UPDATE tasks SET status = 'open', branch = ?, cwd = ?, base_sha = ? WHERE id = ? AND status = 'planned'").run(branch, checkout, base_sha, id);
+        if (r.changes !== 1) throw alreadyStarting(id);
       } else {
         id = Number(e.db.prepare(
           "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)",
@@ -216,6 +232,8 @@ export function startTask(e: Engine, input: {
       "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at, parent_id, task_group) VALUES (?, ?, ?, ?, 'cancelled', '', '', ?, ?, ?, ?, ?)",
     ).run(title, type, goal, done_check, from.sha, by, now, parentId, group).lastInsertRowid);
   }
+  // Claim a planned task before any git work, so two simultaneous calls cannot both promote it.
+  if (planned) tx(e, () => claimPlanned(e, id));
   const name = `${id}-${slug(title)}`;
   const branch = `${parent ? "task" : "feat"}/${name}`;
   try {
@@ -236,7 +254,8 @@ export function startTask(e: Engine, input: {
     });
   } catch (x) {
     // A new task stays cancelled; a planned one stays planned. No open task remains. A worktree already made is kept.
-    e.db.prepare("UPDATE tasks SET status = ?, cwd = '', branch = '' WHERE id = ?").run(planned ? "planned" : "cancelled", id);
+    // Never touch a task another process has opened in the meantime.
+    e.db.prepare("UPDATE tasks SET status = ?, cwd = '', branch = '' WHERE id = ? AND status <> 'open'").run(planned ? "planned" : "cancelled", id);
     logEvent(e, input.actor, "worktree_failed", id, { error: x instanceof Error ? x.message : String(x) });
     throw x;
   }

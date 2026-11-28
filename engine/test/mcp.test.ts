@@ -36,10 +36,10 @@ function initedRepo(): string {
 }
 
 describe("mcp server", () => {
-  test("lists exactly the ten tools", async () => {
+  test("lists exactly the thirteen tools", async () => {
     const { client } = await connect(initedRepo());
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(["complete_step", "context_for", "dismiss_duplicate", "find_existing", "handover", "resume", "run_check", "start_task", "status", "who_uses"]);
+    expect(names).toEqual(["accept_overlap", "complete_step", "context_for", "dismiss_duplicate", "find_existing", "handover", "plan_tasks", "resume", "run_check", "start_task", "status", "who_uses", "withdraw_task"]);
   });
 
   test("dismiss_duplicate by the author is refused", async () => {
