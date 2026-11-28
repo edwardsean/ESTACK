@@ -85,12 +85,31 @@ export function newFunctions(e: Engine, g: Graph, task: Task): GraphNode[] {
   return topLevelFunctions(g).filter((n) => (added.get(n.file) ?? []).some(([a, b]) => n.line >= a && n.line <= b));
 }
 
-const matches = (checkout: string, f: GraphNode, x: GraphNode): boolean => {
+export const taskLabel = (id: number): string => `task #${id}: `;
+
+/** Same normalised name and, where both counts are known, the same parameter count; `x` is read from `xCheckout` (another task's worktree). */
+const matches = (checkout: string, f: GraphNode, x: GraphNode, xCheckout = checkout): boolean => {
   if (normaliseName(f.name) !== normaliseName(x.name)) return false;
   const a = paramCount(checkout, f.file, f.line);
-  const b = paramCount(checkout, x.file, x.line);
+  const b = paramCount(xCheckout, x.file, x.line);
   return a === null || b === null || a === b;
 };
+
+/** The new top-level functions of every open task except `exceptTaskId` whose worktree has a map. A task that fails (no map, git gone) is skipped. */
+export function inProgressFunctions(e: Engine, exceptTaskId: number | null): { task_id: number; node: GraphNode }[] {
+  const tasks = e.db.prepare("SELECT * FROM tasks WHERE status = 'open' AND id IS NOT ? ORDER BY id").all(exceptTaskId) as unknown as Task[];
+  const out: { task_id: number; node: GraphNode }[] = [];
+  for (const t of tasks) {
+    try {
+      const g = loadGraph(t.cwd);
+      if (!g) continue;
+      for (const node of newFunctions(e, g, t)) out.push({ task_id: t.id, node });
+    } catch {
+      // one bad worktree never breaks a query
+    }
+  }
+  return out;
+}
 
 export function openDuplicates(e: Engine, task_id: number): Duplicate[] {
   return e.db.prepare("SELECT * FROM duplicates WHERE task_id = ? AND status = 'open' ORDER BY id").all(task_id) as unknown as Duplicate[];
@@ -110,6 +129,8 @@ export function checkDuplicates(e: Engine, task_id: number): Duplicate[] {
   const head = branchHead(e, task);
   const byKey = (file: string, name: string) => top.find((n) => n.file === file && n.name === name);
   const freshIds = new Set(fresh.map((n) => n.id));
+  const others = inProgressFunctions(e, task_id);
+  const cwdOf = (id: number) => (e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(id) as { cwd: string }).cwd;
 
   return tx(e, () => {
     const now = e.now().toISOString();
@@ -117,6 +138,8 @@ export function checkDuplicates(e: Engine, task_id: number): Duplicate[] {
       const f = fresh.find((n) => n.file === d.new_file && n.name === d.new_symbol);
       const x = byKey(d.existing_file, d.existing_symbol);
       if (f && x && matches(task.cwd, f, x)) continue;
+      const o = others.find((p) => d.existing_file === `${taskLabel(p.task_id)}${p.node.file}` && p.node.name === d.existing_symbol);
+      if (f && o && matches(task.cwd, f, o.node, cwdOf(o.task_id))) continue;
       e.db.prepare("UPDATE duplicates SET status = 'resolved', closed_at = ? WHERE id = ?").run(now, d.id);
     }
     for (const f of fresh) {
@@ -140,6 +163,27 @@ export function checkDuplicates(e: Engine, task_id: number): Duplicate[] {
           if (Number(r.changes) === 0) continue; // already recorded
         }
         logEvent(e, MAP_ACTOR, "possible_duplicate", task_id, { new: `${f.file}:${f.line}`, existing: `${x.file}:${x.line}`, symbol: f.name });
+      }
+    }
+    for (const f of fresh) {
+      for (const { task_id: other, node: x } of others) {
+        if (!matches(task.cwd, f, x, cwdOf(other))) continue;
+        const existingFile = `${taskLabel(other)}${x.file}`;
+        const prior = e.db.prepare(
+          "SELECT id, status FROM duplicates WHERE task_id = ? AND new_file = ? AND new_symbol = ? AND existing_file = ? AND existing_symbol = ?",
+        ).get(task_id, f.file, f.name, existingFile, x.name) as { id: number; status: string } | undefined;
+        if (prior?.status === "open" || prior?.status === "dismissed") continue;
+        if (prior) {
+          e.db.prepare(
+            "UPDATE duplicates SET status = 'open', commit_sha = ?, new_line = ?, existing_line = ?, closed_by = NULL, closed_at = NULL, found_at = ? WHERE id = ?",
+          ).run(head, f.line, x.line, now, prior.id);
+        } else {
+          e.db.prepare(
+            `INSERT INTO duplicates (task_id, commit_sha, new_symbol, new_file, new_line, existing_symbol, existing_file, existing_line, status, found_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?) ON CONFLICT DO NOTHING`,
+          ).run(task_id, head, f.name, f.file, f.line, x.name, existingFile, x.line, now);
+        }
+        logEvent(e, MAP_ACTOR, "possible_duplicate", task_id, { new: `${f.file}:${f.line}`, existing: `${existingFile}:${x.line}`, symbol: f.name });
       }
     }
     logEvent(e, MAP_ACTOR, "duplicate_check_done", task_id, { head });
