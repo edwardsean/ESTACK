@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { main } from "../src/cli";
@@ -422,6 +422,27 @@ describe("cli init and the code map", () => {
       expect(json.claims).toEqual([{ kind: "file", target: "src/a.ts", task_id: t1.id, title: "one" }]);
       expect(json.kept_worktrees).toEqual([{ task_id: t1.id, title: "one", path: t1.cwd, reason: "uncommitted changes" }]);
       expect(json.tasks.map((t: { id: number }) => t.id)).toHaveLength(1);
+    });
+
+    test("status lists stray engine worktrees that no task accounts for, and never removes them", () => {
+      const { dir, e, t1, t2 } = two();
+      const leaked = join(dir, ".estack", "worktrees", "99-leaked");
+      execFileSync("git", ["worktree", "add", "-q", "-b", "task/99-leaked", leaked], { cwd: dir });
+      // Not stray: a start still making its worktree, and a worktree outside .estack/worktrees/. Stray: one nothing records, and one a cancelled task left.
+      const starting = Number(e.db.prepare("INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES ('Busy', 'feature', 'g', 'd', 'starting', '', '', '', 'sa/main', 'now')").run().lastInsertRowid);
+      e.db.prepare("INSERT INTO events (at, actor, kind, task_id, payload_json) VALUES (?, 'sa/main', 'task_claimed', ?, '{\"from\":\"new\"}')").run(new Date().toISOString(), starting);
+      execFileSync("git", ["worktree", "add", "-q", "-b", `feat/${starting}-busy`, join(dir, ".estack", "worktrees", `${starting}-busy`)], { cwd: dir });
+      execFileSync("git", ["worktree", "add", "-q", "-b", "mine", join(dir, "..", `${dir.split("/").at(-1)}-mine`)], { cwd: dir });
+      e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(t2.id);
+      const text = run(dir, ["status"]).out;
+      expect(text).toContain(`stray worktree: ${leaked} (no task uses it; inspect it, then remove it by hand)`);
+      expect(text).toContain(`stray worktree: ${t2.cwd} `);
+      expect(text).not.toContain(`stray worktree: ${t1.cwd}`);
+      expect(text).not.toContain(`${starting}-busy (no task`);
+      expect(text).not.toContain("-mine");
+      const json = JSON.parse(run(dir, ["status", "--json"]).out);
+      expect(json.stray_worktrees.sort()).toEqual([leaked, t2.cwd].sort());
+      expect(existsSync(leaked)).toBe(true);
     });
   });
 });

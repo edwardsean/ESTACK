@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import type { Engine } from "./engine";
 import { isExempt, pathMatches } from "./match";
 import { normaliseName, topLevelFunctions } from "./duplicates";
@@ -288,6 +288,23 @@ export function activeClaims(e: Engine): ActiveClaim[] {
     `SELECT c.kind, c.target, c.task_id, t.title FROM claims c JOIN tasks t ON t.id = c.task_id
      WHERE c.status = 'active' ORDER BY c.kind, c.target`,
   ).all() as unknown as ActiveClaim[];
+}
+
+/**
+ * Engine worktrees (under a `.estack/worktrees/` folder) that git lists and no task accounts for: not the cwd of a
+ * planned, starting, open or done task, not being made by a start in progress, and not already listed as kept. A failed
+ * start or a crash leaves these. Listed only; never removed.
+ */
+export function strayWorktrees(e: Engine): string[] {
+  const list = e.exec.run("git", ["worktree", "list", "--porcelain"], { cwd: e.repo.root, timeoutMs: HOOK_GIT_TIMEOUT_MS });
+  if (list.code !== 0) return [];
+  const known = new Set((e.db.prepare("SELECT cwd FROM tasks WHERE status IN ('planned','starting','open','done') AND cwd != ''").all() as
+    { cwd: string }[]).map((r) => r.cwd));
+  // A start in progress has not recorded its cwd yet; its folder is named <id>-<slug>.
+  const starting = (e.db.prepare("SELECT id FROM tasks WHERE status = 'starting'").all() as { id: number }[]).map((r) => `${r.id}-`);
+  const kept = new Set(keptWorktrees(e).map((k) => k.path));
+  return list.stdout.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice("worktree ".length))
+    .filter((p) => p.includes(`/${WORKTREES_DIR}/`) && !known.has(p) && !kept.has(p) && !starting.some((s) => basename(p).startsWith(s)));
 }
 
 /** Worktrees the engine tried to remove and kept (still on disk), with the latest reason. */

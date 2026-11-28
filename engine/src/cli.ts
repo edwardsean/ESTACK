@@ -17,7 +17,7 @@ import {
   BUILD_TIMEOUT_MS, INSTALL_HINT, buildGraph, checkoutLabel, checkoutOf, folderShares, graphifyVersion, loadGraph, suggestExcludes, versionSupported,
   type FolderShare,
 } from "./graph";
-import { activeClaims, keptWorktrees, syncMerged } from "./claims";
+import { activeClaims, keptWorktrees, strayWorktrees, syncMerged } from "./claims";
 import { recordOutcomes } from "./outcomes";
 import { listOpen } from "./tasks";
 import { plannedTasks, startingTasks } from "./plan";
@@ -82,16 +82,17 @@ function status(e: Engine, json: boolean, out: (s: string) => void): void {
   const planned = plannedTasks(e);
   const claims = activeClaims(e);
   const kept = keptWorktrees(e);
+  const stray = strayWorktrees(e);
   if (json) {
     const shown = open.map((t) => ({ ...t.task, steps: t.steps.map((s) => ({ name: s.name, status: s.status })), next: t.next?.name ?? null }));
     const waiting = planned.map((p) => ({ ...p.task, steps: [], next: null, depends_on: p.depends_on, overlaps: p.overlaps }));
     const busy = starting.map((s) => ({ ...s.task, steps: [], next: null, stale: s.stale }));
     return out(JSON.stringify({
       tasks: [...shown, ...busy, ...waiting], claims,
-      kept_worktrees: kept,
+      kept_worktrees: kept, stray_worktrees: stray,
     }, null, 2) + "\n");
   }
-  if (open.length === 0 && planned.length === 0 && starting.length === 0 && claims.length === 0 && kept.length === 0) return out("no open tasks\n");
+  if (open.length === 0 && planned.length === 0 && starting.length === 0 && claims.length === 0 && kept.length === 0 && stray.length === 0) return out("no open tasks\n");
   if (open.length === 0 && planned.length === 0 && starting.length === 0) out("no open tasks\n");
   for (const t of open) {
     out(`#${t.task.id} [${t.task.type}] ${t.task.title} (${t.task.branch})\n`);
@@ -106,6 +107,7 @@ function status(e: Engine, json: boolean, out: (s: string) => void): void {
   }
   for (const c of claims) out(`claim: ${c.target} held by #${c.task_id} ${c.title}${c.kind === "file" ? "" : ` (${c.kind})`}\n`);
   for (const k of kept) out(`kept worktree: ${k.path} (#${k.task_id} ${k.title}): ${k.reason}\n`);
+  for (const p of stray) out(`stray worktree: ${p} (no task uses it; inspect it, then remove it by hand)\n`);
 }
 
 function handovers(e: Engine, json: boolean, out: (s: string) => void): void {

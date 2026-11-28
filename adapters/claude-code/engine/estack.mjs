@@ -34631,7 +34631,7 @@ import { dirname as dirname3, isAbsolute as isAbsolute3, join as join8, relative
 
 // engine/src/claims.ts
 import { existsSync as existsSync7 } from "node:fs";
-import { isAbsolute as isAbsolute2, join as join7 } from "node:path";
+import { basename as basename2, isAbsolute as isAbsolute2, join as join7 } from "node:path";
 
 // engine/src/match.ts
 var escapeRe = (c) => c.replace(/[.+^${}()|[\]\\\/-]/g, "\\$&");
@@ -36261,6 +36261,14 @@ function activeClaims(e) {
     `SELECT c.kind, c.target, c.task_id, t.title FROM claims c JOIN tasks t ON t.id = c.task_id
      WHERE c.status = 'active' ORDER BY c.kind, c.target`
   ).all();
+}
+function strayWorktrees(e) {
+  const list = e.exec.run("git", ["worktree", "list", "--porcelain"], { cwd: e.repo.root, timeoutMs: HOOK_GIT_TIMEOUT_MS });
+  if (list.code !== 0) return [];
+  const known = new Set(e.db.prepare("SELECT cwd FROM tasks WHERE status IN ('planned','starting','open','done') AND cwd != ''").all().map((r) => r.cwd));
+  const starting = e.db.prepare("SELECT id FROM tasks WHERE status = 'starting'").all().map((r) => `${r.id}-`);
+  const kept = new Set(keptWorktrees(e).map((k) => k.path));
+  return list.stdout.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice("worktree ".length)).filter((p) => p.includes(`/${WORKTREES_DIR}/`) && !known.has(p) && !kept.has(p) && !starting.some((s) => basename2(p).startsWith(s)));
 }
 function keptWorktrees(e) {
   const rows = e.db.prepare(
@@ -47060,12 +47068,12 @@ function createServer(cwd, deps = {}) {
     return { ...getTask(e, a.task_id), worktree };
   }));
   server.registerTool("status", {
-    description: "Show one task (with task_id), or all open tasks with the active claims and kept worktrees.",
+    description: "Show one task (with task_id), or all open tasks with the active claims, kept worktrees and stray worktrees (engine worktrees no task accounts for).",
     inputSchema: { task_id: external_exports.number().int().optional(), actor: actorSchema }
   }, tool((e, a) => {
     syncMerged(e);
     recordOutcomes(e, { remote: true });
-    return a.task_id !== void 0 ? getTask(e, a.task_id) : { tasks: listOpen(e), claims: activeClaims(e), kept_worktrees: keptWorktrees(e) };
+    return a.task_id !== void 0 ? getTask(e, a.task_id) : { tasks: listOpen(e), claims: activeClaims(e), kept_worktrees: keptWorktrees(e), stray_worktrees: strayWorktrees(e) };
   }));
   server.registerTool("claim_status", {
     description: "Who holds a file, the holder's goal, what it changed in the file (committed and not) and who was allowed in. Use it before deciding on allow_edit.",
@@ -47405,6 +47413,7 @@ function status(e, json2, out) {
   const planned = plannedTasks(e);
   const claims = activeClaims(e);
   const kept = keptWorktrees(e);
+  const stray = strayWorktrees(e);
   if (json2) {
     const shown = open2.map((t) => ({ ...t.task, steps: t.steps.map((s) => ({ name: s.name, status: s.status })), next: t.next?.name ?? null }));
     const waiting = planned.map((p) => ({ ...p.task, steps: [], next: null, depends_on: p.depends_on, overlaps: p.overlaps }));
@@ -47412,10 +47421,11 @@ function status(e, json2, out) {
     return out(JSON.stringify({
       tasks: [...shown, ...busy, ...waiting],
       claims,
-      kept_worktrees: kept
+      kept_worktrees: kept,
+      stray_worktrees: stray
     }, null, 2) + "\n");
   }
-  if (open2.length === 0 && planned.length === 0 && starting.length === 0 && claims.length === 0 && kept.length === 0) return out("no open tasks\n");
+  if (open2.length === 0 && planned.length === 0 && starting.length === 0 && claims.length === 0 && kept.length === 0 && stray.length === 0) return out("no open tasks\n");
   if (open2.length === 0 && planned.length === 0 && starting.length === 0) out("no open tasks\n");
   for (const t of open2) {
     out(`#${t.task.id} [${t.task.type}] ${t.task.title} (${t.task.branch})
@@ -47437,6 +47447,8 @@ function status(e, json2, out) {
   for (const c of claims) out(`claim: ${c.target} held by #${c.task_id} ${c.title}${c.kind === "file" ? "" : ` (${c.kind})`}
 `);
   for (const k of kept) out(`kept worktree: ${k.path} (#${k.task_id} ${k.title}): ${k.reason}
+`);
+  for (const p of stray) out(`stray worktree: ${p} (no task uses it; inspect it, then remove it by hand)
 `);
 }
 function handovers(e, json2, out) {

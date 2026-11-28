@@ -169,7 +169,7 @@ with `plan_tasks`, which reports overlaps to resolve with `depends_on` or
 a worker always gets its own worktree, and the stored parent wins) on `task/<id>-<slug>`. A worker's last step is `merge`, which the CTO does into the
 feature. Editing a file another task holds is denied, and the CTO sees it with
 `claim_status` and allows it with `allow_edit`. A task whose steps have neither `pr` nor `merge` (a spike) gives up its holds when it closes, since it never reaches main. A CTO retires an open worker it will not merge (a bakeoff loser) with `withdraw_task`. `status` lists planned, starting
-and kept items, and `estack cancel` takes planned and starting tasks too; on a feature it also cancels the feature's planned, starting and open workers. Both release the holds and remove the worktrees, keeping any with uncommitted changes. Policy
+and kept items, and stray worktrees: folders under `.estack/worktrees/` that git still lists but no task uses, left by a failed start or a crash (listed only, never removed). Its JSON form (`estack status --json`, and the MCP `status` tool without `task_id`) is `{tasks, claims, kept_worktrees, stray_worktrees}`. `estack cancel` takes planned and starting tasks too; on a feature it also cancels the feature's planned, starting and open workers. Both release the holds and remove the worktrees, keeping any with uncommitted changes. Policy
 keys: `commands.worktree_setup` (for example `npm ci`) and `claims.exempt`.
 
 ### Handover
