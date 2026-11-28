@@ -35121,7 +35121,7 @@ function judge(e, c, g) {
   const grantee = getTask2(e, g.task_id);
   const holderId = holderAtGrant(e, g);
   const holder = holderId === void 0 ? void 0 : getTask2(e, holderId);
-  if (!grantee || !holder) return null;
+  if (!grantee || !holder || grantee.status === "cancelled" || holder.status === "cancelled") return null;
   if (conflicted(e, c, g, holder, grantee)) return "conflict";
   if (holderFailed(e, g, holder)) return "holder_failed";
   return finished(e, c, grantee, holder) ? "clean" : null;
@@ -35162,7 +35162,9 @@ function recordMergeConflicts(e, worker, feature, head) {
     const grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all().filter((g) => paths.has(g.path));
     for (const g of grants) {
       const holder = holderAtGrant(e, g);
-      if (involved.has(g.task_id) || holder !== void 0 && involved.has(holder)) setOutcome(e, g, "conflict");
+      if (!involved.has(g.task_id) && !(holder !== void 0 && involved.has(holder))) continue;
+      const cancelled = [g.task_id, holder].some((id) => id !== void 0 && getTask2(e, id)?.status === "cancelled");
+      if (!cancelled) setOutcome(e, g, "conflict");
     }
   } catch {
   }

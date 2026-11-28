@@ -159,6 +159,22 @@ describe("grant outcomes", { timeout: 60_000 }, () => {
     expect(outcome(e, g).outcome).toBe("conflict");
   });
 
+  test("a grant whose holder or grantee is cancelled is not evaluated", () => {
+    for (const which of ["grantee", "holder"] as const) {
+      const dir = repo();
+      const e = openEngine(dir, deps);
+      const t1 = feature(e, dir, "one");
+      const t2 = feature(e, dir, "two");
+      const g = grant(e, t1, t2);
+      commitFile(t1, "src/a.ts", "one\n");
+      insertEvidence(e, t1.id, "test", "command", false, { command: "x" }, A);
+      e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(which === "grantee" ? t2.id : t1.id);
+      recordOutcomes(e, { remote: true });
+      expect(outcome(e, g).outcome, which).toBeNull();
+      expect(logged(e)).toEqual([]);
+    }
+  });
+
   test("outcomes are recorded once", () => {
     const dir = repo();
     const e = openEngine(dir, deps);

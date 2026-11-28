@@ -115,7 +115,8 @@ function judge(e: Engine, c: Ctx, g: Grant): Outcome | null {
   const grantee = getTask(e, g.task_id);
   const holderId = holderAtGrant(e, g);
   const holder = holderId === undefined ? undefined : getTask(e, holderId);
-  if (!grantee || !holder) return null;
+  // A grant with a cancelled side is moot: it is never judged, and its outcome stays null.
+  if (!grantee || !holder || grantee.status === "cancelled" || holder.status === "cancelled") return null;
   if (conflicted(e, c, g, holder, grantee)) return "conflict";
   if (holderFailed(e, g, holder)) return "holder_failed";
   return finished(e, c, grantee, holder) ? "clean" : null;
@@ -173,7 +174,9 @@ export function recordMergeConflicts(e: Engine, worker: Task, feature: Task, hea
       .filter((g) => paths.has(g.path));
     for (const g of grants) {
       const holder = holderAtGrant(e, g);
-      if (involved.has(g.task_id) || (holder !== undefined && involved.has(holder))) setOutcome(e, g, "conflict");
+      if (!involved.has(g.task_id) && !(holder !== undefined && involved.has(holder))) continue;
+      const cancelled = [g.task_id, holder].some((id) => id !== undefined && getTask(e, id)?.status === "cancelled");
+      if (!cancelled) setOutcome(e, g, "conflict");
     }
   } catch { /* left for recordOutcomes */ }
 }
