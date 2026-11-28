@@ -3,7 +3,7 @@
 Date: 2026-11-25
 Status: approved 2026-11-25; amendment 1 (2026-11-26, code map uses Graphify; revised
 2026-11-27 after the phase 5 spike) approved 2026-11-27; amendment 2 (2026-11-28, parallel
-work) awaiting approval
+work) approved 2026-11-28
 
 **Amendment 1 (2026-11-26, revised 2026-11-27).** The code map is no longer an indexer
 the engine builds. It is [Graphify](https://github.com/Graphify-Labs/graphify)
