@@ -1,4 +1,4 @@
-import { allowEdit, releaseClaim, releaseClaims } from "./claims";
+import { allowEdit, releaseClaim, releaseClaims, releaseOnClose, releaseTaskClaims } from "./claims";
 import { acceptOverlap } from "./plan";
 import type { Engine } from "./engine";
 import { getTask, logEvent, tx, type TaskView } from "./tasks";
@@ -32,6 +32,7 @@ export function skipStep(e: Engine, input: { task_id: number; step: string; reas
     const closed = left.c === 0;
     if (closed) e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(input.task_id);
     logEvent(e, OWNER, "step_skipped", input.task_id, { step: input.step, reason: input.reason, closed });
+    if (closed) releaseOnClose(e, input.task_id, OWNER);
     return getTask(e, input.task_id);
   });
 }
@@ -83,4 +84,10 @@ export function ownerAcceptOverlap(e: Engine, input: { a: number; b: number; rea
 export function ownerRelease(e: Engine, input: { path: string; reason: string }, env: NodeJS.ProcessEnv): void {
   assertOwner(env);
   releaseClaim(e, input.path, input.reason);
+}
+
+/** Owner: free every claim of a task nobody will finish. Returns how many were released. */
+export function ownerReleaseTask(e: Engine, input: { task_id: number; reason: string }, env: NodeJS.ProcessEnv): number {
+  assertOwner(env);
+  return releaseTaskClaims(e, input.task_id, input.reason);
 }

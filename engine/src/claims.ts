@@ -96,6 +96,16 @@ export function releaseClaims(e: Engine, task: Task, actor: Actor, reason?: stri
   for (const c of rows) releaseOne(e, c, task.id, actor, reason);
 }
 
+/**
+ * A task that closed with neither a `pr` nor a `merge` step (a spike, say) never reaches main: its claims go as it
+ * closes. Call inside the transaction that closes it.
+ */
+export function releaseOnClose(e: Engine, task_id: number, actor: Actor): void {
+  if (e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id)) return;
+  const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id) as unknown as Task | undefined;
+  if (task) releaseClaims(e, task, actor, "closed with no pr or merge step");
+}
+
 /** Release one active claim and hand a file to the newest open grant. Not transactional itself. */
 function releaseOne(e: Engine, c: { id: number; kind: string; target: string }, task_id: number, actor: Actor, reason?: string): void {
   e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso(e), c.id);
@@ -216,6 +226,19 @@ export function releaseClaim(e: Engine, rawPath: string, reason: string): void {
     const held = holderOf(e, path);
     if (!held) throw new EngineError("BAD_EVIDENCE", `${path} is not held by any task`);
     releaseOne(e, { id: held.claim_id, kind: "file", target: path }, held.task.id, { session_id: "owner" }, reason);
+  });
+}
+
+/** Owner only (the caller checks): free every claim of a task nobody will finish, each through the same release as above. Returns how many. */
+export function releaseTaskClaims(e: Engine, task_id: number, reason: string): number {
+  if (!reason || !reason.trim()) throw new EngineError("BAD_EVIDENCE", "a reason is required");
+  return tx(e, () => {
+    const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id) as unknown as Task | undefined;
+    if (!task) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
+    const { n } = e.db.prepare("SELECT COUNT(*) n FROM claims WHERE task_id = ? AND status = 'active'").get(task_id) as { n: number };
+    if (n === 0) throw new EngineError("BAD_EVIDENCE", `task #${task_id} holds nothing`);
+    releaseClaims(e, task, { session_id: "owner" }, reason);
+    return n;
   });
 }
 

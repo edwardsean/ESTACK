@@ -1,4 +1,4 @@
-import { passClaims, releaseClaims, syncMerged } from "./claims";
+import { passClaims, releaseClaims, releaseOnClose, syncMerged } from "./claims";
 import { recordMergeConflicts, recordOutcomes } from "./outcomes";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
@@ -326,13 +326,17 @@ export function insertEvidence(e: Engine, task_id: number, step: string, kind: E
   ).run(task_id, step, kind, ok ? 1 : 0, JSON.stringify(payload), actorId(actor), iso(e));
 }
 
-/** Mark the step done; close the task if it was the last one. Returns whether the task closed. */
-export function finishStep(e: Engine, task_id: number, step: string): boolean {
+/**
+ * Mark the step done; close the task if it was the last one (a task that can never reach main gives up its claims as it
+ * closes). Call inside a transaction. Returns whether the task closed.
+ */
+export function finishStep(e: Engine, task_id: number, step: string, actor: Actor): boolean {
   e.db.prepare("UPDATE steps SET status = 'done', done_at = ? WHERE task_id = ? AND name = ?").run(iso(e), task_id, step);
   const left = e.db.prepare("SELECT COUNT(*) c FROM steps WHERE task_id = ? AND status NOT IN ('done','skipped')")
     .get(task_id) as { c: number };
   if (left.c > 0) return false;
   e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(task_id);
+  releaseOnClose(e, task_id, actor);
   return true;
 }
 
@@ -441,7 +445,7 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
       logEvent(e, input.actor, "evidence", v.task.id, { step: input.step, kind: required, ok: false });
       return null;
     }
-    const closed = finishStep(e, v.task.id, input.step);
+    const closed = finishStep(e, v.task.id, input.step, input.actor);
     logEvent(e, input.actor, "step_done", v.task.id, { step: input.step, kind: required, closed });
     if (input.step === "merge" && v.task.parent_id !== null) {
       const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task;

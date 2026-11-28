@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import { main } from "../src/cli";
 import { openEngine } from "../src/engine";
 import { saveSessionHandover, saveTaskHandover } from "../src/handover";
-import { checkEdit } from "../src/claims";
+import { allowEdit, checkEdit, claimSymbol } from "../src/claims";
 import { removeWorktree } from "../src/worktree";
 import { getTask, startTask } from "../src/tasks";
 import { HAS_GRAPHIFY, fakeExec, makeRepo, writeFakeGraph } from "./helpers";
@@ -364,6 +364,33 @@ describe("cli init and the code map", () => {
       expect(ok.status).toBe(0);
       expect(ok.out).toBe("released src/a.ts\n");
       expect(checkEdit(e, t2, "src/a.ts").ok).toBe(true);
+    });
+
+    test("estack release --task frees every claim of a task, handing a file to its grant", () => {
+      const { dir, e, t1, t2 } = two();
+      checkEdit(e, t1, "src/a.ts");
+      checkEdit(e, t1, "src/b.ts");
+      claimSymbol(e, { task_id: t1.id, name: "parseMoney", file: "src/m.ts", actor: { session_id: "sa" } });
+      allowEdit(e, { task_id: t2.id, path: "src/b.ts", reason: "x", owner: true });
+      const args = ["release", "--task", String(t1.id), "--reason", "abandoned"];
+      expect(run(dir, args, { CLAUDECODE: "1" }).status).toBe(1);
+      expect(e.db.prepare("SELECT COUNT(*) c FROM claims WHERE task_id = ? AND status = 'active'").get(t1.id)).toEqual({ c: 3 });
+      const ok = run(dir, args);
+      expect(ok.status).toBe(0);
+      expect(ok.out).toBe(`released 3 claims of task ${t1.id}\n`);
+      expect(e.db.prepare("SELECT task_id, kind, target, status FROM claims ORDER BY id").all()).toEqual([
+        { task_id: t1.id, kind: "file", target: "src/a.ts", status: "released" },
+        { task_id: t1.id, kind: "file", target: "src/b.ts", status: "released" },
+        { task_id: t1.id, kind: "new_symbol", target: "parseMoney", status: "released" },
+        { task_id: t2.id, kind: "file", target: "src/b.ts", status: "active" },
+      ]);
+      const reasons = (e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'claim_released'").all() as { p: string }[]).map((r) => JSON.parse(r.p).reason);
+      expect(reasons).toEqual(["abandoned", "abandoned", "abandoned"]);
+      const again = run(dir, args);
+      expect(again.status).toBe(1);
+      expect(again.err).toContain(`task #${t1.id} holds nothing`);
+      expect(run(dir, ["release", "--task", "1", "--path", "x", "--reason", "x"]).status).toBe(2);
+      expect(run(dir, ["release", "--reason", "x"]).status).toBe(2);
     });
 
     test("status lists claims and kept worktrees", () => {

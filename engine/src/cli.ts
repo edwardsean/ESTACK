@@ -6,7 +6,7 @@ import { openEngine } from "./engine";
 import { runHook, type HookEvent } from "./hooks";
 import { runCheck } from "./checks";
 import { serveStdio } from "./mcp";
-import { assertOwner, cancelTask, ownerAcceptOverlap, ownerAllowEdit, ownerRelease, recordOverride, skipStep } from "./owner";
+import { assertOwner, cancelTask, ownerAcceptOverlap, ownerAllowEdit, ownerRelease, ownerReleaseTask, recordOverride, skipStep } from "./owner";
 import { preCommit, prePush, installGitHooks } from "./githooks";
 import { afterCommit } from "./duplicates";
 import { defaultPolicyYaml, initRepo, loadPolicy } from "./policy";
@@ -38,6 +38,7 @@ const USAGE = `usage: estack <command>
   allow --task <id> --path <path> --reason <text>    (owner only: let a task edit a held file)
   allow --task <a> --with <b> --reason <text>        (owner only: accept an overlap between two tasks)
   release --path <path> --reason <text>              (owner only: free a stale hold)
+  release --task <id> --reason <text>                (owner only: free every claim of a task nobody will finish)
   map <update|status|suggest> [--json]                     (the Graphify code map)
   hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
@@ -312,11 +313,18 @@ function dispatch(cmd: string, rest: string[], io: Io): number {
       return 0;
     }
     case "release": {
-      const { opt } = parse(rest, ["path", "reason"]);
-      const a = { path: need(opt, "path"), reason: need(opt, "reason") };
+      const { opt } = parse(rest, ["path", "task", "reason"]);
+      const reason = need(opt, "reason");
+      if ((opt.path === undefined) === (opt.task === undefined)) throw new Usage("release needs --path <path> or --task <id>, not both");
       assertOwner(io.env);
-      ownerRelease(openEngine(io.cwd), a, io.env);
-      io.out(`released ${a.path}\n`);
+      if (opt.task !== undefined) {
+        const task_id = num(opt.task, "--task");
+        const n = ownerReleaseTask(openEngine(io.cwd), { task_id, reason }, io.env);
+        io.out(`released ${n} claim${n === 1 ? "" : "s"} of task ${task_id}\n`);
+      } else {
+        ownerRelease(openEngine(io.cwd), { path: opt.path, reason }, io.env);
+        io.out(`released ${opt.path}\n`);
+      }
       return 0;
     }
     case "map": {

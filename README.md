@@ -151,7 +151,7 @@ described in words.
 or call `node --no-warnings adapters/claude-code/engine/estack.mjs`. Commands:
 `init`, `status [--json]`, `handovers`, `run --task <id> --step <test|verify>`, `skip`,
 `cancel`, `override`, `allow` and `release` (owner only: let a task into a held
-file, accept an overlap across CTOs, free a stale hold), `map update|status|suggest` (build the code map, show it,
+file, accept an overlap across CTOs, free a stale hold with `--path`, or every claim of an abandoned task with `--task`), `map update|status|suggest` (build the code map, show it,
 suggest what to exclude), and `mcp`, plus `git-hook` and `map-hook`, which the
 installed git hooks call. Exit codes: 0 on success, 1 for an engine or
 internal error, 2 for a usage error, and 3 when `run` ran the check but it
@@ -168,7 +168,7 @@ with `plan_tasks`, which reports overlaps to resolve with `depends_on` or
 `accept_overlap`, then starts each worker (`start_task` with its `task_id`;
 a worker always gets its own worktree, and the stored parent wins) on `task/<id>-<slug>`. A worker's last step is `merge`, which the CTO does into the
 feature. Editing a file another task holds is denied, and the CTO sees it with
-`claim_status` and allows it with `allow_edit`. `status` lists planned, starting
+`claim_status` and allows it with `allow_edit`. A task whose steps have neither `pr` nor `merge` (a spike) gives up its holds when it closes, since it never reaches main. `status` lists planned, starting
 and kept items, and `estack cancel` takes planned and starting tasks too. Policy
 keys: `commands.worktree_setup` (for example `npm ci`) and `claims.exempt`.
 

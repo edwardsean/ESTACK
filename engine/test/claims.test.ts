@@ -6,7 +6,7 @@ import { MAX_CLAIM_DIFF, SYNC_BUDGET_MS, allowEdit, checkEdit, claimStatus, clai
 import { openEngine, type Engine } from "../src/engine";
 import { preCommit } from "../src/githooks";
 import { runHook, type HookEvent } from "../src/hooks";
-import { cancelTask } from "../src/owner";
+import { cancelTask, skipStep } from "../src/owner";
 import { initRepo } from "../src/policy";
 import { completeStep, insertEvidence, startTask } from "../src/tasks";
 import type { Actor, Task } from "../src/types";
@@ -279,6 +279,42 @@ describe("file claims", { timeout: 60_000 }, () => {
     expect(edit({ ...t2, cwd: dir } as Task, "src/a.ts")).toBeNull();
     expect(checkEdit(e, t2, "src/a.ts")).toEqual({ ok: true });
     expect(claims(e)).toHaveLength(1);
+  });
+
+  test("a task that closes with neither a pr nor a merge step releases its claims as it closes", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    git(dir, "checkout", "-q", "-b", "spike");
+    const sp = startTask(e, { title: "Spike", type: "spike", goal: "try something", done_check: "report", actor: A, cwd: dir }).task;
+    checkEdit(e, sp, "src/a.ts");
+    claimSymbol(e, { task_id: sp.id, name: "tryIt", file: "src/a.ts", actor: A });
+    completeStep(e, { task_id: sp.id, step: "explore", evidence: { kind: "note", text: "x" }, actor: A });
+    expect(claims(e).map((c) => c.status)).toEqual(["active", "active"]);
+    // The step that closes the task and the release are one transaction: a failed release keeps the step open.
+    e.db.exec("CREATE TRIGGER boom BEFORE UPDATE OF status ON claims BEGIN SELECT RAISE(ABORT, 'boom'); END");
+    expect(() => completeStep(e, { task_id: sp.id, step: "report", evidence: { kind: "note", text: "x" }, actor: A })).toThrow(/boom/);
+    expect(e.db.prepare("SELECT status FROM tasks WHERE id = ?").get(sp.id)).toEqual({ status: "open" });
+    e.db.exec("DROP TRIGGER boom");
+    completeStep(e, { task_id: sp.id, step: "report", evidence: { kind: "note", text: "x" }, actor: A });
+    expect(e.db.prepare("SELECT status FROM tasks WHERE id = ?").get(sp.id)).toEqual({ status: "done" });
+    expect(claims(e).map((c) => c.status)).toEqual(["released", "released"]);
+    expect(kinds(e, "claim_released").map((r) => JSON.parse(r.p).reason)).toEqual(["closed with no pr or merge step", "closed with no pr or merge step"]);
+    // The owner skipping the last step closes it the same way.
+    const sp2 = startTask(e, { title: "Spike two", type: "spike", goal: "g", done_check: "d", actor: A, cwd: dir }).task;
+    checkEdit(e, sp2, "src/b.ts");
+    skipStep(e, { task_id: sp2.id, step: "explore", reason: "r" }, {});
+    skipStep(e, { task_id: sp2.id, step: "report", reason: "r" }, {});
+    expect(claims(e).at(-1)).toEqual({ task_id: sp2.id, target: "src/b.ts", status: "released" });
+  });
+
+  test("a task with a pr step keeps its claims when it closes", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = feature(e, dir, A, "feat");
+    checkEdit(e, f, "src/a.ts");
+    for (const s of ["plan", "reuse_check", "implement", "test", "verify", "review", "pr"]) skipStep(e, { task_id: f.id, step: s, reason: "r" }, {});
+    expect(e.db.prepare("SELECT status FROM tasks WHERE id = ?").get(f.id)).toEqual({ status: "done" });
+    expect(claims(e)).toEqual([{ task_id: f.id, target: "src/a.ts", status: "active" }]);
   });
 
   test("with no origin, a done feature merged into local main releases its claims", () => {

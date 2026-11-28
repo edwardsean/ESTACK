@@ -35509,11 +35509,12 @@ function insertEvidence(e, task_id, step, kind, ok, payload, actor) {
     "INSERT INTO evidence (task_id, step, kind, ok, payload_json, recorded_by, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
   ).run(task_id, step, kind, ok ? 1 : 0, JSON.stringify(payload), actorId(actor), iso(e));
 }
-function finishStep(e, task_id, step) {
+function finishStep(e, task_id, step, actor) {
   e.db.prepare("UPDATE steps SET status = 'done', done_at = ? WHERE task_id = ? AND name = ?").run(iso(e), task_id, step);
   const left = e.db.prepare("SELECT COUNT(*) c FROM steps WHERE task_id = ? AND status NOT IN ('done','skipped')").get(task_id);
   if (left.c > 0) return false;
   e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(task_id);
+  releaseOnClose(e, task_id, actor);
   return true;
 }
 function bad(message) {
@@ -35610,7 +35611,7 @@ function completeStep(e, input2) {
       logEvent(e, input2.actor, "evidence", v.task.id, { step: input2.step, kind: required2, ok: false });
       return null;
     }
-    const closed = finishStep(e, v.task.id, input2.step);
+    const closed = finishStep(e, v.task.id, input2.step, input2.actor);
     logEvent(e, input2.actor, "step_done", v.task.id, { step: input2.step, kind: required2, closed });
     if (input2.step === "merge" && v.task.parent_id !== null) {
       const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id);
@@ -36088,6 +36089,11 @@ function releaseClaims(e, task, actor, reason) {
   const rows = e.db.prepare("SELECT id, kind, target FROM claims WHERE task_id = ? AND status = 'active' ORDER BY id").all(task.id);
   for (const c of rows) releaseOne(e, c, task.id, actor, reason);
 }
+function releaseOnClose(e, task_id, actor) {
+  if (e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id)) return;
+  const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id);
+  if (task) releaseClaims(e, task, actor, "closed with no pr or merge step");
+}
 function releaseOne(e, c, task_id, actor, reason) {
   e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso2(e), c.id);
   logEvent(e, actor, "claim_released", task_id, { claim_id: c.id, kind: c.kind, path: c.target, ...reason ? { reason } : {} });
@@ -36180,6 +36186,17 @@ function releaseClaim(e, rawPath, reason) {
     const held = holderOf(e, path);
     if (!held) throw new EngineError("BAD_EVIDENCE", `${path} is not held by any task`);
     releaseOne(e, { id: held.claim_id, kind: "file", target: path }, held.task.id, { session_id: "owner" }, reason);
+  });
+}
+function releaseTaskClaims(e, task_id, reason) {
+  if (!reason || !reason.trim()) throw new EngineError("BAD_EVIDENCE", "a reason is required");
+  return tx(e, () => {
+    const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id);
+    if (!task) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
+    const { n } = e.db.prepare("SELECT COUNT(*) n FROM claims WHERE task_id = ? AND status = 'active'").get(task_id);
+    if (n === 0) throw new EngineError("BAD_EVIDENCE", `task #${task_id} holds nothing`);
+    releaseClaims(e, task, { session_id: "owner" }, reason);
+    return n;
   });
 }
 function claimPath(e, path, task) {
@@ -36996,7 +37013,7 @@ function runCheck(e, input2) {
     insertEvidence(e, input2.task_id, input2.step, "command", result.ok, { command, ...result, head_sha }, input2.actor);
     logEvent(e, input2.actor, "evidence", input2.task_id, { step: input2.step, kind: "command", ok: result.ok });
     if (result.ok) {
-      const closed = finishStep(e, input2.task_id, input2.step);
+      const closed = finishStep(e, input2.task_id, input2.step, input2.actor);
       logEvent(e, input2.actor, "step_done", input2.task_id, { step: input2.step, closed });
     }
   });
@@ -47115,6 +47132,7 @@ function skipStep(e, input2, env) {
     const closed = left.c === 0;
     if (closed) e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(input2.task_id);
     logEvent(e, OWNER, "step_skipped", input2.task_id, { step: input2.step, reason: input2.reason, closed });
+    if (closed) releaseOnClose(e, input2.task_id, OWNER);
     return getTask(e, input2.task_id);
   });
 }
@@ -47156,6 +47174,10 @@ function ownerAcceptOverlap(e, input2, env) {
 function ownerRelease(e, input2, env) {
   assertOwner(env);
   releaseClaim(e, input2.path, input2.reason);
+}
+function ownerReleaseTask(e, input2, env) {
+  assertOwner(env);
+  return releaseTaskClaims(e, input2.task_id, input2.reason);
 }
 
 // engine/src/githooks.ts
@@ -47299,6 +47321,7 @@ var USAGE = `usage: estack <command>
   allow --task <id> --path <path> --reason <text>    (owner only: let a task edit a held file)
   allow --task <a> --with <b> --reason <text>        (owner only: accept an overlap between two tasks)
   release --path <path> --reason <text>              (owner only: free a stale hold)
+  release --task <id> --reason <text>                (owner only: free every claim of a task nobody will finish)
   map <update|status|suggest> [--json]                     (the Graphify code map)
   hook <pre-tool-use|post-tool-use|session-start|user-prompt-submit|stop|subagent-stop>   (event JSON on stdin)
 `;
@@ -47599,12 +47622,20 @@ function dispatch(cmd, rest, io) {
       return 0;
     }
     case "release": {
-      const { opt } = parse4(rest, ["path", "reason"]);
-      const a = { path: need(opt, "path"), reason: need(opt, "reason") };
+      const { opt } = parse4(rest, ["path", "task", "reason"]);
+      const reason = need(opt, "reason");
+      if (opt.path === void 0 === (opt.task === void 0)) throw new Usage("release needs --path <path> or --task <id>, not both");
       assertOwner(io.env);
-      ownerRelease(openEngine(io.cwd), a, io.env);
-      io.out(`released ${a.path}
+      if (opt.task !== void 0) {
+        const task_id = num(opt.task, "--task");
+        const n = ownerReleaseTask(openEngine(io.cwd), { task_id, reason }, io.env);
+        io.out(`released ${n} claim${n === 1 ? "" : "s"} of task ${task_id}
 `);
+      } else {
+        ownerRelease(openEngine(io.cwd), { path: opt.path, reason }, io.env);
+        io.out(`released ${opt.path}
+`);
+      }
       return 0;
     }
     case "map": {
