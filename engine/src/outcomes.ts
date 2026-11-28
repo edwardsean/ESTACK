@@ -6,7 +6,7 @@ import type { Actor, Task } from "./types";
 
 const ENGINE: Actor = { session_id: "engine" };
 type Outcome = "conflict" | "holder_failed" | "clean";
-interface Grant { id: number; claim_id: number; task_id: number; path: string; at: string }
+export interface Grant { id: number; claim_id: number; task_id: number; path: string; at: string }
 
 const getTask = (e: Engine, id: number): Task | undefined =>
   e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as unknown as Task | undefined;
@@ -122,13 +122,16 @@ function judge(e: Engine, c: Ctx, g: Grant): Outcome | null {
   return finished(e, c, grantee, holder) ? "clean" : null;
 }
 
+/** Write one grant's outcome, once. Not transactional itself: call it inside `tx`. */
+function writeOutcome(e: Engine, g: Grant, outcome: Outcome): void {
+  const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL")
+    .run(outcome, e.now().toISOString(), g.id);
+  if (r.changes === 1) logEvent(e, ENGINE, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
+}
+
 /** Record one grant's outcome, once. */
 function setOutcome(e: Engine, g: Grant, outcome: Outcome): void {
-  tx(e, () => {
-    const r = e.db.prepare("UPDATE claim_grants SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL")
-      .run(outcome, e.now().toISOString(), g.id);
-    if (r.changes === 1) logEvent(e, ENGINE, "grant_outcome", g.task_id, { grant_id: g.id, outcome });
-  });
+  tx(e, () => writeOutcome(e, g, outcome));
 }
 
 /**
@@ -161,24 +164,29 @@ export function mergeConflicts(e: Engine, cwd: string, branch: string, head: str
 }
 
 /**
- * A worker's merge into its feature just completed: every open grant on a path that conflicted in that merge, held by or
- * granted to the worker or the feature, is a conflict, even though the CTO resolved and committed it before the step.
- * Runs before any clean check; never throws.
+ * A worker's merge into its feature is about to be recorded: the open grants on a path that conflicted in that merge and
+ * whose both sides are inside the feature (the worker, the feature itself or another worker of it) are conflicts, even
+ * though the CTO resolved and committed the merge before the step. A cross-feature grant is not, whoever's change the
+ * path conflicted with. Runs git, so call it before the step's transaction; never throws.
  */
-export function recordMergeConflicts(e: Engine, worker: Task, feature: Task, head: string): void {
+export function mergeConflictGrants(e: Engine, worker: Task, feature: Task, head: string): Grant[] {
   try {
     const paths = new Set(mergeConflicts(e, feature.cwd && existsSync(feature.cwd) ? feature.cwd : e.repo.root, feature.branch, head));
-    if (paths.size === 0) return;
-    const involved = new Set([worker.id, feature.id]);
-    const grants = (e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all() as unknown as Grant[])
-      .filter((g) => paths.has(g.path));
-    for (const g of grants) {
-      const holder = holderAtGrant(e, g);
-      if (!involved.has(g.task_id) && !(holder !== undefined && involved.has(holder))) continue;
-      const cancelled = [g.task_id, holder].some((id) => id !== undefined && getTask(e, id)?.status === "cancelled");
-      if (!cancelled) setOutcome(e, g, "conflict");
-    }
-  } catch { /* left for recordOutcomes */ }
+    if (paths.size === 0) return [];
+    const inside = new Set([worker.id, feature.id,
+      ...(e.db.prepare("SELECT id FROM tasks WHERE parent_id = ?").all(feature.id) as { id: number }[]).map((r) => r.id)]);
+    return (e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all() as unknown as Grant[])
+      .filter((g) => paths.has(g.path)).filter((g) => {
+        const holder = holderAtGrant(e, g);
+        if (holder === undefined || !inside.has(g.task_id) || !inside.has(holder)) return false;
+        return ![g.task_id, holder].some((id) => getTask(e, id)?.status === "cancelled");
+      });
+  } catch { return []; }
+}
+
+/** Mark grants conflicts. Call it inside the transaction that records the merge step, so no status call can record clean first. */
+export function recordMergeConflicts(e: Engine, grants: Grant[]): void {
+  for (const g of grants) writeOutcome(e, g, "conflict");
 }
 
 /**

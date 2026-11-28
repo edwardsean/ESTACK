@@ -1,5 +1,5 @@
 import { passClaims, releaseClaims, releaseOnClose, removeOnClose, syncMerged } from "./claims";
-import { recordMergeConflicts, recordOutcomes } from "./outcomes";
+import { mergeConflictGrants, recordMergeConflicts, recordOutcomes } from "./outcomes";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
 import { areaPath, claimInfo, gateStart, releaseStale } from "./plan";
@@ -437,6 +437,11 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
   if (input.evidence.kind !== required) bad(`step "${input.step}" needs ${required} evidence, got ${input.evidence.kind}`);
   // Spawning git/gh happens before BEGIN IMMEDIATE so a slow check never holds the write lock.
   const { payload, rejected } = checkEvidence(e, v, input.step, input.evidence, input.actor);
+  // The merge's conflicting paths are found here, outside the lock, and written in the same transaction as the step,
+  // so another session's status cannot record the grant clean in between.
+  const mergeFeature = input.step === "merge" && !rejected && v.task.parent_id !== null
+    ? e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task | undefined : undefined;
+  const conflicts = mergeFeature && typeof payload.head === "string" ? mergeConflictGrants(e, v.task, mergeFeature, payload.head) : [];
   const result = tx(e, () => {
     // Re-check under the write lock: the task may have moved while the evidence was checked.
     assertNext(view(e, input.task_id), input.step);
@@ -448,6 +453,7 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
     const closed = finishStep(e, v.task.id, input.step, input.actor);
     logEvent(e, input.actor, "step_done", v.task.id, { step: input.step, kind: required, closed });
     if (input.step === "merge" && v.task.parent_id !== null) {
+      recordMergeConflicts(e, conflicts);
       const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task;
       // A cancelled or finished feature has no one to hold the files: they are released, not passed.
       if (feature.status === "open") passClaims(e, v.task, feature, input.actor);
@@ -457,9 +463,6 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
   });
   if (!result) return bad(rejected ?? "evidence rejected");
   if (input.step === "merge") {
-    // Paths that conflicted in this merge make their grants conflicts, before the clean check below can call them clean.
-    const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task | undefined;
-    if (feature && typeof payload.head === "string") recordMergeConflicts(e, v.task, feature, payload.head);
     // The worker is merged: its worktree goes (kept if dirty). The step is already recorded, so a failure here does not undo it.
     try { removeWorktree(e, v.task); } catch (x) {
       logEvent(e, { session_id: "engine" }, "worktree_kept", v.task.id, { path: v.task.cwd, reason: x instanceof Error ? x.message : String(x) });
