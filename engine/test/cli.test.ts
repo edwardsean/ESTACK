@@ -9,7 +9,7 @@ import { allowEdit, checkEdit, claimSymbol } from "../src/claims";
 import { removeWorktree } from "../src/worktree";
 import { getTask, startTask } from "../src/tasks";
 import { planTasks } from "../src/plan";
-import { HAS_GRAPHIFY, fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { HAS_GRAPHIFY, fakeExec, makeRepo, tempDir, writeFakeGraph } from "./helpers";
 import { realExec, type Exec } from "../src/exec";
 
 // Graphify scripted as missing unless a test opts in, so init leaves the map off on any machine.
@@ -432,7 +432,7 @@ describe("cli init and the code map", () => {
       const starting = Number(e.db.prepare("INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES ('Busy', 'feature', 'g', 'd', 'starting', '', '', '', 'sa/main', 'now')").run().lastInsertRowid);
       e.db.prepare("INSERT INTO events (at, actor, kind, task_id, payload_json) VALUES (?, 'sa/main', 'task_claimed', ?, '{\"from\":\"new\"}')").run(new Date().toISOString(), starting);
       execFileSync("git", ["worktree", "add", "-q", "-b", `feat/${starting}-busy`, join(dir, ".estack", "worktrees", `${starting}-busy`)], { cwd: dir });
-      execFileSync("git", ["worktree", "add", "-q", "-b", "mine", join(dir, "..", `${dir.split("/").at(-1)}-mine`)], { cwd: dir });
+      execFileSync("git", ["worktree", "add", "-q", "-b", "mine", join(tempDir("estack-mine-"), "wt")], { cwd: dir });
       e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(t2.id);
       const text = run(dir, ["status"]).out;
       expect(text).toContain(`stray worktree: ${leaked} (no task uses it; inspect it, then remove it by hand)`);

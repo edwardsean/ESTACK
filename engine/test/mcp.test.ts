@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -9,7 +8,7 @@ import { describe, expect, test } from "vitest";
 import { runHook } from "../src/hooks";
 import { createServer } from "../src/mcp";
 import { initRepo } from "../src/policy";
-import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { fakeExec, makeRepo, writeFakeGraph, tempDir } from "./helpers";
 
 const PR = "https://github.com/o/r/pull/1";
 const A = { session_id: "s1", agent_id: "A" };
@@ -199,7 +198,7 @@ describe("mcp server", () => {
 
   test("C6 start_task records the cwd it is given (a linked worktree)", async () => {
     const dir = initedRepo();
-    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    const wt = join(tempDir("estack-wt-"), "wt");
     execFileSync("git", ["worktree", "add", "-b", "feat", wt], { cwd: dir, stdio: "ignore" });
     const { call } = await connect(dir);
     const r = await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", actor: A, cwd: wt });
@@ -213,7 +212,7 @@ describe("mcp server", () => {
     const wts: string[] = [];
     const ids: number[] = [];
     for (const n of ["one", "two"]) {
-      const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+      const wt = join(tempDir("estack-wt-"), "wt");
       execFileSync("git", ["worktree", "add", "-b", `feat-${n}`, wt], { cwd: dir, stdio: "ignore" });
       const r = await call("start_task", { title: n, type: "feature", goal: `goal ${n}`, done_check: "d", actor: s1, cwd: wt });
       expect(r.isError, r.text).toBe(false);

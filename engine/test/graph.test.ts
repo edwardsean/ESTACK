@@ -1,14 +1,13 @@
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
 import { BUILD_TIMEOUT_MS, buildGraph, checkoutLabel, folderShares, INSTALL_HINT, loadGraph, mappedFiles, suggestExcludes, versionSupported, writeIgnore } from "../src/graph";
 import { initRepo } from "../src/policy";
 import { startTask } from "../src/tasks";
-import { fakeExec, HAS_GRAPHIFY, makeRepo, writeFakeGraph } from "./helpers";
+import { fakeExec, HAS_GRAPHIFY, makeRepo, writeFakeGraph, tempDir } from "./helpers";
 
 function engineFor(exclude: string[] = [], exec?: ReturnType<typeof fakeExec>): { dir: string; e: Engine } {
   const dir = makeRepo();
@@ -116,7 +115,7 @@ describe("graph adapter", () => {
 
   test("checkoutLabel names main and task worktrees", () => {
     const { dir, e } = engineFor();
-    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    const wt = join(tempDir("estack-wt-"), "wt");
     execFileSync("git", ["worktree", "add", "-b", "t1", wt], { cwd: dir, stdio: "ignore" });
     startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: { session_id: "s" }, cwd: wt });
     expect(checkoutLabel(e, dir)).toBe("main");

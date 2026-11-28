@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
@@ -9,7 +8,7 @@ import { STALE_CLAIM_MS, getTask, startTask } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
 import { WORKTREE_ADD_TIMEOUT_MS, WORKTREE_SETUP_TIMEOUT_MS, removeWorktree, slug } from "../src/worktree";
 import { realExec } from "../src/exec";
-import { fakeExec, makeRepo } from "./helpers";
+import { fakeExec, makeRepo, tempDir } from "./helpers";
 
 const cto: Actor = { session_id: "s1" };
 const git = (dir: string, ...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -52,7 +51,7 @@ describe("worktrees", () => {
 
   test("a feature branches from origin/main when an origin exists", () => {
     const { dir, e } = setup();
-    const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-origin-")));
+    const bare = tempDir("estack-origin-");
     git(bare, "init", "--bare", "-b", "main");
     git(dir, "remote", "add", "origin", bare);
     git(dir, "push", "origin", "main");
@@ -77,7 +76,7 @@ describe("worktrees", () => {
     test("origin/HEAD names the default branch: a feature branches from origin/master", () => {
       const { dir, e } = setup();
       git(dir, "branch", "-m", "main", "master");
-      const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-origin-")));
+      const bare = tempDir("estack-origin-");
       git(bare, "init", "--bare", "-b", "master");
       git(dir, "remote", "add", "origin", bare);
       git(dir, "push", "origin", "master");
@@ -91,7 +90,7 @@ describe("worktrees", () => {
 
     test("origin/HEAD wins over a local main", () => {
       const { dir, e } = setup();
-      const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-origin-")));
+      const bare = tempDir("estack-origin-");
       git(bare, "init", "--bare", "-b", "main");
       git(dir, "remote", "add", "origin", bare);
       git(dir, "branch", "trunk");
@@ -321,7 +320,7 @@ describe("worktrees", () => {
 
   test("removeWorktree never removes a worktree the user made", () => {
     const { dir, e } = setup();
-    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-user-"))), "wt");
+    const wt = join(tempDir("estack-user-"), "wt");
     git(dir, "worktree", "add", "-b", "mine", wt);
     const v = startTask(e, { title: "t", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: wt });
     expect(removeWorktree(e, v.task)).toBe("kept");
@@ -330,7 +329,7 @@ describe("worktrees", () => {
 
   test("a feature branch has no upstream", () => {
     const { dir, e } = setup();
-    const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-origin-")));
+    const bare = tempDir("estack-origin-");
     git(bare, "init", "--bare", "-b", "main");
     git(dir, "remote", "add", "origin", bare);
     git(dir, "push", "origin", "main");
@@ -342,7 +341,7 @@ describe("worktrees", () => {
   test("a timed-out fetch is ignored", () => {
     const dir = makeRepo();
     initRepo(dir);
-    const bare = realpathSync(mkdtempSync(join(tmpdir(), "estack-origin-")));
+    const bare = tempDir("estack-origin-");
     git(bare, "init", "--bare", "-b", "main");
     git(dir, "remote", "add", "origin", bare);
     git(dir, "push", "origin", "main");

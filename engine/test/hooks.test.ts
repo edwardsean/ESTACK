@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine } from "../src/engine";
@@ -11,7 +10,7 @@ import { realExec, type Exec } from "../src/exec";
 import { preCommit, prePush } from "../src/githooks";
 import { logEvent, startTask } from "../src/tasks";
 import { consumeHandover, saveSessionHandover, type HandoverInput } from "../src/handover";
-import { fakeExec, makeRepo } from "./helpers";
+import { fakeExec, makeRepo, tempDir } from "./helpers";
 
 const S = "sess-1";
 
@@ -66,7 +65,7 @@ describe("hooks", () => {
 
   test("edit outside the repo is allowed with no output", () => {
     const dir = repo();
-    const other = realpathSync(mkdtempSync(join(tmpdir(), "estack-other-")));
+    const other = tempDir("estack-other-");
     expect(edit(dir, join(other, "a.ts"))).toBeNull();
   });
 
@@ -112,7 +111,7 @@ describe("hooks", () => {
 
   test("a write into a linked worktree's gitdir is denied", () => {
     const dir = repo();
-    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    const wt = join(tempDir("estack-wt-"), "wt");
     execFileSync("git", ["worktree", "add", "-b", "feat", wt], { cwd: dir, stdio: "ignore" });
     const r = edit(dir, join(dir, ".git", "worktrees", "wt", "hooks", "pre-push"), { tool_name: "Write" });
     expect(decision(r)).toBe("deny");
@@ -227,7 +226,7 @@ describe("hooks", () => {
 
   test("C6 start_task gets the caller's cwd stamped over a typed one", () => {
     const dir = repo();
-    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    const wt = join(tempDir("estack-wt-"), "wt");
     execFileSync("git", ["worktree", "add", "-b", "feat", wt], { cwd: dir, stdio: "ignore" });
     const r = pre(wt, { tool_name: "mcp__plugin_estack_estack__start_task", tool_input: { title: "x", cwd: "/elsewhere" } });
     expect(decision(r)).toBe("allow");
@@ -241,7 +240,7 @@ describe("hooks", () => {
     process.env.LC_ALL = "de_DE.UTF-8";
     process.env.LANG = "de_DE.UTF-8";
     try {
-      const other = realpathSync(mkdtempSync(join(tmpdir(), "estack-other-")));
+      const other = tempDir("estack-other-");
       expect(edit(dir, join(other, "a.ts"), { tool_name: "Write" })).toBeNull();
     } finally {
       for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
@@ -392,7 +391,7 @@ describe("hooks", () => {
 
       test("a new session in another worktree is not told to resume a handover saved in a different one", () => {
         const dir = repo();
-        const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "a");
+        const wt = join(tempDir("estack-wt-"), "a");
         execFileSync("git", ["worktree", "add", "-q", wt, "-b", "feat-a"], { cwd: dir });
         const real = realpathSync(wt);
         withEngine(dir, (e) => startTask(e, { title: "a", type: "feature", goal: "feature A", done_check: "d", actor: { session_id: "sA" }, cwd: real }));
@@ -459,7 +458,7 @@ describe("hooks", () => {
         const dir = repo();
         task(dir, "A");
         hook("pre-compact", dir, { hook_event_name: "PreCompact", session_id: "A" });
-        const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+        const wt = join(tempDir("estack-wt-"), "wt");
         execFileSync("git", ["worktree", "add", "-b", "b2", wt], { cwd: dir, stdio: "ignore" });
         withEngine(dir, (e) => startTask(e, { title: "b", type: "feature", goal: "g2", done_check: "d", actor: { session_id: "A" }, cwd: wt }));
         withEngine(dir, (e) => consumeHandover(e, { session_id: "B" }));
@@ -690,7 +689,7 @@ describe("hooks: read tools and code-map tools", () => {
 
   test("with the map off the hook script lets Read and Grep through without starting node", () => {
     const dir = repo();
-    const bin = realpathSync(mkdtempSync(join(tmpdir(), "estack-bin-")));
+    const bin = tempDir("estack-bin-");
     const marker = join(bin, "node-started");
     writeFileSync(join(bin, "node"), `#!/bin/sh\ncat >/dev/null\ntouch "${marker}"\nexit 0\n`, { mode: 0o755 });
     const path = `${bin}:/usr/bin:/bin`;

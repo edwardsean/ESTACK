@@ -1,12 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { versionSupported } from "../src/graph";
+import { tempDir } from "./temp";
+
+export { tempDir };
 
 /** A fresh git repo on branch main with one empty commit. */
 export function makeRepo(): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "estack-repo-")));
+  const dir = tempDir("estack-repo-");
   const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
   git("init", "-b", "main");
   git("config", "user.name", "Test");

@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -10,7 +9,7 @@ import { main } from "../src/cli";
 import { runHook } from "../src/hooks";
 import { createServer } from "../src/mcp";
 import { initRepo } from "../src/policy";
-import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { fakeExec, makeRepo, writeFakeGraph, tempDir } from "./helpers";
 
 // Phase 6 done-when, end to end: a feature, two dependent workers, a helper built once, holds, grants and outcomes,
 // driven through the MCP server, the hooks and the CLI the way agents and the owner would.
@@ -97,7 +96,7 @@ describe("phase 6 done-when", { timeout: 120_000 }, () => {
   beforeAll(async () => {
     main_ = makeRepo();
     git(main_, "config", "commit.gpgsign", "false");
-    origin = realpathSync(mkdtempSync(join(tmpdir(), "estack-origin-")));
+    origin = tempDir("estack-origin-");
     git(origin, "init", "--bare", "-b", "main");
     write(main_, UTILS, UTILS_START);
     initRepo(main_);

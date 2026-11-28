@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
@@ -12,7 +11,7 @@ import { EngineError, type Actor } from "../src/types";
 import { realExec } from "../src/exec";
 import { cancelTask } from "../src/owner";
 import type { ExecResult } from "../src/exec";
-import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { fakeExec, makeRepo, writeFakeGraph, tempDir } from "./helpers";
 
 const cto: Actor = { session_id: "s1" };
 const cto2: Actor = { session_id: "s2" };
@@ -152,7 +151,7 @@ describe("plan_tasks", () => {
   describe("main as seen from a bare origin", () => {
     function withOrigin() {
       const { dir, e } = setup();
-      const bare = mkdtempSync(join(tmpdir(), "estack-origin-"));
+      const bare = tempDir("estack-origin-");
       execFileSync("git", ["init", "--bare", "-b", "main", bare], { stdio: "ignore" });
       git(dir, "remote", "add", "origin", bare);
       git(dir, "push", "origin", "main");
@@ -508,7 +507,7 @@ describe("review fixes", () => {
       const { dir, e } = setup();
       const f = feature(e, dir, cto);
       const a = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [item("A", ["src/a"])] }).tasks[0].task.id;
-      const elsewhere = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-else-"))), "wt");
+      const elsewhere = join(tempDir("estack-else-"), "wt");
       git(f.task.cwd, "worktree", "add", "-b", `task/${a}-a`, elsewhere);
       const err = code(() => begin(e, f, a));
       expect(err.message).toContain(`checked out in ${elsewhere}`);

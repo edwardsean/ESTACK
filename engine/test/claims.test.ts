@@ -10,7 +10,7 @@ import { cancelTask, skipStep } from "../src/owner";
 import { initRepo } from "../src/policy";
 import { completeStep, insertEvidence, startTask } from "../src/tasks";
 import type { Actor, Task } from "../src/types";
-import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
+import { fakeExec, makeRepo, writeFakeGraph, tempDir } from "./helpers";
 import { EngineError } from "../src/types";
 
 const A: Actor = { session_id: "sa" };
@@ -337,10 +337,10 @@ describe("file claims", { timeout: 60_000 }, () => {
       const dir = repo();
       git(dir, "branch", "-m", "main", "master");
       if (withOrigin) {
-        const bare = execFileSync("mktemp", ["-d"], { encoding: "utf8" }).trim();
+        const bare = tempDir("estack-bare-");
         git(bare, "init", "--bare", "-b", "master");
         git(dir, "remote", "add", "origin", bare);
-        git(dir, "push", "origin", "master");
+        git(dir, "push", "-q", "origin", "master");
         git(dir, "remote", "set-head", "origin", "master");
       }
       const e = openEngine(dir, deps);
@@ -352,7 +352,7 @@ describe("file claims", { timeout: 60_000 }, () => {
       syncMerged(e);
       expect(claims(e)[0].status).toBe("active");
       git(dir, "merge", "--no-ff", "-m", "m", f.branch);
-      if (withOrigin) git(dir, "push", "origin", "master");
+      if (withOrigin) git(dir, "push", "-q", "origin", "master");
       syncMerged(e);
       expect(claims(e)[0].status, withOrigin ? "with origin" : "without origin").toBe("released");
     }
@@ -360,10 +360,10 @@ describe("file claims", { timeout: 60_000 }, () => {
 
   test("syncMerged asks gh once per done task's branch, fetches once, and stops when its budget is spent", () => {
     const dir = repo();
-    const bare = execFileSync("mktemp", ["-d"], { encoding: "utf8" }).trim();
+    const bare = tempDir("estack-bare-");
     git(bare, "init", "--bare", "-b", "main");
     git(dir, "remote", "add", "origin", bare);
-    git(dir, "push", "origin", "main");
+    git(dir, "push", "-q", "origin", "main");
     const responses: Record<string, any> = {};
     const inner = fakeExec(responses);
     const seen = { gh: [] as string[], fetches: 0 };

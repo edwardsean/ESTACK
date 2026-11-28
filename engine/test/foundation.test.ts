@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -9,7 +9,7 @@ import { MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, openDb } from "../s
 import { realExec } from "../src/exec";
 import { DEFAULT_POLICY_YAML, initRepo, loadPolicy, parsePolicy } from "../src/policy";
 import { findRepo } from "../src/repo";
-import { makeRepo } from "./helpers";
+import { makeRepo, tempDir } from "./helpers";
 
 const codeOf = (fn: () => unknown) => {
   try { fn(); } catch (e) { return e as { code?: string; message: string }; }
@@ -17,13 +17,13 @@ const codeOf = (fn: () => unknown) => {
 };
 
 test("findRepo outside git throws NOT_A_REPO", () => {
-  const dir = mkdtempSync(join(tmpdir(), "estack-nogit-"));
+  const dir = tempDir("estack-nogit-");
   expect(codeOf(() => findRepo(dir)).code).toBe("NOT_A_REPO");
 });
 
 test("findRepo from a linked worktree resolves the main checkout", () => {
   const main = makeRepo();
-  const wt = join(mkdtempSync(join(tmpdir(), "estack-wt-")), "wt");
+  const wt = join(tempDir("estack-wt-"), "wt");
   execFileSync("git", ["worktree", "add", wt, "-b", "side"], { cwd: main, stdio: "ignore" });
   expect(findRepo(wt).root).toBe(realpathSync(main));
 });
@@ -68,7 +68,7 @@ test("a task type naming an inherited property such as toString is POLICY_INVALI
 });
 
 test("openDb twice is idempotent and sets WAL", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "estack-db-")), "state.db");
+  const path = join(tempDir("estack-db-"), "state.db");
   openDb(path).close();
   const db = openDb(path);
   expect((db.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("wal");
@@ -77,7 +77,7 @@ test("openDb twice is idempotent and sets WAL", () => {
 });
 
 test("two connections writing at once both succeed", async () => {
-  const path = join(mkdtempSync(join(tmpdir(), "estack-db-")), "state.db");
+  const path = join(tempDir("estack-db-"), "state.db");
   const a = openDb(path);
   a.exec("BEGIN IMMEDIATE");
   const code = `
@@ -101,7 +101,7 @@ test("two connections writing at once both succeed", async () => {
 });
 
 test("a version-2 database upgrades to 3 and keeps its rows", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "estack-mig3-")), "state.db");
+  const path = join(tempDir("estack-mig3-"), "state.db");
   const old = new DatabaseSync(path);
   old.exec(MIGRATION_1);
   old.exec(MIGRATION_2);
@@ -122,7 +122,7 @@ test("a version-2 database upgrades to 3 and keeps its rows", () => {
 });
 
 test("a version-3 database upgrades to 4: handovers gain a checkout, old rows keep null", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "estack-mig4-")), "state.db");
+  const path = join(tempDir("estack-mig4-"), "state.db");
   const old = new DatabaseSync(path);
   old.exec(MIGRATION_1);
   old.exec(MIGRATION_2);
@@ -146,7 +146,7 @@ const indexes = (db: DatabaseSync) =>
   db.prepare("SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name").all();
 
 test("a new database has the indexes the map-first and reuse_check look-ups use", () => {
-  const db = openDb(join(mkdtempSync(join(tmpdir(), "estack-idx-")), "state.db"));
+  const db = openDb(join(tempDir("estack-idx-"), "state.db"));
   expect(indexes(db)).toEqual(PHASE_5_INDEXES);
   const plan = (sql: string) => (db.prepare("EXPLAIN QUERY PLAN " + sql).all() as { detail: string }[]).map((r) => r.detail).join("\n");
   expect(plan("SELECT 1 FROM events WHERE kind = 'map_first_denied' AND task_id = 1 AND actor = 'a' LIMIT 1")).toContain("events_kind_task_actor");
@@ -175,7 +175,7 @@ const NEW_TASK = `INSERT INTO tasks (id, title, type, goal, done_check, status, 
   VALUES (?, 't', 'feature', 'g', 'd', 'open', 'main', '/x', 'abc', 's1/main', 't')`;
 
 test("a version-4 database upgrades to 5 and keeps its rows", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "estack-mig5-")), "state.db");
+  const path = join(tempDir("estack-mig5-"), "state.db");
   const old = new DatabaseSync(path);
   for (const m of [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4]) old.exec(m);
   old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '4')").run();
@@ -193,7 +193,7 @@ test("a version-4 database upgrades to 5 and keeps its rows", () => {
 });
 
 test("claims allow one active holder per target", () => {
-  const db = openDb(join(mkdtempSync(join(tmpdir(), "estack-claims-")), "state.db"));
+  const db = openDb(join(tempDir("estack-claims-"), "state.db"));
   db.prepare(NEW_TASK).run(1);
   db.prepare(NEW_TASK).run(2);
   const ins = db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', 'a.ts', ?, 't')");

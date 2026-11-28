@@ -1,14 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openEngine, type Engine } from "../src/engine";
 import { runCheck } from "../src/checks";
 import { initRepo } from "../src/policy";
 import { getTask, startTask } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
-import { makeRepo } from "./helpers";
+import { makeRepo, tempDir } from "./helpers";
 
 const cto: Actor = { session_id: "s1" };
 
@@ -121,7 +120,7 @@ describe("runCheck", () => {
   test("a task started from a linked worktree records it and runs its check there", () => {
     const dir = makeRepo();
     writeCommands(dir, { test: "test -f only-in-worktree" });
-    const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-wt-"))), "wt");
+    const wt = join(tempDir("estack-wt-"), "wt");
     execFileSync("git", ["worktree", "add", wt, "-b", "side"], { cwd: dir, stdio: "ignore" });
     writeFileSync(join(wt, "only-in-worktree"), "");
     const e = openEngine(wt);
