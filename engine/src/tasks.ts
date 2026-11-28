@@ -273,7 +273,7 @@ export function startTask(e: Engine, input: {
   const branch = `${parent ? "task" : "feat"}/${name}`;
   try {
     // The start point is the resolved sha, so the new branch tracks no upstream.
-    const { path, reused } = ensureWorktree(e, { under: checkout, name, branch, base: from.sha });
+    const { path, reused } = ensureWorktree(e, { under: checkout, name, branch, base: from.sha, reuse: planned !== undefined });
     ensureWorktreeExclude(e);
     logEvent(e, input.actor, "worktree_created", id, { path, branch, base: from.ref, ...(reused ? { reused: true } : {}) });
     const setup = runWorktreeSetup(e, path);
@@ -290,7 +290,8 @@ export function startTask(e: Engine, input: {
   } catch (x) {
     // A new task stays cancelled; a planned one stays planned. No open task remains. A worktree already made is kept.
     // Only the row this call claimed: never a task another process has opened or released in the meantime.
-    e.db.prepare("UPDATE tasks SET status = ?, cwd = '', branch = '' WHERE id = ? AND status = 'starting'").run(planned ? "planned" : "cancelled", id);
+    // A planned task gets its placeholder cwd (the parent's) back, as withdraw_task does.
+    e.db.prepare(`UPDATE tasks SET status = ?, cwd = ${planned ? "COALESCE((SELECT cwd FROM tasks p WHERE p.id = tasks.parent_id), '')" : "''"}, branch = '' WHERE id = ? AND status = 'starting'`).run(planned ? "planned" : "cancelled", id);
     logEvent(e, input.actor, "worktree_failed", id, { error: x instanceof Error ? x.message : String(x) });
     throw x;
   }

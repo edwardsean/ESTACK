@@ -39,8 +39,10 @@ export function cancelTask(e: Engine, input: { task_id: number; reason: string }
   needReason(input.reason);
   return tx(e, () => {
     const v = getTask(e, input.task_id);
-    if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
-    e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(input.task_id);
+    // The owner can also cancel a planned or starting task, whose CTO session may be gone.
+    if (!["open", "planned", "starting"].includes(v.task.status)) throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
+    const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status IN ('open','planned','starting')").run(input.task_id);
+    if (r.changes !== 1) throw new EngineError("TASK_CLOSED", `task ${v.task.id} changed while it was being cancelled`);
     logEvent(e, OWNER, "task_cancelled", input.task_id, { reason: input.reason });
     return getTask(e, input.task_id);
   });

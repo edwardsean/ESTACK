@@ -29,29 +29,43 @@ export function createWorktree(e: Engine, input: { under: string; name: string; 
 }
 
 /**
- * The worktree for a task: made now, or reused when an earlier start (one that died or failed after `git worktree add`)
- * already made it at the expected path on the expected branch. Anything else in the way is refused, never forced away.
+ * The worktree for a task: made now, or (only when `reuse` is set, for a planned or stale-claimed task) reused when an
+ * earlier start that died or failed after `git worktree add` already made it, intact, at the expected path on the expected
+ * branch. Anything else in the way is refused with what to do by hand; nothing is ever forced away.
  */
-export function ensureWorktree(e: Engine, input: { under: string; name: string; branch: string; base: string }): { path: string; reused: boolean } {
+export function ensureWorktree(e: Engine, input: { under: string; name: string; branch: string; base: string; reuse: boolean }): { path: string; reused: boolean } {
   const path = join(input.under, WORKTREES_DIR, input.name);
   const list = runBounded(e, input.under, "git", ["worktree", "list", "--porcelain"]);
-  let here: { branch: string | null } | null = null;
-  if (list.code === 0) {
-    for (const block of list.stdout.split("\n\n")) {
-      const lines = block.split("\n");
-      if (lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length) === path) {
-        here = { branch: lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null };
-      }
-    }
-  }
+  const blocks = list.code !== 0 ? [] : list.stdout.split("\n\n").map((b) => {
+    const lines = b.split("\n");
+    const get = (k: string) => lines.find((l) => l === k || l.startsWith(`${k} `));
+    return {
+      path: get("worktree")?.slice("worktree ".length) ?? "",
+      branch: get("branch")?.slice("branch ".length) ?? null,
+      locked: get("locked") !== undefined,
+      prunable: get("prunable") !== undefined,
+    };
+  });
+  const ref = `refs/heads/${input.branch}`;
   const byHand = `remove it by hand (git worktree remove ${path}, then git branch -d ${input.branch}) and start the task again`;
+  const here = blocks.find((b) => b.path === path);
   if (here) {
-    if (here.branch === `refs/heads/${input.branch}`) return { path, reused: true };
-    throw new EngineError("POLICY_INVALID", `${path} is a worktree on ${here.branch ?? "no branch"}, not ${input.branch}; ${byHand}`);
+    if (here.prunable || !existsSync(path)) {
+      throw new EngineError("POLICY_INVALID", `${path} is a worktree git lists but whose folder is gone; inspect it with git worktree list, clear it with git worktree prune, and start the task again`);
+    }
+    if (here.locked) {
+      throw new EngineError("POLICY_INVALID", `${path} is a locked worktree (a start that died while checking out); inspect it with git worktree list, release it with git worktree unlock ${path} and remove it, then start the task again`);
+    }
+    if (here.branch !== ref) throw new EngineError("POLICY_INVALID", `${path} is a worktree on ${here.branch ?? "no branch"}, not ${input.branch}; ${byHand}`);
+    if (!input.reuse) throw new EngineError("POLICY_INVALID", `${path} already exists from earlier work that is not this task's; ${byHand}`);
+    return { path, reused: true };
   }
   if (existsSync(path)) throw new EngineError("POLICY_INVALID", `${path} already exists and is not the worktree of ${input.branch}; ${byHand}`);
-  if (runBounded(e, input.under, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${input.branch}^{commit}`]).code === 0) {
-    throw new EngineError("POLICY_INVALID", `branch ${input.branch} already exists without its worktree; ${byHand}`);
+  if (runBounded(e, input.under, "git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).code === 0) {
+    const holder = blocks.find((b) => b.branch === ref);
+    throw new EngineError("POLICY_INVALID", holder
+      ? `branch ${input.branch} is checked out in ${holder.path}, not at ${path}; remove that worktree by hand (git worktree remove ${holder.path}) and start the task again`
+      : `branch ${input.branch} already exists without its worktree; delete it by hand (git branch -d ${input.branch}) and start the task again`);
   }
   return { path: createWorktree(e, input), reused: false };
 }

@@ -35223,23 +35223,34 @@ function createWorktree(e, input2) {
 function ensureWorktree(e, input2) {
   const path = join5(input2.under, WORKTREES_DIR, input2.name);
   const list = runBounded(e, input2.under, "git", ["worktree", "list", "--porcelain"]);
-  let here = null;
-  if (list.code === 0) {
-    for (const block of list.stdout.split("\n\n")) {
-      const lines2 = block.split("\n");
-      if (lines2.find((l) => l.startsWith("worktree "))?.slice("worktree ".length) === path) {
-        here = { branch: lines2.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null };
-      }
-    }
-  }
+  const blocks = list.code !== 0 ? [] : list.stdout.split("\n\n").map((b) => {
+    const lines2 = b.split("\n");
+    const get = (k) => lines2.find((l) => l === k || l.startsWith(`${k} `));
+    return {
+      path: get("worktree")?.slice("worktree ".length) ?? "",
+      branch: get("branch")?.slice("branch ".length) ?? null,
+      locked: get("locked") !== void 0,
+      prunable: get("prunable") !== void 0
+    };
+  });
+  const ref = `refs/heads/${input2.branch}`;
   const byHand = `remove it by hand (git worktree remove ${path}, then git branch -d ${input2.branch}) and start the task again`;
+  const here = blocks.find((b) => b.path === path);
   if (here) {
-    if (here.branch === `refs/heads/${input2.branch}`) return { path, reused: true };
-    throw new EngineError("POLICY_INVALID", `${path} is a worktree on ${here.branch ?? "no branch"}, not ${input2.branch}; ${byHand}`);
+    if (here.prunable || !existsSync4(path)) {
+      throw new EngineError("POLICY_INVALID", `${path} is a worktree git lists but whose folder is gone; inspect it with git worktree list, clear it with git worktree prune, and start the task again`);
+    }
+    if (here.locked) {
+      throw new EngineError("POLICY_INVALID", `${path} is a locked worktree (a start that died while checking out); inspect it with git worktree list, release it with git worktree unlock ${path} and remove it, then start the task again`);
+    }
+    if (here.branch !== ref) throw new EngineError("POLICY_INVALID", `${path} is a worktree on ${here.branch ?? "no branch"}, not ${input2.branch}; ${byHand}`);
+    if (!input2.reuse) throw new EngineError("POLICY_INVALID", `${path} already exists from earlier work that is not this task's; ${byHand}`);
+    return { path, reused: true };
   }
   if (existsSync4(path)) throw new EngineError("POLICY_INVALID", `${path} already exists and is not the worktree of ${input2.branch}; ${byHand}`);
-  if (runBounded(e, input2.under, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${input2.branch}^{commit}`]).code === 0) {
-    throw new EngineError("POLICY_INVALID", `branch ${input2.branch} already exists without its worktree; ${byHand}`);
+  if (runBounded(e, input2.under, "git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).code === 0) {
+    const holder = blocks.find((b) => b.branch === ref);
+    throw new EngineError("POLICY_INVALID", holder ? `branch ${input2.branch} is checked out in ${holder.path}, not at ${path}; remove that worktree by hand (git worktree remove ${holder.path}) and start the task again` : `branch ${input2.branch} already exists without its worktree; delete it by hand (git branch -d ${input2.branch}) and start the task again`);
   }
   return { path: createWorktree(e, input2), reused: false };
 }
@@ -35468,7 +35479,7 @@ function startTask(e, input2) {
   const name = `${id}-${slug(title)}`;
   const branch = `${parent ? "task" : "feat"}/${name}`;
   try {
-    const { path, reused } = ensureWorktree(e, { under: checkout, name, branch, base: from.sha });
+    const { path, reused } = ensureWorktree(e, { under: checkout, name, branch, base: from.sha, reuse: planned !== void 0 });
     ensureWorktreeExclude(e);
     logEvent(e, input2.actor, "worktree_created", id, { path, branch, base: from.ref, ...reused ? { reused: true } : {} });
     const setup = runWorktreeSetup(e, path);
@@ -35483,7 +35494,7 @@ function startTask(e, input2) {
       return { ...view(e, id), worktree_path: path, ...setup ? { setup } : {} };
     });
   } catch (x) {
-    e.db.prepare("UPDATE tasks SET status = ?, cwd = '', branch = '' WHERE id = ? AND status = 'starting'").run(planned ? "planned" : "cancelled", id);
+    e.db.prepare(`UPDATE tasks SET status = ?, cwd = ${planned ? "COALESCE((SELECT cwd FROM tasks p WHERE p.id = tasks.parent_id), '')" : "''"}, branch = '' WHERE id = ? AND status = 'starting'`).run(planned ? "planned" : "cancelled", id);
     logEvent(e, input2.actor, "worktree_failed", id, { error: x instanceof Error ? x.message : String(x) });
     throw x;
   }
@@ -46615,8 +46626,9 @@ function cancelTask(e, input2, env) {
   needReason(input2.reason);
   return tx(e, () => {
     const v = getTask(e, input2.task_id);
-    if (v.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
-    e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(input2.task_id);
+    if (!["open", "planned", "starting"].includes(v.task.status)) throw new EngineError("TASK_CLOSED", `task ${v.task.id} is ${v.task.status}`);
+    const r = e.db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status IN ('open','planned','starting')").run(input2.task_id);
+    if (r.changes !== 1) throw new EngineError("TASK_CLOSED", `task ${v.task.id} changed while it was being cancelled`);
     logEvent(e, OWNER, "task_cancelled", input2.task_id, { reason: input2.reason });
     return getTask(e, input2.task_id);
   });

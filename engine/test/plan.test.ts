@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -9,6 +9,7 @@ import { acceptOverlap, overlapsFor, planTasks, startingTasks, withdrawTask, typ
 import { getTask, insertEvidence, startTask, STALE_CLAIM_MS } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
 import { realExec } from "../src/exec";
+import { cancelTask } from "../src/owner";
 import type { ExecResult } from "../src/exec";
 import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
 
@@ -454,6 +455,74 @@ describe("review fixes", () => {
       const err = code(() => begin(e, f, b));
       expect(err.message).toContain(`task #${a}'s start went stale; its CTO must start it again or withdraw it`);
       void dir;
+    });
+  });
+
+  describe("fix round 3", () => {
+    function half() {
+      const { dir, e } = setup();
+      const f = feature(e, dir, cto);
+      const a = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [item("A", ["src/a"])] }).tasks[0].task.id;
+      const path = join(f.task.cwd, ".estack", "worktrees", `${a}-a`);
+      const real = e.exec;
+      e.exec = { ...real, run(file, args, opts) {
+        if (file === "git" && args[0] === "rev-parse" && args[1] === "HEAD") throw new Error("killed");
+        return real.run(file, args, opts);
+      } };
+      expect(() => begin(e, f, a)).toThrow("killed");
+      e.exec = real;
+      return { dir, e, f, a, path };
+    }
+
+    test("a worktree whose folder is gone, or that is still locked, is refused, not reused", () => {
+      const { e, f, a, path } = half();
+      git(f.task.cwd, "worktree", "lock", "--reason", "initializing", path);
+      const locked = code(() => begin(e, f, a));
+      expect(locked.code).toBe("POLICY_INVALID");
+      expect(locked.message).toContain(`git worktree unlock ${path}`);
+      git(f.task.cwd, "worktree", "unlock", path);
+      rmSync(path, { recursive: true, force: true });
+      const gone = code(() => begin(e, f, a));
+      expect(gone.code).toBe("POLICY_INVALID");
+      expect(gone.message).toContain("git worktree prune");
+      expect(getTask(e, a).task.status).toBe("planned");
+      expect(getTask(e, a).task.cwd).toBe(f.task.cwd);
+    });
+
+    test("a fresh start never adopts a leftover worktree", () => {
+      const { dir, e } = setup();
+      const f = feature(e, dir, cto);
+      const next = (e.db.prepare("SELECT MAX(id) + 1 n FROM tasks").get() as { n: number }).n;
+      const path = join(f.task.cwd, ".estack", "worktrees", `${next}-w`);
+      git(f.task.cwd, "worktree", "add", "-b", `task/${next}-w`, path);
+      writeFileSync(join(path, "precious.txt"), "work");
+      const err = code(() => startTask(e, { title: "W", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: f.task.cwd, worktree: true, parent_task_id: f.task.id }));
+      expect(err.code).toBe("POLICY_INVALID");
+      expect(err.message).toContain(path);
+      expect(existsSync(join(path, "precious.txt"))).toBe(true);
+      expect(getTask(e, next).task.status).toBe("cancelled");
+    });
+
+    test("a branch checked out at another path names that path", () => {
+      const { dir, e } = setup();
+      const f = feature(e, dir, cto);
+      const a = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [item("A", ["src/a"])] }).tasks[0].task.id;
+      const elsewhere = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-else-"))), "wt");
+      git(f.task.cwd, "worktree", "add", "-b", `task/${a}-a`, elsewhere);
+      const err = code(() => begin(e, f, a));
+      expect(err.message).toContain(`checked out in ${elsewhere}`);
+      expect(err.message).not.toContain("git branch -d");
+    });
+
+    test("the owner can cancel a planned or starting task whose CTO is gone", () => {
+      const { dir, e } = setup();
+      const f = feature(e, dir, cto);
+      const [a, b] = planTasks(e, { parent_task_id: f.task.id, actor: cto, tasks: [item("A", ["src/a"]), item("B", ["src/b"])] }).tasks.map((t) => t.task.id);
+      e.db.prepare("UPDATE tasks SET status = 'starting' WHERE id = ?").run(b);
+      expect(cancelTask(e, { task_id: a, reason: "gone" }, {}).task.status).toBe("cancelled");
+      expect(cancelTask(e, { task_id: b, reason: "gone" }, {}).task.status).toBe("cancelled");
+      expect(e.db.prepare("SELECT COUNT(*) c FROM events WHERE kind = 'task_cancelled'").get()).toEqual({ c: 2 });
+      expect(code(() => cancelTask(e, { task_id: a, reason: "again" }, {})).code).toBe("TASK_CLOSED");
     });
   });
 });

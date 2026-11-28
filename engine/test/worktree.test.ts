@@ -123,6 +123,14 @@ describe("worktrees", () => {
     expect(bad.e.db.prepare("SELECT COUNT(*) c FROM events WHERE kind = 'worktree_setup_failed'").get()).toEqual({ c: 1 });
   });
 
+  test("a real git worktree add failure is NOT_A_REPO and leaves no open task", () => {
+    const { dir, e } = setup();
+    writeFileSync(join(dir, ".estack", "worktrees"), "a file where the folder should be");
+    expect(code(() => feature(e, dir))).toBe("NOT_A_REPO");
+    expect(e.db.prepare("SELECT status, cwd, branch FROM tasks WHERE id = 1").get()).toEqual({ status: "cancelled", cwd: "", branch: "" });
+    expect(e.db.prepare("SELECT COUNT(*) c FROM tasks WHERE status IN ('open','starting')").get()).toEqual({ c: 0 });
+  });
+
   test("a failed worktree leaves no open task", () => {
     const { dir, e } = setup();
     git(dir, "branch", "feat/1-add-invoice-totals");
