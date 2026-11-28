@@ -116,12 +116,19 @@ export function preCommit(e: Engine, cwd: string): string | null {
      WHERE t.status = 'open' AND t.cwd = ? GROUP BY t.id ORDER BY MAX(b.bound_at) DESC, t.id DESC LIMIT 1`,
   ).get(toplevel) as unknown as Task | undefined;
   if (!open) return `no open estack task for ${toplevel}`;
+  // A merge commit brings in other branches' reviewed changes: nothing is held or checked.
+  const mergeHead = runBounded(e, toplevel, "git", ["rev-parse", "--git-path", "MERGE_HEAD"], HOOK_GIT_TIMEOUT_MS);
+  if (mergeHead.code === 0 && existsSync(resolve(toplevel, mergeHead.stdout.trim()))) return null;
+  // Check every path first; take the free ones only when the commit is not refused.
+  const git = { session_id: "git" };
   const refused: string[] = [];
   for (const p of paths) {
-    const verdict = checkEdit(e, open, p, { session_id: "git" });
+    const verdict = checkEdit(e, open, p, git, false);
     if (!verdict.ok) refused.push(heldMessage(p, verdict.holder));
   }
-  return refused.length > 0 ? refused.join("\n") : null;
+  if (refused.length > 0) return refused.join("\n");
+  for (const p of paths) checkEdit(e, open, p, git);
+  return null;
 }
 
 const ZEROS = /^0+$/;

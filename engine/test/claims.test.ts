@@ -1,15 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { checkEdit, hasGrant, holderOf, isClaimExempt, passClaims, releaseClaims } from "../src/claims";
+import { checkEdit, hasGrant, holderOf, isClaimExempt, passClaims, releaseClaims, syncMerged } from "../src/claims";
 import { openEngine, type Engine } from "../src/engine";
 import { preCommit } from "../src/githooks";
 import { runHook, type HookEvent } from "../src/hooks";
 import { cancelTask } from "../src/owner";
 import { initRepo } from "../src/policy";
-import { existsSync } from "node:fs";
-import { syncMerged } from "../src/claims";
 import { completeStep, insertEvidence, startTask } from "../src/tasks";
 import type { Actor, Task } from "../src/types";
 import { fakeExec, makeRepo } from "./helpers";
@@ -240,7 +238,11 @@ describe("file claims", { timeout: 60_000 }, () => {
     expect(f.branch).toBe("feat/1-feat");
     const other = feature(e, dir, B, "other");
     checkEdit(e, f, "src/a.ts");
+    git(f.cwd, "commit", "--allow-empty", "-m", "work");
     insertEvidence(e, f.id, "implement", "commit", true, { sha: git(f.cwd, "rev-parse", "HEAD") }, A);
+    syncMerged(e);
+    expect(claims(e)[0].status).toBe("active");        // still open: left alone
+    e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(f.id);
     syncMerged(e);
     expect(claims(e)).toEqual([{ task_id: f.id, target: "src/a.ts", status: "active" }]);
     expect(existsSync(f.cwd)).toBe(true);
@@ -249,5 +251,95 @@ describe("file claims", { timeout: 60_000 }, () => {
     expect(claims(e)).toEqual([{ task_id: f.id, target: "src/a.ts", status: "released" }]);
     expect(existsSync(f.cwd)).toBe(false);
     expect(existsSync(other.cwd)).toBe(true);
+  });
+
+  test("a worker merging into a cancelled feature releases its claims instead of passing them", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = feature(e, dir, A, "feat");
+    const w = worker(e, f, A, "work");
+    checkEdit(e, w, "src/w.ts");
+    cancelTask(e, { task_id: f.id, reason: "x" }, {});
+    e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name != 'merge'").run(w.id);
+    git(w.cwd, "commit", "--allow-empty", "-m", "work");
+    git(f.cwd, "merge", "--no-ff", "-m", "m", w.branch);
+    completeStep(e, { task_id: w.id, step: "merge", evidence: { kind: "merged" }, actor: A });
+    expect(claims(e)).toEqual([{ task_id: w.id, target: "src/w.ts", status: "released" }]);
+    expect(kinds(e, "claim_passed")).toHaveLength(0);
+  });
+
+  test("holds never block a task in the same checkout", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = startTask(e, { title: "one", type: "feature", goal: "g", done_check: "d", actor: A, cwd: dir }).task;
+    expect(checkEdit(e, t1, "src/a.ts")).toEqual({ ok: true });
+    e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(t1.id);
+    const t2 = startTask(e, { title: "two", type: "feature", goal: "g", done_check: "d", actor: A, cwd: dir }).task;
+    expect(edit({ ...t2, cwd: dir } as Task, "src/a.ts")).toBeNull();
+    expect(checkEdit(e, t2, "src/a.ts")).toEqual({ ok: true });
+    expect(claims(e)).toHaveLength(1);
+  });
+
+  test("with no origin, a done feature merged into local main releases its claims", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = feature(e, dir, A, "feat");
+    checkEdit(e, f, "src/a.ts");
+    git(f.cwd, "commit", "--allow-empty", "-m", "work");
+    git(dir, "merge", "--no-ff", "-m", "m", f.branch);
+    insertEvidence(e, f.id, "implement", "commit", true, { sha: git(f.cwd, "rev-parse", "HEAD") }, A);
+    e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(f.id);
+    syncMerged(e);
+    expect(claims(e)[0].status).toBe("released");
+    expect(existsSync(f.cwd)).toBe(false);
+  });
+
+  test("a done feature whose pr was closed unmerged releases its claims with a reason", () => {
+    const dir = repo();
+    const e = openEngine(dir, { exec: fakeExec({ "pr view feat/1-feat --json state": { code: 0, stdout: JSON.stringify({ state: "CLOSED" }) } }) });
+    const f = feature(e, dir, A, "feat");
+    checkEdit(e, f, "src/a.ts");
+    git(f.cwd, "commit", "--allow-empty", "-m", "work");
+    insertEvidence(e, f.id, "implement", "commit", true, { sha: git(f.cwd, "rev-parse", "HEAD") }, A);
+    syncMerged(e);
+    expect(claims(e)[0].status).toBe("active");
+    e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(f.id);
+    syncMerged(e);
+    expect(claims(e)[0].status).toBe("released");
+    expect(JSON.parse(kinds(e, "claim_released")[0].p)).toMatchObject({ path: "src/a.ts", reason: "pr closed" });
+    expect(existsSync(f.cwd)).toBe(true);
+  });
+
+  test("a kept worktree is logged once per reason", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = feature(e, dir, A, "feat");
+    git(f.cwd, "commit", "--allow-empty", "-m", "work");
+    git(dir, "merge", "--no-ff", "-m", "m", f.branch);
+    insertEvidence(e, f.id, "implement", "commit", true, { sha: git(f.cwd, "rev-parse", "HEAD") }, A);
+    e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(f.id);
+    writeFileSync(join(f.cwd, "dirty.txt"), "x");
+    syncMerged(e);
+    syncMerged(e);
+    expect(kinds(e, "worktree_kept")).toHaveLength(1);
+  });
+
+  test("pre-commit takes nothing when any path is refused, and nothing during a merge commit", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const t1 = feature(e, dir, A, "one");
+    const t2 = feature(e, dir, B, "two");
+    checkEdit(e, t1, "src/held.ts");
+    for (const f of ["src/free.ts", "src/held.ts"]) {
+      mkdirSync(join(t2.cwd, "src"), { recursive: true });
+      writeFileSync(join(t2.cwd, f), "x\n");
+      git(t2.cwd, "add", f);
+    }
+    expect(preCommit(e, t2.cwd)).toContain("src/held.ts is held");
+    expect(claims(e)).toEqual([{ task_id: t1.id, target: "src/held.ts", status: "active" }]);
+    // During a merge commit nothing is checked or taken.
+    writeFileSync(join(git(t2.cwd, "rev-parse", "--path-format=absolute", "--git-dir"), "MERGE_HEAD"), git(t2.cwd, "rev-parse", "HEAD") + "\n");
+    expect(preCommit(e, t2.cwd)).toBeNull();
+    expect(claims(e)).toHaveLength(1);
   });
 });

@@ -1,4 +1,4 @@
-import { passClaims, syncMerged } from "./claims";
+import { passClaims, releaseClaims, syncMerged } from "./claims";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
 import { areaPath, claimInfo, gateStart, releaseStale } from "./plan";
@@ -425,7 +425,9 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
     logEvent(e, input.actor, "step_done", v.task.id, { step: input.step, kind: required, closed });
     if (input.step === "merge" && v.task.parent_id !== null) {
       const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task;
-      passClaims(e, v.task, feature, input.actor);
+      // A cancelled or finished feature has no one to hold the files: they are released, not passed.
+      if (feature.status === "open") passClaims(e, v.task, feature, input.actor);
+      else releaseClaims(e, v.task, input.actor, `feature #${feature.id} is ${feature.status}`);
     }
     return view(e, v.task.id);
   });

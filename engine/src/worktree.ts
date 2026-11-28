@@ -82,7 +82,11 @@ export function runWorktreeSetup(e: Engine, cwd: string): { ok: boolean; output_
 /** Remove a task's worktree and branch without force: a dirty worktree is kept, an unmerged branch is kept. */
 export function removeWorktree(e: Engine, task: Task): "removed" | "kept" | "missing" {
   const keep = (reason: string) => {
-    logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason });
+    const last = e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'worktree_kept' AND task_id = ? ORDER BY id DESC LIMIT 1")
+      .get(task.id) as { p: string } | undefined;
+    if ((last ? (JSON.parse(last.p) as { reason?: string }).reason : undefined) !== reason) {
+      logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason });
+    }
     return "kept" as const;
   };
   if (task.cwd === "") return "missing";

@@ -34789,7 +34789,10 @@ timed out`.trim() : tail };
 }
 function removeWorktree(e, task) {
   const keep = (reason) => {
-    logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason });
+    const last = e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'worktree_kept' AND task_id = ? ORDER BY id DESC LIMIT 1").get(task.id);
+    if ((last ? JSON.parse(last.p).reason : void 0) !== reason) {
+      logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason });
+    }
     return "kept";
   };
   if (task.cwd === "") return "missing";
@@ -35135,7 +35138,8 @@ function completeStep(e, input2) {
     logEvent(e, input2.actor, "step_done", v.task.id, { step: input2.step, kind: required2, closed });
     if (input2.step === "merge" && v.task.parent_id !== null) {
       const feature = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id);
-      passClaims(e, v.task, feature, input2.actor);
+      if (feature.status === "open") passClaims(e, v.task, feature, input2.actor);
+      else releaseClaims(e, v.task, input2.actor, `feature #${feature.id} is ${feature.status}`);
     }
     return view(e, v.task.id);
   });
@@ -35718,7 +35722,7 @@ function withdrawTask(e, task_id, actor) {
     logEvent(e, actor, "task_withdrawn", task_id, {});
   });
 }
-function mergedIntoMain(e, task) {
+function mergedIntoMain(e, task, opts = {}) {
   const feature = task.parent_id === null ? task : getRow(e, task.parent_id);
   if (!feature) return false;
   const last = (kind, field) => {
@@ -35737,8 +35741,10 @@ function mergedIntoMain(e, task) {
       }
     }
   }
-  e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
-  return e.exec.run("git", ["merge-base", "--is-ancestor", sha, "refs/remotes/origin/main"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
+  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
+  if (hasOrigin && !opts.fetched) e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  const main2 = hasOrigin ? "refs/remotes/origin/main" : "refs/heads/main";
+  return e.exec.run("git", ["merge-base", "--is-ancestor", sha, main2], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
 }
 function dependencyState(e, task_id) {
   const me = getRow(e, task_id);
@@ -35821,9 +35827,9 @@ function hasGrant(e, task_id, path) {
   return e.db.prepare("SELECT 1 FROM claim_grants WHERE task_id = ? AND path = ? LIMIT 1").get(task_id, path) !== void 0;
 }
 function mayEdit(e, task, holder, path) {
-  return holder.id === task.id || holder.id === task.parent_id || holder.parent_id === task.id || task.task_group !== null && holder.task_group === task.task_group && holder.parent_id === task.parent_id || hasGrant(e, task.id, path);
+  return holder.id === task.id || holder.cwd === task.cwd || holder.id === task.parent_id || holder.parent_id === task.id || task.task_group !== null && holder.task_group === task.task_group && holder.parent_id === task.parent_id || hasGrant(e, task.id, path);
 }
-function checkEdit(e, task, path, actor = ENGINE2) {
+function checkEdit(e, task, path, actor = ENGINE2, take = true) {
   if (isClaimExempt(e, path)) return { ok: true };
   for (let attempt = 0; attempt < 3; attempt++) {
     const held2 = holderOf(e, path);
@@ -35832,6 +35838,7 @@ function checkEdit(e, task, path, actor = ENGINE2) {
       logEvent(e, actor, "claim_denied", task.id, { path, holder: held2.task.id, claim_id: held2.claim_id });
       return { ok: false, holder: held2.task, claim_id: held2.claim_id };
     }
+    if (!take) return { ok: true };
     try {
       tx(e, () => {
         const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', ?, 'active', ?)").run(task.id, path, iso2(e));
@@ -35850,14 +35857,14 @@ function passClaims(e, from, to, actor = ENGINE2) {
   const rows = e.db.prepare("SELECT id, kind, target FROM claims WHERE task_id = ? AND status = 'active' ORDER BY id").all(from.id);
   for (const c of rows) {
     e.db.prepare("UPDATE claims SET task_id = ? WHERE id = ?").run(to.id, c.id);
-    logEvent(e, actor, "claim_passed", to.id, { claim_id: c.id, kind: c.kind, target: c.target, from: from.id, to: to.id });
+    logEvent(e, actor, "claim_passed", to.id, { claim_id: c.id, kind: c.kind, path: c.target, from: from.id, to: to.id });
   }
 }
-function releaseClaims(e, task, actor) {
+function releaseClaims(e, task, actor, reason) {
   const rows = e.db.prepare("SELECT id, kind, target FROM claims WHERE task_id = ? AND status = 'active' ORDER BY id").all(task.id);
   for (const c of rows) {
     e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso2(e), c.id);
-    logEvent(e, actor, "claim_released", task.id, { claim_id: c.id, kind: c.kind, target: c.target });
+    logEvent(e, actor, "claim_released", task.id, { claim_id: c.id, kind: c.kind, path: c.target, ...reason ? { reason } : {} });
     if (c.kind !== "file") continue;
     const grant = e.db.prepare(
       `SELECT g.id, g.task_id FROM claim_grants g JOIN tasks t ON t.id = g.task_id
@@ -35870,18 +35877,38 @@ function releaseClaims(e, task, actor) {
 }
 function syncMerged(e) {
   const rows = e.db.prepare(
-    `SELECT * FROM tasks WHERE parent_id IS NULL AND status IN ('open','done') AND (
+    `SELECT * FROM tasks WHERE parent_id IS NULL AND status = 'done' AND (
        id IN (SELECT task_id FROM claims WHERE status = 'active') OR cwd LIKE '%/' || ? || '/%') ORDER BY id`
   ).all(WORKTREES_DIR);
-  for (const task of rows) {
+  const todo = rows.map((task) => ({
+    task,
+    hasClaims: e.db.prepare("SELECT 1 FROM claims WHERE task_id = ? AND status = 'active'").get(task.id) !== void 0,
+    hasTree: task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync6(task.cwd)
+  })).filter((x) => x.hasClaims || x.hasTree);
+  if (todo.length === 0) return;
+  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
+  if (hasOrigin) e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  for (const { task, hasClaims, hasTree } of todo) {
     try {
-      const hasClaims = e.db.prepare("SELECT 1 FROM claims WHERE task_id = ? AND status = 'active'").get(task.id) !== void 0;
-      const hasTree = task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync6(task.cwd);
-      if (!hasClaims && !hasTree || !mergedIntoMain(e, task)) continue;
-      if (hasClaims) tx(e, () => releaseClaims(e, task, ENGINE2));
-      if (hasTree) removeWorktree(e, task);
-    } catch {
+      if (mergedIntoMain(e, task, { fetched: true })) {
+        if (hasClaims) tx(e, () => releaseClaims(e, task, ENGINE2));
+        if (hasTree) removeWorktree(e, task);
+      } else if (hasClaims && prClosed(e, task)) {
+        tx(e, () => releaseClaims(e, task, ENGINE2, "pr closed"));
+      }
+    } catch (x) {
+      if (!(x instanceof EngineError)) throw x;
     }
+  }
+}
+function prClosed(e, task) {
+  if (!task.branch) return false;
+  const pr = e.exec.run("gh", ["pr", "view", task.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  if (pr.code !== 0) return false;
+  try {
+    return JSON.parse(pr.stdout).state === "CLOSED";
+  } catch {
+    return false;
   }
 }
 
@@ -46843,12 +46870,17 @@ function preCommit(e, cwd) {
      WHERE t.status = 'open' AND t.cwd = ? GROUP BY t.id ORDER BY MAX(b.bound_at) DESC, t.id DESC LIMIT 1`
   ).get(toplevel);
   if (!open2) return `no open estack task for ${toplevel}`;
+  const mergeHead = runBounded(e, toplevel, "git", ["rev-parse", "--git-path", "MERGE_HEAD"], HOOK_GIT_TIMEOUT_MS);
+  if (mergeHead.code === 0 && existsSync10(resolve4(toplevel, mergeHead.stdout.trim()))) return null;
+  const git2 = { session_id: "git" };
   const refused = [];
   for (const p of paths) {
-    const verdict = checkEdit(e, open2, p, { session_id: "git" });
+    const verdict = checkEdit(e, open2, p, git2, false);
     if (!verdict.ok) refused.push(heldMessage(p, verdict.holder));
   }
-  return refused.length > 0 ? refused.join("\n") : null;
+  if (refused.length > 0) return refused.join("\n");
+  for (const p of paths) checkEdit(e, open2, p, git2);
+  return null;
 }
 var ZEROS = /^0+$/;
 function prePush(e, cwd, stdin) {

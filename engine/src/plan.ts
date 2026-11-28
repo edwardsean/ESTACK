@@ -240,11 +240,11 @@ export function withdrawTask(e: Engine, task_id: number, actor: Actor): void {
 }
 
 /**
- * True when a task's own work reached main. A feature counts when its pull request is MERGED, or its last commit evidence
+ * True when a task's own work reached main (origin/main, or local main when there is no origin; `fetched` skips the fetch). A feature counts when its pull request is MERGED, or its last commit evidence
  * is on origin/main; a worker when its merge step is done and its feature counts the same way (its merged head is on
  * origin/main). A task that never did work, or never ran, is never merged, whatever main now holds.
  */
-export function mergedIntoMain(e: Engine, task: Task): boolean {
+export function mergedIntoMain(e: Engine, task: Task, opts: { fetched?: boolean } = {}): boolean {
   const feature = task.parent_id === null ? task : getRow(e, task.parent_id);
   if (!feature) return false;
   const last = (kind: string, field: string): string | null => {
@@ -261,8 +261,11 @@ export function mergedIntoMain(e: Engine, task: Task): boolean {
       try { if ((JSON.parse(pr.stdout) as { state?: unknown }).state === "MERGED") return true; } catch { /* fall through to git */ }
     }
   }
-  e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
-  return e.exec.run("git", ["merge-base", "--is-ancestor", sha, "refs/remotes/origin/main"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
+  // Without an origin remote, local main is the main there is.
+  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
+  if (hasOrigin && !opts.fetched) e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  const main = hasOrigin ? "refs/remotes/origin/main" : "refs/heads/main";
+  return e.exec.run("git", ["merge-base", "--is-ancestor", sha, main], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
 }
 
 /** Each dependency of the task, and whether it is finished: merged into the feature, or its feature merged into main. */

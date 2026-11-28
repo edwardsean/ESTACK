@@ -2,8 +2,8 @@ import { existsSync } from "node:fs";
 import type { Engine } from "./engine";
 import { isExempt, pathMatches } from "./match";
 import { mergedIntoMain } from "./plan";
-import { logEvent, tx } from "./tasks";
-import type { Actor, Task } from "./types";
+import { EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, logEvent, tx } from "./tasks";
+import { EngineError, type Actor, type Task } from "./types";
 import { WORKTREES_DIR, removeWorktree } from "./worktree";
 
 export type EditVerdict = { ok: true } | { ok: false; holder: Task; claim_id: number };
@@ -37,15 +37,15 @@ export function hasGrant(e: Engine, task_id: number, path: string): boolean {
   return e.db.prepare("SELECT 1 FROM claim_grants WHERE task_id = ? AND path = ? LIMIT 1").get(task_id, path) !== undefined;
 }
 
-/** The holder never blocks itself, its parent or child, a task in its group under the same feature, or a task with a grant. */
+/** The holder never blocks itself, a task in the same checkout (one working copy cannot clash), its parent or child, a task in its group under the same feature, or a task with a grant. */
 function mayEdit(e: Engine, task: Task, holder: Task, path: string): boolean {
-  return holder.id === task.id || holder.id === task.parent_id || holder.parent_id === task.id
+  return holder.id === task.id || holder.cwd === task.cwd || holder.id === task.parent_id || holder.parent_id === task.id
     || (task.task_group !== null && holder.task_group === task.task_group && holder.parent_id === task.parent_id)
     || hasGrant(e, task.id, path);
 }
 
-/** Take a free file for the task, or say who holds it. A lost insert race (UNIQUE) re-reads the holder. */
-export function checkEdit(e: Engine, task: Task, path: string, actor: Actor = ENGINE): EditVerdict {
+/** Take a free file for the task (unless `take` is false), or say who holds it. A lost insert race (UNIQUE) re-reads the holder. */
+export function checkEdit(e: Engine, task: Task, path: string, actor: Actor = ENGINE, take = true): EditVerdict {
   if (isClaimExempt(e, path)) return { ok: true };
   for (let attempt = 0; attempt < 3; attempt++) {
     const held = holderOf(e, path);
@@ -54,6 +54,7 @@ export function checkEdit(e: Engine, task: Task, path: string, actor: Actor = EN
       logEvent(e, actor, "claim_denied", task.id, { path, holder: held.task.id, claim_id: held.claim_id });
       return { ok: false, holder: held.task, claim_id: held.claim_id };
     }
+    if (!take) return { ok: true };
     try {
       tx(e, () => {
         const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', ?, 'active', ?)")
@@ -78,7 +79,7 @@ export function passClaims(e: Engine, from: Task, to: Task, actor: Actor = ENGIN
     .all(from.id) as { id: number; kind: string; target: string }[];
   for (const c of rows) {
     e.db.prepare("UPDATE claims SET task_id = ? WHERE id = ?").run(to.id, c.id);
-    logEvent(e, actor, "claim_passed", to.id, { claim_id: c.id, kind: c.kind, target: c.target, from: from.id, to: to.id });
+    logEvent(e, actor, "claim_passed", to.id, { claim_id: c.id, kind: c.kind, path: c.target, from: from.id, to: to.id });
   }
 }
 
@@ -86,12 +87,12 @@ export function passClaims(e: Engine, from: Task, to: Task, actor: Actor = ENGIN
  * Release every active claim of a task (its feature merged into main, or it was cancelled). A file with a grant for
  * another still-open task goes to the newest such grant's task. Not transactional itself: call it inside `tx`.
  */
-export function releaseClaims(e: Engine, task: Task, actor: Actor): void {
+export function releaseClaims(e: Engine, task: Task, actor: Actor, reason?: string): void {
   const rows = e.db.prepare("SELECT id, kind, target FROM claims WHERE task_id = ? AND status = 'active' ORDER BY id")
     .all(task.id) as { id: number; kind: string; target: string }[];
   for (const c of rows) {
     e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso(e), c.id);
-    logEvent(e, actor, "claim_released", task.id, { claim_id: c.id, kind: c.kind, target: c.target });
+    logEvent(e, actor, "claim_released", task.id, { claim_id: c.id, kind: c.kind, path: c.target, ...(reason ? { reason } : {}) });
     if (c.kind !== "file") continue;
     const grant = e.db.prepare(
       `SELECT g.id, g.task_id FROM claim_grants g JOIN tasks t ON t.id = g.task_id
@@ -105,23 +106,44 @@ export function releaseClaims(e: Engine, task: Task, actor: Actor): void {
 }
 
 /**
- * Features known merged into main give up their claims and, when the engine made it, their worktree. Checks merge state
- * with gh/git, so only status and start_task call it, never a per-edit hook. A failing check leaves the feature alone.
+ * Done features known merged into main give up their claims and, when the engine made it, their worktree; a done feature
+ * whose pull request was closed unmerged gives up its claims too. Open tasks are left alone until their `pr` step is
+ * recorded. Checks merge state with gh/git, so only status and start_task call it, never a per-edit hook. A failing check
+ * leaves the feature alone until the next call.
  */
 export function syncMerged(e: Engine): void {
   const rows = e.db.prepare(
-    `SELECT * FROM tasks WHERE parent_id IS NULL AND status IN ('open','done') AND (
+    `SELECT * FROM tasks WHERE parent_id IS NULL AND status = 'done' AND (
        id IN (SELECT task_id FROM claims WHERE status = 'active') OR cwd LIKE '%/' || ? || '/%') ORDER BY id`,
   ).all(WORKTREES_DIR) as unknown as Task[];
-  for (const task of rows) {
+  const todo = rows.map((task) => ({
+    task,
+    hasClaims: e.db.prepare("SELECT 1 FROM claims WHERE task_id = ? AND status = 'active'").get(task.id) !== undefined,
+    hasTree: task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync(task.cwd),
+  })).filter((x) => x.hasClaims || x.hasTree);
+  if (todo.length === 0) return;
+  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
+  // One fetch for the whole pass, ignoring failure.
+  if (hasOrigin) e.exec.run("git", ["fetch", "origin", "main"], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  for (const { task, hasClaims, hasTree } of todo) {
     try {
-      const hasClaims = e.db.prepare("SELECT 1 FROM claims WHERE task_id = ? AND status = 'active'").get(task.id) !== undefined;
-      const hasTree = task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync(task.cwd);
-      if ((!hasClaims && !hasTree) || !mergedIntoMain(e, task)) continue;
-      if (hasClaims) tx(e, () => releaseClaims(e, task, ENGINE));
-      if (hasTree) removeWorktree(e, task);
-    } catch {
-      // gh or git failed or timed out: try again at the next status.
+      if (mergedIntoMain(e, task, { fetched: true })) {
+        if (hasClaims) tx(e, () => releaseClaims(e, task, ENGINE));
+        if (hasTree) removeWorktree(e, task);
+      } else if (hasClaims && prClosed(e, task)) {
+        tx(e, () => releaseClaims(e, task, ENGINE, "pr closed"));
+      }
+    } catch (x) {
+      // A timed-out or failed gh/git check is tried again next time; anything else is a bug and surfaces.
+      if (!(x instanceof EngineError)) throw x;
     }
   }
+}
+
+/** True when gh reports the task's pull request CLOSED without merging. */
+function prClosed(e: Engine, task: Task): boolean {
+  if (!task.branch) return false;
+  const pr = e.exec.run("gh", ["pr", "view", task.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  if (pr.code !== 0) return false;
+  try { return (JSON.parse(pr.stdout) as { state?: unknown }).state === "CLOSED"; } catch { return false; }
 }
