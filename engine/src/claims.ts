@@ -106,6 +106,19 @@ export function releaseOnClose(e: Engine, task_id: number, actor: Actor): void {
   if (task) releaseClaims(e, task, actor, "closed with no pr or merge step");
 }
 
+/**
+ * A worker that closed with neither a `pr` nor a `merge` step (a worker spike) is never merged, so nothing else removes
+ * its worktree: remove it now, after the closing transaction. Dirty and nested worktrees are kept and reported, never forced.
+ */
+export function removeOnClose(e: Engine, task_id: number): void {
+  const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id) as unknown as Task | undefined;
+  if (!task || task.parent_id === null || task.status !== "done") return;
+  if (e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id)) return;
+  try { removeWorktree(e, task); } catch (x) {
+    logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason: x instanceof Error ? x.message : String(x) });
+  }
+}
+
 /** Release one active claim and hand a file to the newest open grant. Not transactional itself. */
 function releaseOne(e: Engine, c: { id: number; kind: string; target: string }, task_id: number, actor: Actor, reason?: string): void {
   e.db.prepare("UPDATE claims SET status = 'released', released_at = ? WHERE id = ?").run(iso(e), c.id);

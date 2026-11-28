@@ -1,4 +1,4 @@
-import { passClaims, releaseClaims, releaseOnClose, syncMerged } from "./claims";
+import { passClaims, releaseClaims, releaseOnClose, removeOnClose, syncMerged } from "./claims";
 import { recordMergeConflicts, recordOutcomes } from "./outcomes";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
@@ -466,6 +466,7 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
     }
     logEvent(e, input.actor, "task_merged", v.task.id, { into: payload.into });
   }
+  if (result.task.status === "done") removeOnClose(e, v.task.id);
   recordOutcomes(e, { remote: false });
   return result;
 }
