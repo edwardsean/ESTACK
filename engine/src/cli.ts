@@ -17,8 +17,8 @@ import {
   BUILD_TIMEOUT_MS, INSTALL_HINT, buildGraph, checkoutLabel, checkoutOf, folderShares, graphifyVersion, loadGraph, suggestExcludes, versionSupported,
   type FolderShare,
 } from "./graph";
-import { activeClaims, keptWorktrees, strayWorktrees, syncMerged } from "./claims";
-import { recordOutcomes } from "./outcomes";
+import { activeClaims, keptWorktrees, strayWorktrees } from "./claims";
+import { refreshStatus } from "./outcomes";
 import { listOpen } from "./tasks";
 import { plannedTasks, startingTasks } from "./plan";
 import { EngineError } from "./types";
@@ -75,8 +75,7 @@ function num(s: string, what: string): number {
 const CLI_ACTOR = { session_id: "cli" };
 
 function status(e: Engine, json: boolean, out: (s: string) => void): void {
-  syncMerged(e);
-  recordOutcomes(e, { remote: true });
+  refreshStatus(e);
   const open = listOpen(e);
   const starting = startingTasks(e);
   const planned = plannedTasks(e);

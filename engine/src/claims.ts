@@ -4,7 +4,7 @@ import type { Engine } from "./engine";
 import { isExempt, pathMatches } from "./match";
 import { normaliseName, topLevelFunctions } from "./duplicates";
 import { loadGraph } from "./graph";
-import { OutOfBudget, areaPath, mergeCheck, mergedIntoMain, prState } from "./plan";
+import { OutOfBudget, areaPath, mergeCheck, mergedIntoMain, prState, type MergeCheck } from "./plan";
 import { HOOK_GIT_TIMEOUT_MS, logEvent, ownsTask, runBounded, tx } from "./tasks";
 import { EngineError, actorId, type Actor, type Task } from "./types";
 import { WORKTREES_DIR, removeWorktree } from "./worktree";
@@ -144,7 +144,7 @@ export const SYNC_BUDGET_MS = 10_000;
  * once per branch and origin fetched at most once per call, within SYNC_BUDGET_MS. A failing check leaves the feature
  * alone until the next call.
  */
-export function syncMerged(e: Engine, opts: { budget_ms?: number } = {}): void {
+export function syncMerged(e: Engine, opts: { budget_ms?: number; check?: MergeCheck } = {}): void {
   const rows = e.db.prepare(
     `SELECT * FROM tasks WHERE parent_id IS NULL AND status = 'done' AND (
        id IN (SELECT task_id FROM claims WHERE status = 'active') OR cwd LIKE '%/' || ? || '/%') ORDER BY id`,
@@ -154,7 +154,7 @@ export function syncMerged(e: Engine, opts: { budget_ms?: number } = {}): void {
     hasClaims: e.db.prepare("SELECT 1 FROM claims WHERE task_id = ? AND status = 'active'").get(task.id) !== undefined,
     hasTree: task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync(task.cwd),
   })).filter((x) => x.hasClaims || x.hasTree);
-  const check = mergeCheck(opts.budget_ms ?? SYNC_BUDGET_MS);
+  const check = opts.check ?? mergeCheck(opts.budget_ms ?? SYNC_BUDGET_MS);
   for (const { task, hasClaims, hasTree } of todo) {
     if (Date.now() >= check.deadline) return;
     try {

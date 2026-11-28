@@ -6,7 +6,10 @@ import { allowEdit, checkEdit, keptWorktrees } from "../src/claims";
 import { openEngine, type Engine } from "../src/engine";
 import { initRepo } from "../src/policy";
 import { recordOutcomes } from "../src/outcomes";
-import { completeStep, startTask } from "../src/tasks";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createServer } from "../src/mcp";
+import { completeStep, insertEvidence, startTask } from "../src/tasks";
 import type { Actor, Task } from "../src/types";
 import type { Exec } from "../src/exec";
 import { realExec } from "../src/exec";
@@ -122,5 +125,38 @@ describe("F3 conflict involvement", { timeout: 60_000 }, () => {
     mergeStep(e, w2);
     expect(outcome(e, same)).toBe("conflict");
     expect(outcome(e, cross)).toBeNull();
+  });
+});
+
+describe("F5 status asks once", { timeout: 60_000 }, () => {
+  test("one fetch and one gh call per branch for syncMerged and the outcomes together", async () => {
+    const dir = repo();
+    git(dir, "remote", "add", "origin", join(dir, "nowhere.git"));
+    const e0 = openEngine(dir, { exec: fakeExec({}) });
+    const f1 = feature(e0, dir, "one");
+    const f2 = feature(e0, dir, "two");
+    const g = grant(e0, f1, f2);
+    expect(g).toBeGreaterThan(0);
+    for (const f of [f1, f2]) {
+      commitFile(f, `src/${f.id}.ts`, "x\n");
+      insertEvidence(e0, f.id, "implement", "commit", true, { sha: git(f.cwd, "rev-parse", "HEAD") }, A);
+      e0.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(f.id);
+    }
+    const calls: string[] = [];
+    const base = fakeExec({ [`pr view ${f1.branch} --json state`]: { code: 0, stdout: '{"state":"OPEN"}' }, [`pr view ${f2.branch} --json state`]: { code: 0, stdout: '{"state":"OPEN"}' } });
+    const exec: Exec = {
+      run(file, args, opts) {
+        if ((file === "git" && args[0] === "fetch") || file === "gh") calls.push(`${file} ${args.join(" ")}`);
+        return base.run(file, args, opts);
+      },
+      shell: (c, o) => base.shell(c, o),
+    };
+    const server = createServer(dir, { exec });
+    const client = new Client({ name: "test", version: "0" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    await client.callTool({ name: "status", arguments: {} });
+    expect(calls.filter((c) => c.startsWith("git fetch"))).toHaveLength(1);
+    for (const f of [f1, f2]) expect(calls.filter((c) => c === `gh pr view ${f.branch} --json state`).length).toBeLessThanOrEqual(1);
   });
 });

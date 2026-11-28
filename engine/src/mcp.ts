@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { recordOutcomes } from "./outcomes";
-import { activeClaims, allowEdit, claimStatus, claimSymbol, keptWorktrees, strayWorktrees, syncMerged } from "./claims";
+import { refreshStatus } from "./outcomes";
+import { activeClaims, allowEdit, claimStatus, claimSymbol, keptWorktrees, strayWorktrees } from "./claims";
 import { runCheck } from "./checks";
 import { openEngine, type Engine } from "./engine";
 import type { Exec } from "./exec";
@@ -135,8 +135,7 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
     description: "Show one task (with task_id), or all open tasks with the active claims, kept worktrees and stray worktrees (engine worktrees no task accounts for).",
     inputSchema: { task_id: z.number().int().optional(), actor: actorSchema },
   }, tool((e, a: { task_id?: number; actor?: Actor }) => {
-    syncMerged(e);
-    recordOutcomes(e, { remote: true });
+    refreshStatus(e);
     return a.task_id !== undefined ? getTask(e, a.task_id) : { tasks: listOpen(e), claims: activeClaims(e), kept_worktrees: keptWorktrees(e), stray_worktrees: strayWorktrees(e) };
   }));
 

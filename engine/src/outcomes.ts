@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { SYNC_BUDGET_MS, syncMerged } from "./claims";
 import type { Engine } from "./engine";
 import { OutOfBudget, mergeCheck, mergedIntoMain, type MergeCheck } from "./plan";
 import { EVIDENCE_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, logEvent, tx } from "./tasks";
@@ -196,9 +197,9 @@ export function recordMergeConflicts(e: Engine, grants: Grant[]): void {
  * or fetch; `remote: true` (status) adds the pull request and merged-into-main checks, asked once per feature. The call
  * stops when its time budget is spent, leaving the remaining grants for next time.
  */
-export function recordOutcomes(e: Engine, opts: { remote?: boolean; budget_ms?: number } = {}): void {
+export function recordOutcomes(e: Engine, opts: { remote?: boolean; budget_ms?: number; check?: MergeCheck } = {}): void {
   const budget = opts.budget_ms ?? OUTCOME_BUDGET_MS;
-  const c: Ctx = { remote: opts.remote ?? true, deadline: Date.now() + budget, check: mergeCheck(budget), mergeable: new Map(), merged: new Map() };
+  const c: Ctx = { remote: opts.remote ?? true, deadline: Date.now() + budget, check: opts.check ?? mergeCheck(budget), mergeable: new Map(), merged: new Map() };
   let grants: Grant[];
   try {
     grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all() as unknown as Grant[];
@@ -210,4 +211,11 @@ export function recordOutcomes(e: Engine, opts: { remote?: boolean; budget_ms?: 
       if (outcome) setOutcome(e, g, outcome);
     } catch { /* tried again next time */ }
   }
+}
+
+/** What status does first: merge syncing and remote outcomes, sharing one MergeCheck so origin is fetched at most once and gh asked once per branch. */
+export function refreshStatus(e: Engine): void {
+  const check = mergeCheck(SYNC_BUDGET_MS + OUTCOME_BUDGET_MS);
+  syncMerged(e, { check });
+  recordOutcomes(e, { remote: true, check });
 }
