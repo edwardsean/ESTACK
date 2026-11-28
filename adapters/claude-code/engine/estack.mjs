@@ -34785,10 +34785,15 @@ function startTask(e, input2) {
     if (!planned) throw new EngineError("NO_TASK", `no task with id ${input2.task_id}`);
     if (planned.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${planned.id} is ${planned.status}, not planned`);
   }
-  const title = planned?.title ?? input2.title;
-  const type = planned?.type ?? input2.type;
-  const goal = planned?.goal ?? input2.goal;
-  const done_check = planned?.done_check ?? input2.done_check;
+  const field = (name2) => {
+    const v = planned ? planned[name2] : input2[name2];
+    if (v === void 0) throw new EngineError("POLICY_INVALID", `${name2} is required unless task_id names a planned task`);
+    return v;
+  };
+  const title = field("title");
+  const type = field("type");
+  const goal = field("goal");
+  const done_check = field("done_check");
   const parentId = planned?.parent_id ?? input2.parent_task_id ?? null;
   const group = planned?.task_group ?? input2.group ?? null;
   const typeSteps = e.policy.task_types[type];
@@ -45987,10 +45992,10 @@ function createServer(cwd, deps = {}) {
   server.registerTool("start_task", {
     description: "Start a task of a policy-defined type; its steps are created in order.",
     inputSchema: {
-      title: external_exports.string(),
-      type: external_exports.string(),
-      goal: external_exports.string(),
-      done_check: external_exports.string(),
+      title: external_exports.string().optional(),
+      type: external_exports.string().optional(),
+      goal: external_exports.string().optional(),
+      done_check: external_exports.string().optional(),
       branch: external_exports.string().optional(),
       area: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).optional().describe("the folders or files you will change; with the code map on, the first one's context is returned"),
       worktree: external_exports.boolean().optional().describe("make the task its own branch and git worktree (a feature, or a worker when parent_task_id is given)"),

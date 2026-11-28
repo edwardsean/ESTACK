@@ -45,7 +45,7 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
   server.registerTool("start_task", {
     description: "Start a task of a policy-defined type; its steps are created in order.",
     inputSchema: {
-      title: z.string(), type: z.string(), goal: z.string(), done_check: z.string(),
+      title: z.string().optional(), type: z.string().optional(), goal: z.string().optional(), done_check: z.string().optional(),
       branch: z.string().optional(),
       area: z.union([z.string(), z.array(z.string())]).optional().describe("the folders or files you will change; with the code map on, the first one's context is returned"),
       worktree: z.boolean().optional().describe("make the task its own branch and git worktree (a feature, or a worker when parent_task_id is given)"),
@@ -54,7 +54,7 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
       cwd: z.string().optional().describe("the caller's working directory; its worktree becomes the task's (stamped by the hook)"),
       actor: actorSchema,
     },
-  }, tool((e, a: { title: string; type: string; goal: string; done_check: string; branch?: string; area?: string | string[]; cwd?: string; worktree?: boolean; parent_task_id?: number; group?: string; task_id?: number; actor?: Actor }, actor) => {
+  }, tool((e, a: { title?: string; type?: string; goal?: string; done_check?: string; branch?: string; area?: string | string[]; cwd?: string; worktree?: boolean; parent_task_id?: number; group?: string; task_id?: number; actor?: Actor }, actor) => {
     const area = typeof a.area === "string" ? [a.area] : a.area;
     const v = startTask(e, {
       title: a.title, type: a.type, goal: a.goal, done_check: a.done_check, branch: a.branch, cwd: a.cwd, actor,

@@ -163,4 +163,14 @@ describe("worktrees", () => {
     expect(code(() => startTask(e, { title: "x", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, task_id: planned }))).toBe("TASK_CLOSED");
     expect(code(() => startTask(e, { title: "x", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir, task_id: 99 }))).toBe("NO_TASK");
   });
+
+  test("start_task with only task_id promotes a planned task", () => {
+    const { dir, e } = setup();
+    const id = Number(e.db.prepare(
+      "INSERT INTO tasks (title, type, goal, done_check, status, branch, cwd, base_sha, created_by, created_at) VALUES ('Only id', 'feature', 'g', 'd', 'planned', '', '', '', 's1/main', 'now')",
+    ).run().lastInsertRowid);
+    const v = startTask(e, { actor: cto, cwd: dir, worktree: true, task_id: id });
+    expect(v.task).toMatchObject({ id, status: "open", title: "Only id", branch: `feat/${id}-only-id` });
+    expect(code(() => startTask(e, { actor: cto, cwd: dir, title: "t" }))).toBe("POLICY_INVALID");
+  });
 });

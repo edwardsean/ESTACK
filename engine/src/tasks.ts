@@ -111,7 +111,7 @@ function featureBase(e: Engine, checkout: string): { ref: string; sha: string } 
 const HOOK_FETCH_TIMEOUT_MS = 20_000;
 
 export function startTask(e: Engine, input: {
-  title: string; type: string; goal: string; done_check: string; actor: Actor; cwd?: string; branch?: string;
+  title?: string; type?: string; goal?: string; done_check?: string; actor: Actor; cwd?: string; branch?: string;
   worktree?: boolean; parent_task_id?: number; area?: string[]; group?: string; task_id?: number;
 }): StartResult {
   // A planned task is promoted in place: its stored title, type, goal and parent win over the call's.
@@ -121,10 +121,15 @@ export function startTask(e: Engine, input: {
     if (!planned) throw new EngineError("NO_TASK", `no task with id ${input.task_id}`);
     if (planned.status !== "planned") throw new EngineError("TASK_CLOSED", `task ${planned.id} is ${planned.status}, not planned`);
   }
-  const title = planned?.title ?? input.title;
-  const type = planned?.type ?? input.type;
-  const goal = planned?.goal ?? input.goal;
-  const done_check = planned?.done_check ?? input.done_check;
+  const field = (name: "title" | "type" | "goal" | "done_check"): string => {
+    const v = planned ? planned[name] : input[name];
+    if (v === undefined) throw new EngineError("POLICY_INVALID", `${name} is required unless task_id names a planned task`);
+    return v;
+  };
+  const title = field("title");
+  const type = field("type");
+  const goal = field("goal");
+  const done_check = field("done_check");
   const parentId = planned?.parent_id ?? input.parent_task_id ?? null;
   const group = planned?.task_group ?? input.group ?? null;
   const typeSteps = e.policy.task_types[type];
