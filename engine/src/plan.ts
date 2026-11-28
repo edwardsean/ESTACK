@@ -241,12 +241,56 @@ export function withdrawTask(e: Engine, task_id: number, actor: Actor): void {
   });
 }
 
+/** A check ran out of its time budget: the caller stops and leaves the rest for its next call. */
+export class OutOfBudget extends Error {}
+
 /**
- * True when a task's own work reached main (origin/main, or local main when there is no origin; `fetched` skips the fetch). A feature counts when its pull request is MERGED, or its last commit evidence
- * is on origin/main; a worker when its merge step is done and its feature counts the same way (its merged head is on
- * origin/main). A task that never did work, or never ran, is never merged, whatever main now holds.
+ * One call's view of merge state: gh is asked once per branch, origin is fetched at most once and main is looked up once,
+ * and nothing more is asked after the deadline (OutOfBudget).
  */
-export function mergedIntoMain(e: Engine, task: Task, opts: { fetched?: boolean } = {}): boolean {
+export interface MergeCheck { deadline: number; states: Map<string, string | null>; main?: string | null }
+export const mergeCheck = (budget_ms = Infinity): MergeCheck => ({ deadline: Date.now() + budget_ms, states: new Map() });
+
+/** The state gh reports for the branch's pull request (OPEN, CLOSED, MERGED), or null when it has none; asked once per branch per check. */
+export function prState(e: Engine, c: MergeCheck, branch: string): string | null {
+  const known = c.states.get(branch);
+  if (known !== undefined) return known;
+  if (Date.now() >= c.deadline) throw new OutOfBudget();
+  const pr = e.exec.run("gh", ["pr", "view", branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  let state: string | null = null;
+  if (pr.code === 0) {
+    try {
+      const s = (JSON.parse(pr.stdout) as { state?: unknown }).state;
+      if (typeof s === "string") state = s;
+    } catch { /* no state as far as we know */ }
+  }
+  c.states.set(branch, state);
+  return state;
+}
+
+/** The ref main is: origin/<default> after one bounded fetch, or the local default branch without origin; null with no default branch. */
+function mainRef(e: Engine, c: MergeCheck): string | null {
+  if (c.main !== undefined) return c.main;
+  let name: string;
+  try { name = defaultBranch(e, e.cwd); } catch (x) {
+    if (!(x instanceof EngineError)) throw x;
+    c.main = null;
+    return null;
+  }
+  // Without an origin remote, the local default branch is the main there is. A failed fetch is ignored.
+  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
+  if (hasOrigin) e.exec.run("git", ["fetch", "origin", name], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  c.main = hasOrigin ? `refs/remotes/origin/${name}` : `refs/heads/${name}`;
+  return c.main;
+}
+
+/**
+ * True when a task's own work reached main (origin/<default>, or the local default branch when there is no origin). A
+ * feature counts when its pull request is MERGED, or its last commit evidence is on main; a worker when its merge step is
+ * done and its feature counts the same way (its merged head is on main). A task that never did work, or never ran, is
+ * never merged, whatever main now holds. Pass one MergeCheck to share gh answers and the fetch across calls.
+ */
+export function mergedIntoMain(e: Engine, task: Task, c: MergeCheck = mergeCheck()): boolean {
   const feature = task.parent_id === null ? task : getRow(e, task.parent_id);
   if (!feature) return false;
   const last = (kind: string, field: string): string | null => {
@@ -257,19 +301,9 @@ export function mergedIntoMain(e: Engine, task: Task, opts: { fetched?: boolean 
   };
   const sha = task.parent_id === null ? last("commit", "sha") : last("merged", "head");
   if (!sha) return false;
-  if (feature.branch) {
-    const pr = e.exec.run("gh", ["pr", "view", feature.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-    if (pr.code === 0) {
-      try { if ((JSON.parse(pr.stdout) as { state?: unknown }).state === "MERGED") return true; } catch { /* fall through to git */ }
-    }
-  }
-  // A repository with no default branch has no main to be merged into.
-  let name: string;
-  try { name = defaultBranch(e, e.cwd); } catch (x) { if (x instanceof EngineError) return false; throw x; }
-  // Without an origin remote, the local default branch is the main there is.
-  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
-  if (hasOrigin && !opts.fetched) e.exec.run("git", ["fetch", "origin", name], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
-  const main = hasOrigin ? `refs/remotes/origin/${name}` : `refs/heads/${name}`;
+  if (feature.branch && prState(e, c, feature.branch) === "MERGED") return true;
+  const main = mainRef(e, c);
+  if (main === null) return false;
   return e.exec.run("git", ["merge-base", "--is-ancestor", sha, main], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
 }
 
@@ -278,6 +312,7 @@ export function dependencyState(e: Engine, task_id: number): { finished: boolean
   const me = getRow(e, task_id);
   if (!me) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
   const deps = e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ? ORDER BY depends_on").all(task_id) as { d: number }[];
+  const check = mergeCheck();
   return deps.map(({ d }) => {
     const dep = getRow(e, d);
     if (!dep) return { finished: false, detail: `task #${d} does not exist` };
@@ -293,7 +328,7 @@ export function dependencyState(e: Engine, task_id: number): { finished: boolean
       return { finished, detail: finished ? `task #${d} is merged into the feature` : `task #${d} (${dep.title}) is not merged into the feature yet` };
     }
     const feature = dep.parent_id === null ? dep : getRow(e, dep.parent_id) ?? dep;
-    const finished = mergedIntoMain(e, dep);
+    const finished = mergedIntoMain(e, dep, check);
     return { finished, detail: finished ? `task #${d} is merged into main` : `task #${d} (${dep.title}) waits for its feature #${feature.id} to merge into main` };
   });
 }

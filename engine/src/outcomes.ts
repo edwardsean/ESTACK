@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { Engine } from "./engine";
-import { mergedIntoMain } from "./plan";
+import { OutOfBudget, mergeCheck, mergedIntoMain, type MergeCheck } from "./plan";
 import { EVIDENCE_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, logEvent, tx } from "./tasks";
 import type { Actor, Task } from "./types";
 
@@ -33,13 +33,12 @@ function changedFiles(e: Engine, t: Task): Set<string> | null {
 }
 
 export const OUTCOME_BUDGET_MS = 10_000;
-class OutOfBudget extends Error {}
 
 /** One recordOutcomes call: what it may run, its time budget and what it has already asked per feature. */
 interface Ctx {
   remote: boolean;
   deadline: number;
-  fetched: boolean;
+  check: MergeCheck;
   mergeable: Map<number, boolean>;
   merged: Map<number, boolean>;
 }
@@ -61,13 +60,12 @@ function prConflicting(e: Engine, c: Ctx, f: Task): boolean {
   return bad;
 }
 
-/** True when the feature is merged into main (asked once per feature per call, fetching at most once). */
+/** True when the feature is merged into main (asked once per feature per call; the shared check fetches at most once). */
 function featureMerged(e: Engine, c: Ctx, f: Task): boolean {
   const known = c.merged.get(f.id);
   if (known !== undefined) return known;
   checkBudget(c);
-  const r = mergedIntoMain(e, f, { fetched: c.fetched });
-  c.fetched = true;
+  const r = mergedIntoMain(e, f, c.check);
   c.merged.set(f.id, r);
   return r;
 }
@@ -131,7 +129,8 @@ function judge(e: Engine, c: Ctx, g: Grant): Outcome | null {
  * stops when its time budget is spent, leaving the remaining grants for next time.
  */
 export function recordOutcomes(e: Engine, opts: { remote?: boolean; budget_ms?: number } = {}): void {
-  const c: Ctx = { remote: opts.remote ?? true, deadline: Date.now() + (opts.budget_ms ?? OUTCOME_BUDGET_MS), fetched: false, mergeable: new Map(), merged: new Map() };
+  const budget = opts.budget_ms ?? OUTCOME_BUDGET_MS;
+  const c: Ctx = { remote: opts.remote ?? true, deadline: Date.now() + budget, check: mergeCheck(budget), mergeable: new Map(), merged: new Map() };
   let grants: Grant[];
   try {
     grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all() as unknown as Grant[];

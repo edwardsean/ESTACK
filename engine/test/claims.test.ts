@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { MAX_CLAIM_DIFF, allowEdit, checkEdit, claimStatus, claimSymbol, hasGrant, holderOf, isClaimExempt, passClaims, releaseClaim, releaseClaims, syncMerged } from "../src/claims";
+import { MAX_CLAIM_DIFF, SYNC_BUDGET_MS, allowEdit, checkEdit, claimStatus, claimSymbol, hasGrant, holderOf, isClaimExempt, passClaims, releaseClaim, releaseClaims, syncMerged } from "../src/claims";
 import { openEngine, type Engine } from "../src/engine";
 import { preCommit } from "../src/githooks";
 import { runHook, type HookEvent } from "../src/hooks";
@@ -319,6 +319,51 @@ describe("file claims", { timeout: 60_000 }, () => {
       syncMerged(e);
       expect(claims(e)[0].status, withOrigin ? "with origin" : "without origin").toBe("released");
     }
+  });
+
+  test("syncMerged asks gh once per done task's branch, fetches once, and stops when its budget is spent", () => {
+    const dir = repo();
+    const bare = execFileSync("mktemp", ["-d"], { encoding: "utf8" }).trim();
+    git(bare, "init", "--bare", "-b", "main");
+    git(dir, "remote", "add", "origin", bare);
+    git(dir, "push", "origin", "main");
+    const responses: Record<string, any> = {};
+    const inner = fakeExec(responses);
+    const seen = { gh: [] as string[], fetches: 0 };
+    const exec = {
+      run(file: string, args: string[], opts: any) {
+        if (file === "gh") seen.gh.push(args.join(" "));
+        if (file === "git" && args[0] === "fetch") seen.fetches++;
+        return inner.run(file, args, opts);
+      },
+      shell: inner.shell,
+    };
+    const e = openEngine(dir, { exec });
+    const done: Task[] = [];
+    for (const title of ["one", "two", "three", "four"]) {
+      const f = feature(e, dir, A, title);
+      checkEdit(e, f, `src/${title}.ts`);
+      git(f.cwd, "commit", "--allow-empty", "-m", title);
+      insertEvidence(e, f.id, "implement", "commit", true, { sha: git(f.cwd, "rev-parse", "HEAD") }, A);
+      e.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(f.id);
+      done.push(f);
+    }
+    // Two have an open PR, two have none; none is merged into main.
+    responses[`pr view ${done[0].branch} --json state`] = { code: 0, stdout: JSON.stringify({ state: "OPEN" }) };
+    responses[`pr view ${done[1].branch} --json state`] = { code: 0, stdout: JSON.stringify({ state: "OPEN" }) };
+    seen.gh = [];
+    seen.fetches = 0;
+    syncMerged(e);
+    expect(seen.gh).toHaveLength(done.length);
+    expect(new Set(seen.gh).size).toBe(done.length);
+    expect(seen.fetches).toBe(1);
+    expect(claims(e).every((c) => c.status === "active")).toBe(true);
+    expect(SYNC_BUDGET_MS).toBe(10_000);
+    seen.gh = [];
+    seen.fetches = 0;
+    syncMerged(e, { budget_ms: 0 });
+    expect(seen.gh).toEqual([]);
+    expect(seen.fetches).toBe(0);
   });
 
   test("a done feature whose pr was closed unmerged releases its claims with a reason", () => {

@@ -34930,7 +34930,41 @@ function withdrawTask(e, task_id, actor) {
     logEvent(e, actor, "task_withdrawn", task_id, {});
   });
 }
-function mergedIntoMain(e, task, opts = {}) {
+var OutOfBudget = class extends Error {
+};
+var mergeCheck = (budget_ms = Infinity) => ({ deadline: Date.now() + budget_ms, states: /* @__PURE__ */ new Map() });
+function prState(e, c, branch) {
+  const known = c.states.get(branch);
+  if (known !== void 0) return known;
+  if (Date.now() >= c.deadline) throw new OutOfBudget();
+  const pr = e.exec.run("gh", ["pr", "view", branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  let state = null;
+  if (pr.code === 0) {
+    try {
+      const s = JSON.parse(pr.stdout).state;
+      if (typeof s === "string") state = s;
+    } catch {
+    }
+  }
+  c.states.set(branch, state);
+  return state;
+}
+function mainRef(e, c) {
+  if (c.main !== void 0) return c.main;
+  let name;
+  try {
+    name = defaultBranch(e, e.cwd);
+  } catch (x) {
+    if (!(x instanceof EngineError)) throw x;
+    c.main = null;
+    return null;
+  }
+  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
+  if (hasOrigin) e.exec.run("git", ["fetch", "origin", name], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  c.main = hasOrigin ? `refs/remotes/origin/${name}` : `refs/heads/${name}`;
+  return c.main;
+}
+function mergedIntoMain(e, task, c = mergeCheck()) {
   const feature = task.parent_id === null ? task : getRow(e, task.parent_id);
   if (!feature) return false;
   const last = (kind, field) => {
@@ -34940,31 +34974,16 @@ function mergedIntoMain(e, task, opts = {}) {
   };
   const sha = task.parent_id === null ? last("commit", "sha") : last("merged", "head");
   if (!sha) return false;
-  if (feature.branch) {
-    const pr = e.exec.run("gh", ["pr", "view", feature.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-    if (pr.code === 0) {
-      try {
-        if (JSON.parse(pr.stdout).state === "MERGED") return true;
-      } catch {
-      }
-    }
-  }
-  let name;
-  try {
-    name = defaultBranch(e, e.cwd);
-  } catch (x) {
-    if (x instanceof EngineError) return false;
-    throw x;
-  }
-  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
-  if (hasOrigin && !opts.fetched) e.exec.run("git", ["fetch", "origin", name], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
-  const main2 = hasOrigin ? `refs/remotes/origin/${name}` : `refs/heads/${name}`;
+  if (feature.branch && prState(e, c, feature.branch) === "MERGED") return true;
+  const main2 = mainRef(e, c);
+  if (main2 === null) return false;
   return e.exec.run("git", ["merge-base", "--is-ancestor", sha, main2], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
 }
 function dependencyState(e, task_id) {
   const me = getRow(e, task_id);
   if (!me) throw new EngineError("NO_TASK", `no task with id ${task_id}`);
   const deps = e.db.prepare("SELECT depends_on d FROM task_deps WHERE task_id = ? ORDER BY depends_on").all(task_id);
+  const check2 = mergeCheck();
   return deps.map(({ d }) => {
     const dep = getRow(e, d);
     if (!dep) return { finished: false, detail: `task #${d} does not exist` };
@@ -34980,7 +34999,7 @@ function dependencyState(e, task_id) {
       return { finished: finished3, detail: finished3 ? `task #${d} is merged into the feature` : `task #${d} (${dep.title}) is not merged into the feature yet` };
     }
     const feature = dep.parent_id === null ? dep : getRow(e, dep.parent_id) ?? dep;
-    const finished2 = mergedIntoMain(e, dep);
+    const finished2 = mergedIntoMain(e, dep, check2);
     return { finished: finished2, detail: finished2 ? `task #${d} is merged into main` : `task #${d} (${dep.title}) waits for its feature #${feature.id} to merge into main` };
   });
 }
@@ -35041,8 +35060,6 @@ function changedFiles(e, t) {
   return new Set([...diff.stdout.split("\n"), ...fresh.code === 0 ? fresh.stdout.split("\n") : []].filter(Boolean));
 }
 var OUTCOME_BUDGET_MS = 1e4;
-var OutOfBudget = class extends Error {
-};
 var checkBudget = (c) => {
   if (Date.now() >= c.deadline) throw new OutOfBudget();
 };
@@ -35067,8 +35084,7 @@ function featureMerged(e, c, f) {
   const known = c.merged.get(f.id);
   if (known !== void 0) return known;
   checkBudget(c);
-  const r = mergedIntoMain(e, f, { fetched: c.fetched });
-  c.fetched = true;
+  const r = mergedIntoMain(e, f, c.check);
   c.merged.set(f.id, r);
   return r;
 }
@@ -35111,7 +35127,8 @@ function judge(e, c, g) {
   return finished(e, c, grantee, holder) ? "clean" : null;
 }
 function recordOutcomes(e, opts = {}) {
-  const c = { remote: opts.remote ?? true, deadline: Date.now() + (opts.budget_ms ?? OUTCOME_BUDGET_MS), fetched: false, mergeable: /* @__PURE__ */ new Map(), merged: /* @__PURE__ */ new Map() };
+  const budget = opts.budget_ms ?? OUTCOME_BUDGET_MS;
+  const c = { remote: opts.remote ?? true, deadline: Date.now() + budget, check: mergeCheck(budget), mergeable: /* @__PURE__ */ new Map(), merged: /* @__PURE__ */ new Map() };
   let grants;
   try {
     grants = e.db.prepare("SELECT id, claim_id, task_id, path, at FROM claim_grants WHERE outcome IS NULL ORDER BY id").all();
@@ -36042,7 +36059,8 @@ function releaseOne(e, c, task_id, actor, reason) {
   const r = e.db.prepare("INSERT INTO claims (task_id, kind, target, status, at) VALUES (?, 'file', ?, 'active', ?)").run(grant.task_id, c.target, iso2(e));
   logEvent(e, actor, "claim_taken", grant.task_id, { path: c.target, claim_id: Number(r.lastInsertRowid), from_grant: grant.id });
 }
-function syncMerged(e) {
+var SYNC_BUDGET_MS = 1e4;
+function syncMerged(e, opts = {}) {
   const rows = e.db.prepare(
     `SELECT * FROM tasks WHERE parent_id IS NULL AND status = 'done' AND (
        id IN (SELECT task_id FROM claims WHERE status = 'active') OR cwd LIKE '%/' || ? || '/%') ORDER BY id`
@@ -36052,37 +36070,20 @@ function syncMerged(e) {
     hasClaims: e.db.prepare("SELECT 1 FROM claims WHERE task_id = ? AND status = 'active'").get(task.id) !== void 0,
     hasTree: task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync7(task.cwd)
   })).filter((x) => x.hasClaims || x.hasTree);
-  if (todo.length === 0) return;
-  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
-  const name = (() => {
-    try {
-      return defaultBranch(e, e.cwd);
-    } catch {
-      return null;
-    }
-  })();
-  if (hasOrigin && name) e.exec.run("git", ["fetch", "origin", name], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  const check2 = mergeCheck(opts.budget_ms ?? SYNC_BUDGET_MS);
   for (const { task, hasClaims, hasTree } of todo) {
+    if (Date.now() >= check2.deadline) return;
     try {
-      if (mergedIntoMain(e, task, { fetched: true })) {
+      if (mergedIntoMain(e, task, check2)) {
         if (hasClaims) tx(e, () => releaseClaims(e, task, ENGINE3));
         if (hasTree) removeWorktree(e, task);
-      } else if (hasClaims && prClosed(e, task)) {
+      } else if (hasClaims && task.branch && prState(e, check2, task.branch) === "CLOSED") {
         tx(e, () => releaseClaims(e, task, ENGINE3, "pr closed"));
       }
     } catch (x) {
+      if (x instanceof OutOfBudget) return;
       if (!(x instanceof EngineError)) throw x;
     }
-  }
-}
-function prClosed(e, task) {
-  if (!task.branch) return false;
-  const pr = e.exec.run("gh", ["pr", "view", task.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-  if (pr.code !== 0) return false;
-  try {
-    return JSON.parse(pr.stdout).state === "CLOSED";
-  } catch {
-    return false;
   }
 }
 var MAX_CLAIM_DIFF = 8e3;

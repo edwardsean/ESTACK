@@ -4,8 +4,8 @@ import type { Engine } from "./engine";
 import { isExempt, pathMatches } from "./match";
 import { normaliseName, topLevelFunctions } from "./duplicates";
 import { loadGraph } from "./graph";
-import { areaPath, mergedIntoMain } from "./plan";
-import { EVIDENCE_TIMEOUT_MS, HOOK_FETCH_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, defaultBranch, logEvent, ownsTask, runBounded, tx } from "./tasks";
+import { OutOfBudget, areaPath, mergeCheck, mergedIntoMain, prState } from "./plan";
+import { HOOK_GIT_TIMEOUT_MS, logEvent, ownsTask, runBounded, tx } from "./tasks";
 import { EngineError, actorId, type Actor, type Task } from "./types";
 import { WORKTREES_DIR, removeWorktree } from "./worktree";
 
@@ -111,13 +111,17 @@ function releaseOne(e: Engine, c: { id: number; kind: string; target: string }, 
   logEvent(e, actor, "claim_taken", grant.task_id, { path: c.target, claim_id: Number(r.lastInsertRowid), from_grant: grant.id });
 }
 
+/** syncMerged's time budget: no new task or gh call is started once it is spent; the rest wait for the next call. */
+export const SYNC_BUDGET_MS = 10_000;
+
 /**
  * Done features known merged into main give up their claims and, when the engine made it, their worktree; a done feature
  * whose pull request was closed unmerged gives up its claims too. Open tasks are left alone until their `pr` step is
- * recorded. Checks merge state with gh/git, so only status and start_task call it, never a per-edit hook. A failing check
- * leaves the feature alone until the next call.
+ * recorded. Checks merge state with gh/git, so only status and start_task call it, never a per-edit hook. gh is asked
+ * once per branch and origin fetched at most once per call, within SYNC_BUDGET_MS. A failing check leaves the feature
+ * alone until the next call.
  */
-export function syncMerged(e: Engine): void {
+export function syncMerged(e: Engine, opts: { budget_ms?: number } = {}): void {
   const rows = e.db.prepare(
     `SELECT * FROM tasks WHERE parent_id IS NULL AND status = 'done' AND (
        id IN (SELECT task_id FROM claims WHERE status = 'active') OR cwd LIKE '%/' || ? || '/%') ORDER BY id`,
@@ -127,32 +131,22 @@ export function syncMerged(e: Engine): void {
     hasClaims: e.db.prepare("SELECT 1 FROM claims WHERE task_id = ? AND status = 'active'").get(task.id) !== undefined,
     hasTree: task.cwd.includes(`/${WORKTREES_DIR}/`) && existsSync(task.cwd),
   })).filter((x) => x.hasClaims || x.hasTree);
-  if (todo.length === 0) return;
-  const hasOrigin = e.exec.run("git", ["remote", "get-url", "origin"], { cwd: e.cwd, timeoutMs: HOOK_GIT_TIMEOUT_MS }).code === 0;
-  // One fetch of the default branch for the whole pass, ignoring failure.
-  const name = (() => { try { return defaultBranch(e, e.cwd); } catch { return null; } })();
-  if (hasOrigin && name) e.exec.run("git", ["fetch", "origin", name], { cwd: e.cwd, timeoutMs: HOOK_FETCH_TIMEOUT_MS });
+  const check = mergeCheck(opts.budget_ms ?? SYNC_BUDGET_MS);
   for (const { task, hasClaims, hasTree } of todo) {
+    if (Date.now() >= check.deadline) return;
     try {
-      if (mergedIntoMain(e, task, { fetched: true })) {
+      if (mergedIntoMain(e, task, check)) {
         if (hasClaims) tx(e, () => releaseClaims(e, task, ENGINE));
         if (hasTree) removeWorktree(e, task);
-      } else if (hasClaims && prClosed(e, task)) {
+      } else if (hasClaims && task.branch && prState(e, check, task.branch) === "CLOSED") {
         tx(e, () => releaseClaims(e, task, ENGINE, "pr closed"));
       }
     } catch (x) {
+      if (x instanceof OutOfBudget) return;
       // A timed-out or failed gh/git check is tried again next time; anything else is a bug and surfaces.
       if (!(x instanceof EngineError)) throw x;
     }
   }
-}
-
-/** True when gh reports the task's pull request CLOSED without merging. */
-function prClosed(e: Engine, task: Task): boolean {
-  if (!task.branch) return false;
-  const pr = e.exec.run("gh", ["pr", "view", task.branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-  if (pr.code !== 0) return false;
-  try { return (JSON.parse(pr.stdout) as { state?: unknown }).state === "CLOSED"; } catch { return false; }
 }
 
 export interface ClaimStatus {
