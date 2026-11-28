@@ -315,25 +315,33 @@ export class OutOfBudget extends Error {}
  * One call's view of merge state: gh is asked once per branch, origin is fetched at most once and main is looked up once,
  * and nothing more is asked after the deadline (OutOfBudget).
  */
-export interface MergeCheck { deadline: number; states: Map<string, string | null>; main?: string | null }
-export const mergeCheck = (budget_ms = Infinity): MergeCheck => ({ deadline: Date.now() + budget_ms, states: new Map() });
+export interface PrInfo { state: string | null; mergeable: string | null }
+export interface MergeCheck { deadline: number; prs: Map<string, PrInfo>; main?: string | null }
+export const mergeCheck = (budget_ms = Infinity): MergeCheck => ({ deadline: Date.now() + budget_ms, prs: new Map() });
 
-/** The state gh reports for the branch's pull request (OPEN, CLOSED, MERGED), or null when it has none; asked once per branch per check. */
-export function prState(e: Engine, c: MergeCheck, branch: string): string | null {
-  const known = c.states.get(branch);
-  if (known !== undefined) return known;
+/** What gh reports for the branch's pull request (state and mergeable), nulls when it has none; one gh call per branch per check. */
+function prInfo(e: Engine, c: MergeCheck, branch: string): PrInfo {
+  const known = c.prs.get(branch);
+  if (known) return known;
   if (Date.now() >= c.deadline) throw new OutOfBudget();
-  const pr = e.exec.run("gh", ["pr", "view", branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-  let state: string | null = null;
+  const pr = e.exec.run("gh", ["pr", "view", branch, "--json", "state,mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  const info: PrInfo = { state: null, mergeable: null };
   if (pr.code === 0) {
     try {
-      const s = (JSON.parse(pr.stdout) as { state?: unknown }).state;
-      if (typeof s === "string") state = s;
-    } catch { /* no state as far as we know */ }
+      const j = JSON.parse(pr.stdout) as { state?: unknown; mergeable?: unknown };
+      if (typeof j.state === "string") info.state = j.state;
+      if (typeof j.mergeable === "string") info.mergeable = j.mergeable;
+    } catch { /* nothing known */ }
   }
-  c.states.set(branch, state);
-  return state;
+  c.prs.set(branch, info);
+  return info;
 }
+
+/** The state gh reports for the branch's pull request (OPEN, CLOSED, MERGED), or null when it has none. */
+export const prState = (e: Engine, c: MergeCheck, branch: string): string | null => prInfo(e, c, branch).state;
+
+/** The mergeable value gh reports (MERGEABLE, CONFLICTING, UNKNOWN), or null. */
+export const prMergeable = (e: Engine, c: MergeCheck, branch: string): string | null => prInfo(e, c, branch).mergeable;
 
 /** The ref main is: origin/<default> after one bounded fetch, or the local default branch without origin; null with no default branch. */
 function mainRef(e: Engine, c: MergeCheck): string | null {

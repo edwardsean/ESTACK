@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { runCheck } from "../src/checks";
 import { allowEdit, checkEdit, keptWorktrees } from "../src/claims";
 import { openEngine, type Engine } from "../src/engine";
 import { initRepo } from "../src/policy";
@@ -13,7 +14,6 @@ import { createServer } from "../src/mcp";
 import { completeStep, insertEvidence, startTask } from "../src/tasks";
 import type { Actor, Task } from "../src/types";
 import type { Exec } from "../src/exec";
-import { realExec } from "../src/exec";
 import { fakeExec, makeRepo } from "./helpers";
 
 const A: Actor = { session_id: "sa" };
@@ -74,17 +74,35 @@ const outcome = (e: Engine, id: number) => (e.db.prepare("SELECT outcome FROM cl
 const stepsDone = (e: Engine, w: Task) => e.db.prepare("UPDATE steps SET status = 'done' WHERE task_id = ? AND name != 'merge'").run(w.id);
 const mergeStep = (e: Engine, w: Task) => completeStep(e, { task_id: w.id, step: "merge", evidence: { kind: "merged" }, actor: A });
 
+describe("F1 run_check close", { timeout: 60_000 }, () => {
+  test("a worker closed by run_check (no pr or merge step) has its worktree removed", () => {
+    const dir = repo();
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, readFileSync(p, "utf8").replace(/^task_types:$/m, "task_types:\n  quick:    [implement, test]").replace(/^ {2}test:.*$/m, '  test:   "true"'));
+    git(dir, "add", "-A"); git(dir, "commit", "-m", "policy");
+    const e = openEngine(dir, { exec: fakeExec({}) });
+    const f = feature(e, dir, "feat");
+    const w = worker(e, f, "quick w", "quick");
+    commitFile(w, "x.txt", "x\n");
+    completeStep(e, { task_id: w.id, step: "implement", evidence: { kind: "commit", sha: git(w.cwd, "rev-parse", "HEAD") }, actor: A });
+    expect(existsSync(w.cwd)).toBe(true);
+    expect(runCheck(e, { task_id: w.id, step: "test", actor: A }).ok).toBe(true);
+    expect(existsSync(w.cwd)).toBe(false);
+  });
+});
+
 describe("F2 conflict outcome is written with the merge step", { timeout: 60_000 }, () => {
   test("a status call racing the merge step cannot record clean first", () => {
     const dir = repo();
     let inject: (() => void) | undefined;
+    const inner = fakeExec({});
     const exec: Exec = {
       run(file, args, opts) {
         // Fires on the first merge-commit lookup, whichever side of the step's transaction it runs on.
         if (file === "git" && args[0] === "rev-list" && args.includes("--merges") && inject) { const f = inject; inject = undefined; f(); }
-        return realExec.run(file, args, opts);
+        return inner.run(file, args, opts);
       },
-      shell: (c, o) => realExec.shell(c, o),
+      shell: (c, o) => inner.shell(c, o),
     };
     const e = openEngine(dir, { exec });
     const f = feature(e, dir, "feat");
@@ -144,7 +162,8 @@ describe("F5 status asks once", { timeout: 60_000 }, () => {
       e0.db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(f.id);
     }
     const calls: string[] = [];
-    const base = fakeExec({ [`pr view ${f1.branch} --json state`]: { code: 0, stdout: '{"state":"OPEN"}' }, [`pr view ${f2.branch} --json state`]: { code: 0, stdout: '{"state":"OPEN"}' } });
+    const open = { code: 0, stdout: '{"state":"OPEN","mergeable":"MERGEABLE"}' };
+    const base = fakeExec({ [`pr view ${f1.branch} --json state,mergeable`]: open, [`pr view ${f2.branch} --json state,mergeable`]: open });
     const exec: Exec = {
       run(file, args, opts) {
         if ((file === "git" && args[0] === "fetch") || file === "gh") calls.push(`${file} ${args.join(" ")}`);
@@ -158,7 +177,11 @@ describe("F5 status asks once", { timeout: 60_000 }, () => {
     await Promise.all([server.connect(st), client.connect(ct)]);
     await client.callTool({ name: "status", arguments: {} });
     expect(calls.filter((c) => c.startsWith("git fetch"))).toHaveLength(1);
-    for (const f of [f1, f2]) expect(calls.filter((c) => c === `gh pr view ${f.branch} --json state`).length).toBeLessThanOrEqual(1);
+    // Every gh call is the one combined call, and none is asked twice.
+    const gh = calls.filter((c) => c.startsWith("gh "));
+    expect(gh.length).toBeGreaterThan(0);
+    expect(new Set(gh).size).toBe(gh.length);
+    for (const c of gh) expect(c).toMatch(/ --json state,mergeable$/);
   });
 });
 

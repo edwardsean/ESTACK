@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { SYNC_BUDGET_MS, syncMerged } from "./claims";
 import type { Engine } from "./engine";
-import { OutOfBudget, mergeCheck, mergedIntoMain, type MergeCheck } from "./plan";
+import { OutOfBudget, mergeCheck, mergedIntoMain, prMergeable, type MergeCheck } from "./plan";
 import { EVIDENCE_TIMEOUT_MS, HOOK_GIT_TIMEOUT_MS, logEvent, tx } from "./tasks";
 import type { Actor, Task } from "./types";
 
@@ -50,13 +50,7 @@ function prConflicting(e: Engine, c: Ctx, f: Task): boolean {
   const known = c.mergeable.get(f.id);
   if (known !== undefined) return known;
   checkBudget(c);
-  let bad = false;
-  if (f.branch) {
-    const pr = e.exec.run("gh", ["pr", "view", f.branch, "--json", "mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-    if (pr.code === 0) {
-      try { bad = (JSON.parse(pr.stdout) as { mergeable?: unknown }).mergeable === "CONFLICTING"; } catch { /* not conflicting as far as we know */ }
-    }
-  }
+  const bad = f.branch ? prMergeable(e, c.check, f.branch) === "CONFLICTING" : false;
   c.mergeable.set(f.id, bad);
   return bad;
 }
@@ -215,7 +209,8 @@ export function recordOutcomes(e: Engine, opts: { remote?: boolean; budget_ms?: 
 
 /** What status does first: merge syncing and remote outcomes, sharing one MergeCheck so origin is fetched at most once and gh asked once per branch. */
 export function refreshStatus(e: Engine): void {
-  const check = mergeCheck(SYNC_BUDGET_MS + OUTCOME_BUDGET_MS);
+  const check = mergeCheck(SYNC_BUDGET_MS);
   syncMerged(e, { check });
+  check.deadline = Date.now() + OUTCOME_BUDGET_MS;   // the outcomes get their own budget, whatever syncMerged used
   recordOutcomes(e, { remote: true, check });
 }

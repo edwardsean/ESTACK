@@ -101,7 +101,7 @@ export function releaseClaims(e: Engine, task: Task, actor: Actor, reason?: stri
  * closes. Call inside the transaction that closes it.
  */
 export function releaseOnClose(e: Engine, task_id: number, actor: Actor): void {
-  if (e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id)) return;
+  if (hasPrOrMergeStep(e, task_id)) return;
   const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id) as unknown as Task | undefined;
   if (task) releaseClaims(e, task, actor, "closed with no pr or merge step");
 }
@@ -113,7 +113,17 @@ export function releaseOnClose(e: Engine, task_id: number, actor: Actor): void {
 export function removeOnClose(e: Engine, task_id: number): void {
   const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id) as unknown as Task | undefined;
   if (!task || task.parent_id === null || task.status !== "done") return;
-  if (e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id)) return;
+  if (hasPrOrMergeStep(e, task_id)) return;
+  removeWorktreeLogged(e, task);
+}
+
+/** True when the task has a `pr` or `merge` step, so its work reaches main and is released with it. */
+function hasPrOrMergeStep(e: Engine, task_id: number): boolean {
+  return e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id) !== undefined;
+}
+
+/** removeWorktree, where a failure is logged as a kept worktree instead of thrown (the step it follows is already recorded). */
+export function removeWorktreeLogged(e: Engine, task: Task): void {
   try { removeWorktree(e, task); } catch (x) {
     logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason: x instanceof Error ? x.message : String(x) });
   }

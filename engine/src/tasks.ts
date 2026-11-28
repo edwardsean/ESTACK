@@ -1,9 +1,9 @@
-import { passClaims, releaseClaims, releaseOnClose, removeOnClose, syncMerged } from "./claims";
+import { passClaims, releaseClaims, releaseOnClose, removeOnClose, removeWorktreeLogged, syncMerged } from "./claims";
 import { mergeConflictGrants, recordMergeConflicts, recordOutcomes } from "./outcomes";
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
 import { areaPath, claimInfo, gateStart, heldInArea, releaseStale, type HeldInArea } from "./plan";
-import { WORKTREE_ADD_TIMEOUT_MS, WORKTREE_SETUP_TIMEOUT_MS, ensureWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
+import { WORKTREE_ADD_TIMEOUT_MS, WORKTREE_SETUP_TIMEOUT_MS, ensureWorktree, ensureWorktreeExclude, runWorktreeSetup, slug } from "./worktree";
 import {
   EngineError, STEP_EVIDENCE, actorId,
   type Actor, type Evidence, type EvidenceKind, type Step, type Task,
@@ -468,9 +468,7 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
   if (!result) return bad(rejected ?? "evidence rejected");
   if (input.step === "merge") {
     // The worker is merged: its worktree goes (kept if dirty). The step is already recorded, so a failure here does not undo it.
-    try { removeWorktree(e, v.task); } catch (x) {
-      logEvent(e, { session_id: "engine" }, "worktree_kept", v.task.id, { path: v.task.cwd, reason: x instanceof Error ? x.message : String(x) });
-    }
+    removeWorktreeLogged(e, v.task);
     logEvent(e, input.actor, "task_merged", v.task.id, { into: payload.into });
   }
   if (result.task.status === "done") removeOnClose(e, v.task.id);

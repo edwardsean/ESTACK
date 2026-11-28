@@ -277,7 +277,7 @@ describe("phase 6 done-when", { timeout: 120_000 }, () => {
     git(main_, "merge", "--no-ff", "-m", "merge invoices", f1.branch);
     git(main_, "merge", "--no-ff", "-m", "merge reports", f2.branch);
     git(main_, "push", "origin", "main");
-    gh[`pr view ${f1.branch} --json mergeable`] = { code: 0, stdout: JSON.stringify({ mergeable: "MERGEABLE" }) };
+    gh[`pr view ${f1.branch} --json state,mergeable`] = { code: 0, stdout: JSON.stringify({ mergeable: "MERGEABLE" }) };
     await ok("status", { actor: S1 });
 
     // W3's grant ends clean: its holder (the first feature) and its own feature both merged. Billing's never merged.

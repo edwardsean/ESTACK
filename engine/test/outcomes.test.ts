@@ -67,7 +67,7 @@ describe("grant outcomes", { timeout: 60_000 }, () => {
     const g = grant(fake, t1, t2);
     commitFile(t1, "src/a.ts", "one\n");
     commitFile(t2, "src/a.ts", "two\n");
-    const e = openEngine(dir, { exec: fakeExec({ [`pr view ${t2.branch} --json mergeable`]: { code: 0, stdout: '{"mergeable":"CONFLICTING"}' } }) });
+    const e = openEngine(dir, { exec: fakeExec({ [`pr view ${t2.branch} --json state,mergeable`]: { code: 0, stdout: '{"mergeable":"CONFLICTING"}' } }) });
     recordOutcomes(e);
     expect(outcome(e, g).outcome).toBe("conflict");
   });
@@ -235,7 +235,7 @@ describe("grant outcomes", { timeout: 60_000 }, () => {
   test("complete_step and run_check make no gh call or fetch", () => {
     const dir = repo();
     withTestCommand(dir);
-    const spy = counting({ "pr view feat/1-one --json state": { code: 1 } });
+    const spy = counting({ "pr view feat/1-one --json state,mergeable": { code: 1 } });
     const e = openEngine(dir, { exec: spy.exec });
     const t1 = feature(e, dir, "one");
     const t2 = feature(e, dir, "two");

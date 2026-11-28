@@ -1,5 +1,6 @@
 import { ensureDuplicateCheck, openDuplicates } from "./duplicates";
 import type { Engine } from "./engine";
+import { removeOnClose } from "./claims";
 import { recordOutcomes } from "./outcomes";
 import { finishStep, getTask, insertEvidence, logEvent, runBounded, tx } from "./tasks";
 import { EngineError, STEP_EVIDENCE, type Actor } from "./types";
@@ -46,7 +47,7 @@ export function runCheck(e: Engine, input: { task_id: number; step: string; acto
     duration_ms: r.durationMs,
     output_tail: (r.stdout + r.stderr).slice(-4000),
   };
-  tx(e, () => {
+  const closed = tx(e, () => {
     // Re-check under the write lock: the task may have moved while the command ran.
     const cur = getTask(e, input.task_id);
     if (cur.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${cur.task.id} is ${cur.task.status}`);
@@ -58,8 +59,11 @@ export function runCheck(e: Engine, input: { task_id: number; step: string; acto
     if (result.ok) {
       const closed = finishStep(e, input.task_id, input.step, input.actor);
       logEvent(e, input.actor, "step_done", input.task_id, { step: input.step, closed });
+      return closed;
     }
+    return false;
   });
+  if (closed) removeOnClose(e, input.task_id);
   recordOutcomes(e, { remote: false });
   return result;
 }

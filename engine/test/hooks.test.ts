@@ -835,6 +835,12 @@ describe("workers and the push check", () => {
     const r = bash(dir, "git push origin main:feat/x");
     expect(decision(r)).toBe("deny");
     expect(reason(r)).toContain("no estack task for branch main");
+    // Pushing another branch into the default branch goes through a PR, even from a task's own branch.
+    for (const command of ["git push origin feat/x:main", "git push origin +feat/x:refs/heads/main"]) {
+      const into = bash(dir, command);
+      expect(decision(into), command).toBe("deny");
+      expect(reason(into)).toBe("pushing into main goes through a PR; push the feature branch and open its PR");
+    }
     // A delete has no source: the current branch is checked.
     expect(reason(bash(dir, "git push origin :feat/x"))).toContain("no estack task for branch main");
   });

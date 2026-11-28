@@ -35069,23 +35069,26 @@ function retireWorker(e, t, actor) {
 }
 var OutOfBudget = class extends Error {
 };
-var mergeCheck = (budget_ms = Infinity) => ({ deadline: Date.now() + budget_ms, states: /* @__PURE__ */ new Map() });
-function prState(e, c, branch) {
-  const known = c.states.get(branch);
-  if (known !== void 0) return known;
+var mergeCheck = (budget_ms = Infinity) => ({ deadline: Date.now() + budget_ms, prs: /* @__PURE__ */ new Map() });
+function prInfo(e, c, branch) {
+  const known = c.prs.get(branch);
+  if (known) return known;
   if (Date.now() >= c.deadline) throw new OutOfBudget();
-  const pr = e.exec.run("gh", ["pr", "view", branch, "--json", "state"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-  let state = null;
+  const pr = e.exec.run("gh", ["pr", "view", branch, "--json", "state,mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
+  const info = { state: null, mergeable: null };
   if (pr.code === 0) {
     try {
-      const s = JSON.parse(pr.stdout).state;
-      if (typeof s === "string") state = s;
+      const j = JSON.parse(pr.stdout);
+      if (typeof j.state === "string") info.state = j.state;
+      if (typeof j.mergeable === "string") info.mergeable = j.mergeable;
     } catch {
     }
   }
-  c.states.set(branch, state);
-  return state;
+  c.prs.set(branch, info);
+  return info;
 }
+var prState = (e, c, branch) => prInfo(e, c, branch).state;
+var prMergeable = (e, c, branch) => prInfo(e, c, branch).mergeable;
 function mainRef(e, c) {
   if (c.main !== void 0) return c.main;
   let name;
@@ -35204,16 +35207,7 @@ function prConflicting(e, c, f) {
   const known = c.mergeable.get(f.id);
   if (known !== void 0) return known;
   checkBudget(c);
-  let bad2 = false;
-  if (f.branch) {
-    const pr = e.exec.run("gh", ["pr", "view", f.branch, "--json", "mergeable"], { cwd: e.cwd, timeoutMs: EVIDENCE_TIMEOUT_MS });
-    if (pr.code === 0) {
-      try {
-        bad2 = JSON.parse(pr.stdout).mergeable === "CONFLICTING";
-      } catch {
-      }
-    }
-  }
+  const bad2 = f.branch ? prMergeable(e, c.check, f.branch) === "CONFLICTING" : false;
   c.mergeable.set(f.id, bad2);
   return bad2;
 }
@@ -35332,8 +35326,9 @@ function recordOutcomes(e, opts = {}) {
   }
 }
 function refreshStatus(e) {
-  const check2 = mergeCheck(SYNC_BUDGET_MS + OUTCOME_BUDGET_MS);
+  const check2 = mergeCheck(SYNC_BUDGET_MS);
   syncMerged(e, { check: check2 });
+  check2.deadline = Date.now() + OUTCOME_BUDGET_MS;
   recordOutcomes(e, { remote: true, check: check2 });
 }
 
@@ -35695,11 +35690,7 @@ function completeStep(e, input2) {
   });
   if (!result) return bad(rejected ?? "evidence rejected");
   if (input2.step === "merge") {
-    try {
-      removeWorktree(e, v.task);
-    } catch (x) {
-      logEvent(e, { session_id: "engine" }, "worktree_kept", v.task.id, { path: v.task.cwd, reason: x instanceof Error ? x.message : String(x) });
-    }
+    removeWorktreeLogged(e, v.task);
     logEvent(e, input2.actor, "task_merged", v.task.id, { into: payload.into });
   }
   if (result.task.status === "done") removeOnClose(e, v.task.id);
@@ -36162,14 +36153,20 @@ function releaseClaims(e, task, actor, reason) {
   for (const c of rows) releaseOne(e, c, task.id, actor, reason);
 }
 function releaseOnClose(e, task_id, actor) {
-  if (e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id)) return;
+  if (hasPrOrMergeStep(e, task_id)) return;
   const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id);
   if (task) releaseClaims(e, task, actor, "closed with no pr or merge step");
 }
 function removeOnClose(e, task_id) {
   const task = e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id);
   if (!task || task.parent_id === null || task.status !== "done") return;
-  if (e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id)) return;
+  if (hasPrOrMergeStep(e, task_id)) return;
+  removeWorktreeLogged(e, task);
+}
+function hasPrOrMergeStep(e, task_id) {
+  return e.db.prepare("SELECT 1 FROM steps WHERE task_id = ? AND name IN ('pr', 'merge') LIMIT 1").get(task_id) !== void 0;
+}
+function removeWorktreeLogged(e, task) {
   try {
     removeWorktree(e, task);
   } catch (x) {
@@ -36822,11 +36819,10 @@ function pushedBranch(e, cwd, command) {
       args.push(w);
     }
     const ref = args[1];
-    if (ref !== void 0 && ref !== "HEAD") {
-      const src = ref.replace(/^\+/, "").split(":")[0].replace(/^refs\/heads\//, "");
-      if (src !== "" && src !== "HEAD") return { branch: src, pr: false };
-    }
-    return { branch: current(dir), pr: false };
+    const [from, to] = ref === void 0 ? [] : ref.replace(/^\+/, "").split(":").map((x) => x.replace(/^refs\/heads\//, ""));
+    const dest = to !== void 0 && to !== "" && to !== "HEAD" ? to : void 0;
+    if (from !== void 0 && from !== "" && from !== "HEAD") return { branch: from, pr: false, dest };
+    return { branch: current(dir), pr: false, dest };
   }
   return { branch: current(here), pr: false };
 }
@@ -36842,7 +36838,16 @@ function preBash(e, ev) {
     recordAsk(e, ev, null, v.action, command);
     return pre("ask", `${v.action} needs the owner's approval (pattern ${v.pattern})`);
   }
-  const { branch, pr } = pushedBranch(e, ev.cwd, command);
+  const { branch, pr, dest } = pushedBranch(e, ev.cwd, command);
+  if (dest !== void 0 && dest !== branch) {
+    let main2 = null;
+    try {
+      main2 = defaultBranch(e, e.cwd);
+    } catch (x) {
+      if (!(x instanceof EngineError)) throw x;
+    }
+    if (main2 !== null && dest === main2) return deny(`pushing into ${main2} goes through a PR; push the feature branch and open its PR`);
+  }
   const { task: t, verifySettled } = pushReadiness(e, branch);
   const where = pr ? "open the feature PR from its worktree (cd <feature cwd> && gh pr create) or pass --head <feature branch>" : "push the feature branch from its worktree (git -C <feature cwd> push) or name it (git push origin <feature branch>)";
   const refusal = !t ? `no estack task for branch ${branch}; ${where}; or the owner can run \`estack override git_push --reason \u2026\` in a terminal` : !verifySettled ? `task #${t.id} has no verify evidence; run run_check with step verify first` : null;
@@ -37097,7 +37102,7 @@ function runCheck(e, input2) {
     duration_ms: r.durationMs,
     output_tail: (r.stdout + r.stderr).slice(-4e3)
   };
-  tx(e, () => {
+  const closed = tx(e, () => {
     const cur = getTask(e, input2.task_id);
     if (cur.task.status !== "open") throw new EngineError("TASK_CLOSED", `task ${cur.task.id} is ${cur.task.status}`);
     if (cur.next?.name !== input2.step) {
@@ -37106,10 +37111,13 @@ function runCheck(e, input2) {
     insertEvidence(e, input2.task_id, input2.step, "command", result.ok, { command, ...result, head_sha }, input2.actor);
     logEvent(e, input2.actor, "evidence", input2.task_id, { step: input2.step, kind: "command", ok: result.ok });
     if (result.ok) {
-      const closed = finishStep(e, input2.task_id, input2.step, input2.actor);
-      logEvent(e, input2.actor, "step_done", input2.task_id, { step: input2.step, closed });
+      const closed2 = finishStep(e, input2.task_id, input2.step, input2.actor);
+      logEvent(e, input2.actor, "step_done", input2.task_id, { step: input2.step, closed: closed2 });
+      return closed2;
     }
+    return false;
   });
+  if (closed) removeOnClose(e, input2.task_id);
   recordOutcomes(e, { remote: false });
   return result;
 }

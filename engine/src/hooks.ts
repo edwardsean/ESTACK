@@ -12,7 +12,7 @@ import { openEngine } from "./engine";
 import type { Exec } from "./exec";
 import { READ_TOOLS, preRead } from "./mapfirst";
 import { classifyCommand, isExempt, isProtected } from "./match";
-import { HOOK_GIT_TIMEOUT_MS, bindWorker, listOpen, pushReadiness, runBounded, logEvent, tx, type TaskView } from "./tasks";
+import { HOOK_GIT_TIMEOUT_MS, bindWorker, defaultBranch, listOpen, pushReadiness, runBounded, logEvent, tx, type TaskView } from "./tasks";
 import { EngineError, type Actor, type Task } from "./types";
 
 export interface HookEvent {
@@ -139,7 +139,7 @@ function recordAsk(e: Engine, ev: HookEvent, taskId: number | null, action: stri
  * names, else the current branch of the checkout it runs in. A leading `cd <dir>` moves that checkout for the later
  * segments, as `git -C <dir>` does for its own. `pr` says which command it was.
  */
-function pushedBranch(e: Engine, cwd: string, command: string): { branch: string; pr: boolean } {
+function pushedBranch(e: Engine, cwd: string, command: string): { branch: string; pr: boolean; dest?: string } {
   const current = (dir: string) =>
     runBounded(e, dir, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
   let here = cwd;
@@ -177,12 +177,11 @@ function pushedBranch(e: Engine, cwd: string, command: string): { branch: string
       args.push(w);
     }
     const ref = args[1];
-    if (ref !== undefined && ref !== "HEAD") {
-      // pre-push checks the local branch being pushed, so the source side of `src:dst`; an empty source (a delete) names none.
-      const src = ref.replace(/^\+/, "").split(":")[0].replace(/^refs\/heads\//, "");
-      if (src !== "" && src !== "HEAD") return { branch: src, pr: false };
-    }
-    return { branch: current(dir), pr: false };
+    // pre-push checks the local branch being pushed, so the source side of `src:dst`; an empty source (a delete) names none.
+    const [from, to] = ref === undefined ? [] : ref.replace(/^\+/, "").split(":").map((x) => x.replace(/^refs\/heads\//, ""));
+    const dest = to !== undefined && to !== "" && to !== "HEAD" ? to : undefined;
+    if (from !== undefined && from !== "" && from !== "HEAD") return { branch: from, pr: false, dest };
+    return { branch: current(dir), pr: false, dest };
   }
   return { branch: current(here), pr: false };
 }
@@ -199,7 +198,13 @@ function preBash(e: Engine, ev: HookEvent): HookOutput {
     recordAsk(e, ev, null, v.action, command);
     return pre("ask", `${v.action} needs the owner's approval (pattern ${v.pattern})`);
   }
-  const { branch, pr } = pushedBranch(e, ev.cwd, command);
+  const { branch, pr, dest } = pushedBranch(e, ev.cwd, command);
+  // `git push origin feat/x:main` would reach main without a PR, whatever the source branch's own state.
+  if (dest !== undefined && dest !== branch) {
+    let main: string | null = null;
+    try { main = defaultBranch(e, e.cwd); } catch (x) { if (!(x instanceof EngineError)) throw x; }
+    if (main !== null && dest === main) return deny(`pushing into ${main} goes through a PR; push the feature branch and open its PR`);
+  }
   const { task: t, verifySettled } = pushReadiness(e, branch);
   const where = pr
     ? "open the feature PR from its worktree (cd <feature cwd> && gh pr create) or pass --head <feature branch>"
