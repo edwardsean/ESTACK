@@ -7,7 +7,7 @@ import type { Exec } from "./exec";
 import { consumeHandover, saveSessionHandover, saveTaskHandover, type SessionHandoverBody } from "./handover";
 import { dismissDuplicate } from "./duplicates";
 import { runCodeQuery, taskContext, type CodeTool } from "./codemap";
-import { bindWorker, completeStep, getTask, listOpen, startTask } from "./tasks";
+import { bindWorker, completeStep, ownsTask, getTask, listOpen, startTask } from "./tasks";
 import { EngineError, type Actor } from "./types";
 
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -34,10 +34,15 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
       try {
         e = openEngine(cwd, deps);
         const actor = args.actor ?? { session_id: "unknown" };
-        // An agent is on a task from its first task tool call.
+        const out = fn(e, args, actor);
+        // An agent is on a worker task from its first successful task tool call, if its session is already on that task.
         const task_id = (args as { task_id?: unknown }).task_id;
-        if (typeof task_id === "number") bindWorker(e, task_id, actor);
-        return text(JSON.stringify(fn(e, args, actor), null, 2));
+        if (typeof task_id === "number" && actor.agent_id) {
+          const related = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ?").get(task_id, actor.session_id)
+            || ownsTask(e, actor.session_id, task_id);
+          if (related) bindWorker(e, task_id, actor);
+        }
+        return text(JSON.stringify(out, null, 2));
       } catch (x) {
         if (x instanceof EngineError) return text(`${x.code}: ${x.message}`, true);
         return text(`internal error: ${x instanceof Error ? x.message : String(x)}`, true);

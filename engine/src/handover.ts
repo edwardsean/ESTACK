@@ -1,6 +1,6 @@
 import type { Engine } from "./engine";
 import { checkoutOf } from "./graph";
-import { HOOK_GIT_TIMEOUT_MS, getTask, listOpen, logEvent, runBounded, tx, type TaskView } from "./tasks";
+import { HOOK_GIT_TIMEOUT_MS, getTask, insertBinding, listOpen, logEvent, runBounded, tx, type TaskView } from "./tasks";
 import { EngineError, actorId, type Actor, type Evidence } from "./types";
 
 export type HandoverKind = "task" | "session";
@@ -239,14 +239,6 @@ export function savedIn(e: Engine, h: Handover): string {
   return h.kind === "task" ? (h.body as TaskHandoverBody).task.cwd : e.repo.root;
 }
 
-function bind(e: Engine, task_id: number, actor: Actor): void {
-  const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id IS ?")
-    .get(task_id, actor.session_id, actor.agent_id ?? null);
-  if (dup) return;
-  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)")
-    .run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso(e));
-}
-
 /** Which handover to resume: a task's (task_id), one by id (handover_id), or else the newest pending session handover. */
 export interface ResumeSelector { task_id?: number; handover_id?: number }
 
@@ -308,7 +300,7 @@ export function consumeHandover(e: Engine, actor: Actor, sel: ResumeSelector = {
     for (const id of ids) {
       const v = getTask(e, id);
       if (v.task.status !== "open") continue;
-      bind(e, id, actor);
+      insertBinding(e, id, actor);
       views.push(v);
     }
     logEvent(e, actor, "resumed", handover?.task_id ?? task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });

@@ -137,17 +137,41 @@ describe("map first", () => {
     expect(read(dir, { session_id: "other", agent_id: "x" })).toBeNull();
   });
 
+  /** The setup repo plus a feature worktree and a worker task under it, bound to the CTO session. */
+  function withWorker() {
+    const { dir } = setup();
+    const e = openEngine(dir, deps);
+    const f = startTask(e, { title: "Feat", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, worktree: true });
+    const w = startTask(e, { title: "Work", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: f.task.cwd, worktree: true, parent_task_id: f.task.id });
+    e.db.close();
+    return { dir, w: w.task };
+  }
+  const bindingsOf = (dir: string, id: number) => {
+    const e = openEngine(dir, deps);
+    try { return e.db.prepare("SELECT agent_id, role FROM task_bindings WHERE task_id = ? ORDER BY rowid").all(id); } finally { e.db.close(); }
+  };
+
   test("a worker is bound on its first edit, read or task tool call", () => {
+    const { dir, w } = withWorker();
+    expect(bindingsOf(dir, w.id)).toEqual([{ agent_id: null, role: "cto" }]);
+    read(w.cwd, A);
+    expect(bindingsOf(dir, w.id)).toEqual([{ agent_id: null, role: "cto" }, { agent_id: "worker-a", role: "worker" }]);
+    read(w.cwd, { session_id: "other", agent_id: "x" });
+    expect(bindingsOf(dir, w.id)).toHaveLength(2);
+  });
+
+  test("a worker is bound by a read even with the code map off", () => {
+    const { dir, w } = withWorker();
+    const p = join(dir, ".estack", "policy.yaml");
+    writeFileSync(p, readFileSync(p, "utf8").replace("enabled: true", "enabled: false"));
+    expect(read(w.cwd, A)).toBeNull();
+    expect(bindingsOf(dir, w.id)).toEqual([{ agent_id: null, role: "cto" }, { agent_id: "worker-a", role: "worker" }]);
+  });
+
+  test("a helper reading in the CTO's checkout is not bound", () => {
     const { dir, id } = setup();
-    const bindings = () => {
-      const e = openEngine(dir, deps);
-      try { return e.db.prepare("SELECT agent_id, role FROM task_bindings WHERE task_id = ? ORDER BY rowid").all(id); } finally { e.db.close(); }
-    };
-    expect(bindings()).toEqual([{ agent_id: null, role: "cto" }]);
-    // Bound by the first read, even though that read is the one that is denied.
+    // Bound to nothing, though that read is the one that is denied by map-first.
     expect(reasonOf(read(dir, A))).toContain("look at the code map");
-    expect(bindings()).toEqual([{ agent_id: null, role: "cto" }, { agent_id: "worker-a", role: "worker" }]);
-    read(dir, { session_id: "other", agent_id: "x" });
-    expect(bindings()).toHaveLength(2);
+    expect(bindingsOf(dir, id)).toEqual([{ agent_id: null, role: "cto" }]);
   });
 });

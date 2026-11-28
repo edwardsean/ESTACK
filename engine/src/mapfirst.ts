@@ -14,8 +14,12 @@ export const READ_TOOLS: ReadonlySet<string> = new Set(["Read", "Grep"]);
  */
 export function preRead(e: Engine, ev: HookEvent): HookOutput {
   try {
-    // With the map off only a worker still needs the binding below.
-    if (!e.policy.code_map.enabled && !ev.agent_id) return null;
+    // A worker agent of a session with an open worker task may need binding; without one and with the map off, nothing to do.
+    const workerSession = ev.agent_id !== undefined && e.db.prepare(
+      `SELECT 1 FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+       WHERE t.status = 'open' AND t.parent_id IS NOT NULL AND b.session_id = ? LIMIT 1`,
+    ).get(ev.session_id) !== undefined;
+    if (!e.policy.code_map.enabled && !workerSession) return null;
     const input = ev.tool_input ?? {};
     const isRead = ev.tool_name === "Read";
     const raw = isRead ? input.file_path : (input.path ?? ev.cwd);
@@ -25,10 +29,10 @@ export function preRead(e: Engine, ev: HookEvent): HookOutput {
     if (top.code !== 0) return null;
     const checkout = top.stdout.trim();
     // A worker is on its task from its first read, before the map-first check.
-    if (ev.agent_id) {
+    if (workerSession) {
       const bound = e.db.prepare(
         `SELECT DISTINCT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
-         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?`,
+         WHERE t.status = 'open' AND t.parent_id IS NOT NULL AND t.cwd = ? AND b.session_id = ?`,
       ).all(checkout, ev.session_id) as { id: number }[];
       for (const t of bound) bindWorker(e, t.id, actorOf(ev));
     }

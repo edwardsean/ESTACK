@@ -86,21 +86,23 @@ function insertSteps(e: Engine, id: number, steps: string[]): void {
     e.db.prepare("INSERT INTO steps (task_id, name, ordinal, status) VALUES (?, ?, ?, 'pending')").run(id, name, i));
 }
 
-function bind(e: Engine, id: number, actor: Actor): void {
-  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)")
-    .run(id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso(e));
+/**
+ * Bind a caller to a task once. One INSERT ... WHERE NOT EXISTS, so the check and the insert are a single atomic
+ * statement (safe inside or outside a transaction, which BEGIN IMMEDIATE does not nest). An agent is a worker, a bare session the cto.
+ */
+export function insertBinding(e: Engine, task_id: number, actor: Actor): void {
+  e.db.prepare(
+    `INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at)
+     SELECT ?1, ?2, ?3, ?4, ?5
+     WHERE NOT EXISTS (SELECT 1 FROM task_bindings WHERE task_id = ?1 AND session_id = ?2 AND agent_id IS ?3)`,
+  ).run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso(e));
 }
 
-/** Bind an agent to an open task the first time it touches it; a bare session and a repeat are no-ops. */
+/** Bind an agent to an open worker task (one with a parent) the first time it touches it; anything else is a no-op. */
 export function bindWorker(e: Engine, task_id: number, actor: Actor): void {
   if (!actor.agent_id) return;
-  const open = e.db.prepare("SELECT 1 FROM tasks WHERE id = ? AND status = 'open'").get(task_id);
-  if (!open) return;
-  const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id = ?")
-    .get(task_id, actor.session_id, actor.agent_id);
-  if (dup) return;
-  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, 'worker', ?)")
-    .run(task_id, actor.session_id, actor.agent_id, iso(e));
+  const worker = e.db.prepare("SELECT 1 FROM tasks WHERE id = ? AND status = 'open' AND parent_id IS NOT NULL").get(task_id);
+  if (worker) insertBinding(e, task_id, actor);
 }
 
 /** True when the session is a task's CTO: bound with role cto to the task itself or to its parent. */
@@ -190,7 +192,7 @@ export function startTask(e: Engine, input: {
         insertAreas(e, id, input.area);
       }
       insertSteps(e, id, typeSteps);
-      bind(e, id, input.actor);
+      insertBinding(e, id, input.actor);
       logEvent(e, input.actor, "task_started", id, { type, title, branch });
       return view(e, id);
     });
@@ -228,7 +230,7 @@ export function startTask(e: Engine, input: {
       e.db.prepare("UPDATE tasks SET status = 'open', cwd = ?, branch = ?, base_sha = ? WHERE id = ?").run(path, branch, base_sha, id);
       if (!planned) insertAreas(e, id, input.area);
       insertSteps(e, id, parent ? workerSteps(typeSteps) : typeSteps);
-      bind(e, id, input.actor);
+      insertBinding(e, id, input.actor);
       logEvent(e, input.actor, "task_started", id, { type, title, branch });
       return { ...view(e, id), worktree_path: path, ...(setup ? { setup } : {}) };
     });
@@ -332,6 +334,11 @@ function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, 
       if (runBounded(e, parent.cwd, "git", ["merge-base", "--is-ancestor", sha, `refs/heads/${parent.branch}`]).code !== 0) {
         bad(`${v.task.branch} is not merged into ${parent.branch} yet; merge it there first (git -C ${parent.cwd} merge --no-ff ${v.task.branch})`);
       }
+      // The implement work must be in the feature too: a branch reset to its fork point would pass the check above.
+      const last = v.evidence.filter((x) => x.kind === "commit" && x.ok).at(-1)?.payload.sha;
+      if (typeof last === "string" && runBounded(e, parent.cwd, "git", ["merge-base", "--is-ancestor", last, `refs/heads/${parent.branch}`]).code !== 0) {
+        bad(`commit ${last} from this task is not in ${parent.branch}; merge ${v.task.branch} there first (git -C ${parent.cwd} merge --no-ff ${v.task.branch})`);
+      }
       return { payload: { head: sha, into: parent.branch } };
     }
     default:
@@ -364,7 +371,9 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
   if (!result) return bad(rejected ?? "evidence rejected");
   if (input.step === "merge") {
     // The worker is merged: its worktree goes (kept if dirty). The step is already recorded, so a failure here does not undo it.
-    try { removeWorktree(e, v.task); } catch { /* a git timeout leaves the worktree; the step stands */ }
+    try { removeWorktree(e, v.task); } catch (x) {
+      logEvent(e, { session_id: "engine" }, "worktree_kept", v.task.id, { path: v.task.cwd, reason: x instanceof Error ? x.message : String(x) });
+    }
     logEvent(e, input.actor, "task_merged", v.task.id, { into: payload.into });
   }
   return result;

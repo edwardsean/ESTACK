@@ -268,18 +268,28 @@ describe("mcp server", () => {
 
   test("a worker is bound on its first edit, read or task tool call", async () => {
     const dir = initedRepo();
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "estack"], { cwd: dir });
     const { call } = await connect(dir);
-    const id = JSON.parse((await call("start_task", { title: "t", type: "feature", goal: "g", done_check: "d", cwd: dir, actor: { session_id: "s1" } })).text).task.id;
-    const bindings = () => {
+    const cto = { session_id: "s1" };
+    const f = JSON.parse((await call("start_task", { title: "Feat", type: "feature", goal: "g", done_check: "d", cwd: dir, worktree: true, actor: cto })).text).task;
+    const id = JSON.parse((await call("start_task", { title: "Work", type: "feature", goal: "g", done_check: "d", cwd: f.cwd, worktree: true, parent_task_id: f.id, actor: cto })).text).task.id;
+    const bindings = (task = id) => {
       const db = new DatabaseSync(join(dir, ".estack", "state.db"));
-      try { return db.prepare("SELECT agent_id, role FROM task_bindings WHERE task_id = ? ORDER BY rowid").all(id); } finally { db.close(); }
+      try { return db.prepare("SELECT session_id, agent_id, role FROM task_bindings WHERE task_id = ? ORDER BY rowid").all(task); } finally { db.close(); }
     };
-    expect(bindings()).toEqual([{ agent_id: null, role: "cto" }]);
+    expect(bindings()).toEqual([{ session_id: "s1", agent_id: null, role: "cto" }]);
     expect((await call("status", { task_id: id, actor: A })).isError).toBe(false);
-    expect(bindings()).toEqual([{ agent_id: null, role: "cto" }, { agent_id: "A", role: "worker" }]);
+    expect(bindings()).toEqual([{ session_id: "s1", agent_id: null, role: "cto" }, { session_id: "s1", agent_id: "A", role: "worker" }]);
     await call("status", { actor: B });
     expect(bindings()).toHaveLength(2);
+    // A failing call binds nothing; an unrelated session is never bound; a feature takes no helper.
     expect((await call("status", { task_id: 999, actor: B })).text).toMatch(/^NO_TASK/);
+    expect((await call("complete_step", { task_id: id, step: "plan", evidence: { kind: "note", text: " " }, actor: B })).isError).toBe(true);
     expect(bindings()).toHaveLength(2);
+    expect((await call("status", { task_id: id, actor: { session_id: "stranger", agent_id: "Z" } })).isError).toBe(false);
+    expect(bindings()).toHaveLength(2);
+    expect((await call("status", { task_id: f.id, actor: B })).isError).toBe(false);
+    expect(bindings(f.id)).toEqual([{ session_id: "s1", agent_id: null, role: "cto" }]);
   });
 });

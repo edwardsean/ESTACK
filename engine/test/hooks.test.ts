@@ -744,6 +744,10 @@ describe("workers and the push check", () => {
     expect(reason(r)).toContain("no estack task for branch main");
     execFileSync("git", ["checkout", "-q", "feat/x"], { cwd: dir });
     expect(decision(bash(dir, "git push"))).toBe("ask");
+    // Redirections are not refs.
+    expect(decision(bash(dir, "git push origin 2>&1"))).toBe("ask");
+    expect(decision(bash(dir, "git push origin > log"))).toBe("ask");
+    expect(decision(bash(dir, "git push origin >log 2> err"))).toBe("ask");
     const other = repo();
     execFileSync("git", ["worktree", "add", "-q", "-b", "elsewhere", join(other, "wt")], { cwd: other });
     expect(reason(bash(other, `git -C ${join(other, "wt")} push origin`))).toContain("no estack task for branch elsewhere");

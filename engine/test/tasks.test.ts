@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, test } from "vitest";
 import { openEngine, type Engine } from "../src/engine";
 import { initRepo } from "../src/policy";
-import { bindWorker, completeStep, getTask, ownsTask, startTask, type EvidenceInput } from "../src/tasks";
+import { bindWorker, completeStep, getTask, insertEvidence, ownsTask, startTask, type EvidenceInput } from "../src/tasks";
 import { EngineError, type Actor } from "../src/types";
 import type { Exec, ExecResult } from "../src/exec";
 import { fakeExec, makeRepo, writeFakeGraph } from "./helpers";
@@ -403,6 +403,41 @@ describe("workers and the merge step", () => {
     bindWorker(e, w.task.id, worker);
     const rows = e.db.prepare("SELECT agent_id, role FROM task_bindings WHERE task_id = ? ORDER BY rowid").all(w.task.id);
     expect(rows).toEqual([{ agent_id: null, role: "cto" }, { agent_id: "w1", role: "worker" }]);
+  });
+
+  test("bindWorker binds only worker tasks, not a feature or a plain task", () => {
+    const { dir, e, f } = pair();
+    bindWorker(e, f.task.id, worker);
+    const plain = startTask(e, { title: "Plain", type: "feature", goal: "g", done_check: "d", actor: cto, cwd: dir });
+    bindWorker(e, plain.task.id, worker);
+    const n = (id: number) => (e.db.prepare("SELECT COUNT(*) c FROM task_bindings WHERE task_id = ? AND agent_id IS NOT NULL").get(id) as { c: number }).c;
+    expect(n(f.task.id)).toBe(0);
+    expect(n(plain.task.id)).toBe(0);
+  });
+
+  test("a merge refuses a worker branch reset behind its implement commit", () => {
+    const { e, f, w } = pair();
+    git(w.task.cwd, "commit", "--allow-empty", "-m", "worker work");
+    const sha = git(w.task.cwd, "rev-parse", "HEAD");
+    insertEvidence(e, w.task.id, "implement", "commit", true, { sha }, cto);
+    git(w.task.cwd, "reset", "--hard", w.task.base_sha);
+    git(f.task.cwd, "merge", "--no-ff", "-m", "nothing", w.task.branch);
+    const err = code(() => merge(e, w.task.id));
+    expect(err.code).toBe("BAD_EVIDENCE");
+    expect(err.message).toContain(`commit ${sha} from this task is not in ${f.task.branch}`);
+    expect(getTask(e, w.task.id).task.status).toBe("open");
+  });
+
+  test("a throw while removing the worktree after the merge is logged as kept", () => {
+    const { e, f, w } = pair();
+    git(w.task.cwd, "commit", "--allow-empty", "-m", "work");
+    git(f.task.cwd, "merge", "--no-ff", "-m", "m", w.task.branch);
+    const real = e.exec;
+    e.exec = { ...real, run: (file, args, opts) => file === "git" && args[0] === "worktree" && args[1] === "list"
+      ? { code: 1, stdout: "", stderr: "", timedOut: true, durationMs: 0 } : real.run(file, args, opts) };
+    expect(merge(e, w.task.id).task.status).toBe("done");
+    expect(existsSync(w.task.cwd)).toBe(true);
+    expect(kinds(e, "worktree_kept").map((r) => JSON.parse(r.p))).toEqual([{ path: w.task.cwd, reason: "gh/git timed out" }]);
   });
 
   test("ownsTask is true for the cto of the task or of its parent", () => {

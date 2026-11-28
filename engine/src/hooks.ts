@@ -142,7 +142,15 @@ function pushedBranch(e: Engine, cwd: string, command: string): string {
     if (git < 0 || at < git) continue;
     const c = words.indexOf("-C");
     const dir = c >= 0 && c < at && words[c + 1] ? resolve(cwd, words[c + 1]) : cwd;
-    const [, ref] = words.slice(at + 1).filter((w) => !w.startsWith("-"));
+    const args: string[] = [];
+    let skip = false;
+    for (const w of words.slice(at + 1)) {
+      if (skip) { skip = false; continue; }
+      if (/^\d*[<>]+$/.test(w)) { skip = true; continue; }   // a bare redirection operator takes the next word
+      if (/^\d*[<>]/.test(w) || w.startsWith("-")) continue;
+      args.push(w);
+    }
+    const ref = args[1];
     if (ref !== undefined && ref !== "HEAD") {
       const dst = ref.replace(/^\+/, "").split(":").at(-1)!.replace(/^refs\/heads\//, "");
       if (dst !== "" && dst !== "HEAD") return dst;

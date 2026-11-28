@@ -34783,16 +34783,23 @@ var workerSteps = (steps) => steps.map((s) => s === "pr" ? "merge" : s);
 function insertSteps(e, id, steps) {
   steps.forEach((name, i) => e.db.prepare("INSERT INTO steps (task_id, name, ordinal, status) VALUES (?, ?, ?, 'pending')").run(id, name, i));
 }
-function bind(e, id, actor) {
-  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso(e));
+function insertBinding(e, task_id, actor) {
+  e.db.prepare(
+    `INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at)
+     SELECT ?1, ?2, ?3, ?4, ?5
+     WHERE NOT EXISTS (SELECT 1 FROM task_bindings WHERE task_id = ?1 AND session_id = ?2 AND agent_id IS ?3)`
+  ).run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso(e));
 }
 function bindWorker(e, task_id, actor) {
   if (!actor.agent_id) return;
-  const open2 = e.db.prepare("SELECT 1 FROM tasks WHERE id = ? AND status = 'open'").get(task_id);
-  if (!open2) return;
-  const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id = ?").get(task_id, actor.session_id, actor.agent_id);
-  if (dup) return;
-  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, 'worker', ?)").run(task_id, actor.session_id, actor.agent_id, iso(e));
+  const worker = e.db.prepare("SELECT 1 FROM tasks WHERE id = ? AND status = 'open' AND parent_id IS NOT NULL").get(task_id);
+  if (worker) insertBinding(e, task_id, actor);
+}
+function ownsTask(e, session_id, task_id) {
+  return e.db.prepare(
+    `SELECT 1 FROM task_bindings b WHERE b.role = 'cto' AND b.session_id = ?
+       AND b.task_id IN (?, (SELECT parent_id FROM tasks WHERE id = ?)) LIMIT 1`
+  ).get(session_id, task_id, task_id) !== void 0;
 }
 function insertAreas(e, id, area) {
   for (const path of area ?? []) e.db.prepare("INSERT OR IGNORE INTO task_areas (task_id, path) VALUES (?, ?)").run(id, path);
@@ -34861,7 +34868,7 @@ function startTask(e, input2) {
         insertAreas(e, id2, input2.area);
       }
       insertSteps(e, id2, typeSteps);
-      bind(e, id2, input2.actor);
+      insertBinding(e, id2, input2.actor);
       logEvent(e, input2.actor, "task_started", id2, { type, title, branch: branch2 });
       return view(e, id2);
     });
@@ -34892,7 +34899,7 @@ function startTask(e, input2) {
       e.db.prepare("UPDATE tasks SET status = 'open', cwd = ?, branch = ?, base_sha = ? WHERE id = ?").run(path, branch, base_sha, id);
       if (!planned) insertAreas(e, id, input2.area);
       insertSteps(e, id, parent ? workerSteps(typeSteps) : typeSteps);
-      bind(e, id, input2.actor);
+      insertBinding(e, id, input2.actor);
       logEvent(e, input2.actor, "task_started", id, { type, title, branch });
       return { ...view(e, id), worktree_path: path, ...setup ? { setup } : {} };
     });
@@ -34982,6 +34989,10 @@ function checkEvidence(e, v, step, ev, actor) {
       if (runBounded(e, parent.cwd, "git", ["merge-base", "--is-ancestor", sha, `refs/heads/${parent.branch}`]).code !== 0) {
         bad(`${v.task.branch} is not merged into ${parent.branch} yet; merge it there first (git -C ${parent.cwd} merge --no-ff ${v.task.branch})`);
       }
+      const last = v.evidence.filter((x) => x.kind === "commit" && x.ok).at(-1)?.payload.sha;
+      if (typeof last === "string" && runBounded(e, parent.cwd, "git", ["merge-base", "--is-ancestor", last, `refs/heads/${parent.branch}`]).code !== 0) {
+        bad(`commit ${last} from this task is not in ${parent.branch}; merge ${v.task.branch} there first (git -C ${parent.cwd} merge --no-ff ${v.task.branch})`);
+      }
       return { payload: { head: sha, into: parent.branch } };
     }
     default:
@@ -35012,7 +35023,8 @@ function completeStep(e, input2) {
   if (input2.step === "merge") {
     try {
       removeWorktree(e, v.task);
-    } catch {
+    } catch (x) {
+      logEvent(e, { session_id: "engine" }, "worktree_kept", v.task.id, { path: v.task.cwd, reason: x instanceof Error ? x.message : String(x) });
     }
     logEvent(e, input2.actor, "task_merged", v.task.id, { into: payload.into });
   }
@@ -35417,11 +35429,6 @@ function savedIn(e, h) {
   if (h.checkout) return h.checkout;
   return h.kind === "task" ? h.body.task.cwd : e.repo.root;
 }
-function bind2(e, task_id, actor) {
-  const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id IS ?").get(task_id, actor.session_id, actor.agent_id ?? null);
-  if (dup) return;
-  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(task_id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso2(e));
-}
 function consumeHandover(e, actor, sel = {}, cwd) {
   const { task_id, handover_id } = sel;
   const here = task_id === void 0 && handover_id === void 0 ? checkoutOf(e, cwd ?? e.cwd) : null;
@@ -35471,7 +35478,7 @@ function consumeHandover(e, actor, sel = {}, cwd) {
     for (const id of ids) {
       const v = getTask(e, id);
       if (v.task.status !== "open") continue;
-      bind2(e, id, actor);
+      insertBinding(e, id, actor);
       views.push(v);
     }
     logEvent(e, actor, "resumed", handover?.task_id ?? task_id ?? null, { handover: handover?.id ?? null, tasks: views.map((v) => v.task.id) });
@@ -35492,7 +35499,11 @@ import { relative, sep } from "node:path";
 var READ_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep"]);
 function preRead(e, ev) {
   try {
-    if (!e.policy.code_map.enabled && !ev.agent_id) return null;
+    const workerSession = ev.agent_id !== void 0 && e.db.prepare(
+      `SELECT 1 FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+       WHERE t.status = 'open' AND t.parent_id IS NOT NULL AND b.session_id = ? LIMIT 1`
+    ).get(ev.session_id) !== void 0;
+    if (!e.policy.code_map.enabled && !workerSession) return null;
     const input2 = ev.tool_input ?? {};
     const isRead = ev.tool_name === "Read";
     const raw = isRead ? input2.file_path : input2.path ?? ev.cwd;
@@ -35501,10 +35512,10 @@ function preRead(e, ev) {
     const top = runBounded(e, existsSync5(abs) && statSync2(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
     if (top.code !== 0) return null;
     const checkout = top.stdout.trim();
-    if (ev.agent_id) {
+    if (workerSession) {
       const bound = e.db.prepare(
         `SELECT DISTINCT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
-         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?`
+         WHERE t.status = 'open' AND t.parent_id IS NOT NULL AND t.cwd = ? AND b.session_id = ?`
       ).all(checkout, ev.session_id);
       for (const t of bound) bindWorker(e, t.id, actorOf(ev));
     }
@@ -35726,7 +35737,21 @@ function pushedBranch(e, cwd, command) {
     if (git2 < 0 || at < git2) continue;
     const c = words.indexOf("-C");
     const dir = c >= 0 && c < at && words[c + 1] ? resolve(cwd, words[c + 1]) : cwd;
-    const [, ref] = words.slice(at + 1).filter((w) => !w.startsWith("-"));
+    const args = [];
+    let skip = false;
+    for (const w of words.slice(at + 1)) {
+      if (skip) {
+        skip = false;
+        continue;
+      }
+      if (/^\d*[<>]+$/.test(w)) {
+        skip = true;
+        continue;
+      }
+      if (/^\d*[<>]/.test(w) || w.startsWith("-")) continue;
+      args.push(w);
+    }
+    const ref = args[1];
     if (ref !== void 0 && ref !== "HEAD") {
       const dst = ref.replace(/^\+/, "").split(":").at(-1).replace(/^refs\/heads\//, "");
       if (dst !== "" && dst !== "HEAD") return dst;
@@ -46055,9 +46080,13 @@ function createServer(cwd, deps = {}) {
       try {
         e = openEngine(cwd, deps);
         const actor = args.actor ?? { session_id: "unknown" };
+        const out = fn(e, args, actor);
         const task_id = args.task_id;
-        if (typeof task_id === "number") bindWorker(e, task_id, actor);
-        return text(JSON.stringify(fn(e, args, actor), null, 2));
+        if (typeof task_id === "number" && actor.agent_id) {
+          const related = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ?").get(task_id, actor.session_id) || ownsTask(e, actor.session_id, task_id);
+          if (related) bindWorker(e, task_id, actor);
+        }
+        return text(JSON.stringify(out, null, 2));
       } catch (x) {
         if (x instanceof EngineError) return text(`${x.code}: ${x.message}`, true);
         return text(`internal error: ${x instanceof Error ? x.message : String(x)}`, true);
