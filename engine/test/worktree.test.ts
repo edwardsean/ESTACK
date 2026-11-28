@@ -195,6 +195,24 @@ describe("worktrees", () => {
     expect(git(dir, "branch", "--list", w.task.branch)).toBe("");
   });
 
+  test("removeWorktree reports a task with no cwd as missing before any other check", () => {
+    const { e } = setup();
+    expect(removeWorktree(e, { id: 1, cwd: "", branch: "", parent_id: null } as any)).toBe("missing");
+    expect(e.db.prepare("SELECT COUNT(*) c FROM events WHERE kind = 'worktree_kept'").get()).toEqual({ c: 0 });
+  });
+
+  test("removeWorktree keeps the worktree when git cannot list worktrees", () => {
+    const { dir, e } = setup();
+    const v = feature(e, dir);
+    const failing = { run: (file: string, args: string[], opts: any) =>
+      file === "git" && args[0] === "worktree" && args[1] === "list" ? { code: 1, stdout: "", stderr: "boom", timedOut: false, durationMs: 0 } : realExec.run(file, args, opts),
+      shell: realExec.shell };
+    e.exec = failing as any;
+    expect(removeWorktree(e, v.task)).toBe("kept");
+    expect(existsSync(v.task.cwd)).toBe(true);
+    expect(e.db.prepare("SELECT payload_json p FROM events WHERE kind = 'worktree_kept'").get()).toMatchObject({ p: expect.stringContaining("could not list worktrees") });
+  });
+
   test("removeWorktree never removes a worktree the user made", () => {
     const { dir, e } = setup();
     const wt = join(realpathSync(mkdtempSync(join(tmpdir(), "estack-user-"))), "wt");

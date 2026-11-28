@@ -3,7 +3,7 @@ import { relative, sep } from "node:path";
 import type { Engine } from "./engine";
 import { mappedFiles } from "./graph";
 import { actorOf, deny, nearestDir, resolveReal, type HookEvent, type HookOutput } from "./hooks";
-import { HOOK_GIT_TIMEOUT_MS, logEvent, runBounded } from "./tasks";
+import { HOOK_GIT_TIMEOUT_MS, bindWorker, logEvent, runBounded } from "./tasks";
 import { actorId } from "./types";
 
 export const READ_TOOLS: ReadonlySet<string> = new Set(["Read", "Grep"]);
@@ -14,7 +14,8 @@ export const READ_TOOLS: ReadonlySet<string> = new Set(["Read", "Grep"]);
  */
 export function preRead(e: Engine, ev: HookEvent): HookOutput {
   try {
-    if (!e.policy.code_map.enabled) return null;
+    // With the map off only a worker still needs the binding below.
+    if (!e.policy.code_map.enabled && !ev.agent_id) return null;
     const input = ev.tool_input ?? {};
     const isRead = ev.tool_name === "Read";
     const raw = isRead ? input.file_path : (input.path ?? ev.cwd);
@@ -23,6 +24,15 @@ export function preRead(e: Engine, ev: HookEvent): HookOutput {
     const top = runBounded(e, existsSync(abs) && statSync(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
     if (top.code !== 0) return null;
     const checkout = top.stdout.trim();
+    // A worker is on its task from its first read, before the map-first check.
+    if (ev.agent_id) {
+      const bound = e.db.prepare(
+        `SELECT DISTINCT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?`,
+      ).all(checkout, ev.session_id) as { id: number }[];
+      for (const t of bound) bindWorker(e, t.id, actorOf(ev));
+    }
+    if (!e.policy.code_map.enabled) return null;
     const task = e.db.prepare(
       `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
        WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?

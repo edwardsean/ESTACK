@@ -43,11 +43,13 @@ export function removeWorktree(e: Engine, task: Task): "removed" | "kept" | "mis
     logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason });
     return "kept" as const;
   };
+  if (task.cwd === "") return "missing";
   // Only a worktree the engine made (under <checkout>/.estack/worktrees/) is ever removed.
   if (!task.cwd.includes(`/${WORKTREES_DIR}/`)) return keep("not engine-made");
   if (!existsSync(task.cwd)) return "missing";
   // git status cannot see worktrees nested in this one (the folder is excluded), so look for them directly.
   const list = runBounded(e, e.repo.root, "git", ["worktree", "list", "--porcelain"]);
+  if (list.code !== 0) return keep("could not list worktrees");
   const nested = list.stdout.split("\n").filter((l) => l.startsWith("worktree "))
     .map((l) => l.slice("worktree ".length)).some((p) => p.startsWith(task.cwd + "/"));
   if (nested) return keep("nested worktrees");

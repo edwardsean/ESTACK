@@ -709,3 +709,43 @@ describe("hooks: read tools and code-map tools", () => {
     expect(existsSync(marker)).toBe(true);
   });
 });
+
+describe("workers and the push check", () => {
+  test("a worker is bound on its first edit, read or task tool call", () => {
+    const dir = repo();
+    const e = openEngine(dir, deps);
+    const f = startTask(e, { title: "Feat", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, worktree: true });
+    const w = startTask(e, { title: "Work", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: f.task.cwd, worktree: true, parent_task_id: f.task.id });
+    e.db.close();
+    const bindings = () => rows(dir, `SELECT agent_id, role FROM task_bindings WHERE task_id = ${w.task.id} ORDER BY rowid`);
+    expect(bindings()).toEqual([{ agent_id: null, role: "cto" }]);
+    const r = edit(w.task.cwd, join(w.task.cwd, "a.txt"), { agent_id: "W" });
+    expect(r).toBeNull();
+    expect(bindings()).toEqual([{ agent_id: null, role: "cto" }, { agent_id: "W", role: "worker" }]);
+    edit(w.task.cwd, join(w.task.cwd, "a.txt"), { agent_id: "W" });
+    expect(bindings()).toHaveLength(2);
+    // An edit that is denied binds nothing.
+    edit(w.task.cwd, join(w.task.cwd, "b.txt"), { agent_id: "V", session_id: "other" });
+    expect(bindings()).toHaveLength(2);
+  });
+
+  test("the push check uses the pushed branch", () => {
+    const dir = repo();
+    execFileSync("git", ["branch", "feat/x"], { cwd: dir });
+    const e = openEngine(dir, deps);
+    const t = startTask(e, { title: "x", type: "feature", goal: "g", done_check: "d", actor: { session_id: S }, cwd: dir, branch: "feat/x" });
+    e.db.prepare("UPDATE steps SET status='done' WHERE task_id=? AND name='verify'").run(t.task.id);
+    e.db.close();
+    expect(decision(bash(dir, "git push origin feat/x"))).toBe("ask");
+    expect(decision(bash(dir, "git push -u origin HEAD:refs/heads/feat/x"))).toBe("ask");
+    expect(decision(bash(dir, "git push origin +refs/heads/feat/x"))).toBe("ask");
+    const r = bash(dir, "git push origin main");
+    expect(decision(r)).toBe("deny");
+    expect(reason(r)).toContain("no estack task for branch main");
+    execFileSync("git", ["checkout", "-q", "feat/x"], { cwd: dir });
+    expect(decision(bash(dir, "git push"))).toBe("ask");
+    const other = repo();
+    execFileSync("git", ["worktree", "add", "-q", "-b", "elsewhere", join(other, "wt")], { cwd: other });
+    expect(reason(bash(other, `git -C ${join(other, "wt")} push origin`))).toContain("no estack task for branch elsewhere");
+  });
+});

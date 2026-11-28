@@ -7,7 +7,7 @@ import type { Exec } from "./exec";
 import { consumeHandover, saveSessionHandover, saveTaskHandover, type SessionHandoverBody } from "./handover";
 import { dismissDuplicate } from "./duplicates";
 import { runCodeQuery, taskContext, type CodeTool } from "./codemap";
-import { completeStep, getTask, listOpen, startTask } from "./tasks";
+import { bindWorker, completeStep, getTask, listOpen, startTask } from "./tasks";
 import { EngineError, type Actor } from "./types";
 
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -19,6 +19,7 @@ const evidenceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("commit"), sha: z.string() }),
   z.object({ kind: z.literal("pr"), url: z.string() }),
   z.object({ kind: z.literal("review"), verdict: z.enum(["approve", "changes"]), findings: z.string() }),
+  z.object({ kind: z.literal("merged") }),
 ]);
 
 const text = (t: string, isError = false): Result => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
@@ -32,7 +33,11 @@ export function createServer(cwd: string, deps: { exec?: Exec; now?: () => Date 
       let e: Engine | undefined;
       try {
         e = openEngine(cwd, deps);
-        return text(JSON.stringify(fn(e, args, args.actor ?? { session_id: "unknown" }), null, 2));
+        const actor = args.actor ?? { session_id: "unknown" };
+        // An agent is on a task from its first task tool call.
+        const task_id = (args as { task_id?: unknown }).task_id;
+        if (typeof task_id === "number") bindWorker(e, task_id, actor);
+        return text(JSON.stringify(fn(e, args, actor), null, 2));
       } catch (x) {
         if (x instanceof EngineError) return text(`${x.code}: ${x.message}`, true);
         return text(`internal error: ${x instanceof Error ? x.message : String(x)}`, true);

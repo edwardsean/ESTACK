@@ -11,7 +11,7 @@ import { openEngine } from "./engine";
 import type { Exec } from "./exec";
 import { READ_TOOLS, preRead } from "./mapfirst";
 import { classifyCommand, isExempt, isProtected } from "./match";
-import { HOOK_GIT_TIMEOUT_MS, listOpen, pushReadiness, runBounded, logEvent, tx, type TaskView } from "./tasks";
+import { HOOK_GIT_TIMEOUT_MS, bindWorker, listOpen, pushReadiness, runBounded, logEvent, tx, type TaskView } from "./tasks";
 import { EngineError, type Actor } from "./types";
 
 export interface HookEvent {
@@ -120,12 +120,36 @@ function preEdit(e: Engine, ev: HookEvent): HookOutput {
     `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
      WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ? LIMIT 1`,
   ).get(worktree, ev.session_id);
-  if (bound) return null;
+  if (bound) {
+    bindWorker(e, Number(bound.id), actorOf(ev));
+    return null;
+  }
   return deny(`No open estack task for this session in ${worktree}. Start one with the start_task tool (title, type, goal, done_check) before editing ${rel}.`);
 }
 
 function recordAsk(e: Engine, ev: HookEvent, taskId: number | null, action: string, command: string): void {
   logEvent(e, actorOf(ev), "ask", taskId, { tool_use_id: ev.tool_use_id ?? null, action, command });
+}
+
+/** The branch a `git push` command pushes: the ref it names, else the current branch of the checkout it runs in. */
+function pushedBranch(e: Engine, cwd: string, command: string): string {
+  const current = (dir: string) =>
+    runBounded(e, dir, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  for (const segment of command.split(/[;&|\n]+/)) {
+    const words = (segment.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^(["'])(.*)\1$/, "$2"));
+    const git = words.findIndex((w) => /(^|\/)git$/.test(w));
+    const at = words.indexOf("push");
+    if (git < 0 || at < git) continue;
+    const c = words.indexOf("-C");
+    const dir = c >= 0 && c < at && words[c + 1] ? resolve(cwd, words[c + 1]) : cwd;
+    const [, ref] = words.slice(at + 1).filter((w) => !w.startsWith("-"));
+    if (ref !== undefined && ref !== "HEAD") {
+      const dst = ref.replace(/^\+/, "").split(":").at(-1)!.replace(/^refs\/heads\//, "");
+      if (dst !== "" && dst !== "HEAD") return dst;
+    }
+    return current(dir);
+  }
+  return current(cwd);
 }
 
 function preBash(e: Engine, ev: HookEvent): HookOutput {
@@ -140,7 +164,7 @@ function preBash(e: Engine, ev: HookEvent): HookOutput {
     recordAsk(e, ev, null, v.action, command);
     return pre("ask", `${v.action} needs the owner's approval (pattern ${v.pattern})`);
   }
-  const branch = runBounded(e, ev.cwd, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  const branch = pushedBranch(e, ev.cwd, command);
   const { task: t, verifySettled } = pushReadiness(e, branch);
   const refusal = !t
     ? `no estack task for branch ${branch}; start one, or the owner can run \`estack override git_push --reason …\` in a terminal`

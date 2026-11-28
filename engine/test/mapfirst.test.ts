@@ -136,4 +136,18 @@ describe("map first", () => {
     const { dir } = setup();
     expect(read(dir, { session_id: "other", agent_id: "x" })).toBeNull();
   });
+
+  test("a worker is bound on its first edit, read or task tool call", () => {
+    const { dir, id } = setup();
+    const bindings = () => {
+      const e = openEngine(dir, deps);
+      try { return e.db.prepare("SELECT agent_id, role FROM task_bindings WHERE task_id = ? ORDER BY rowid").all(id); } finally { e.db.close(); }
+    };
+    expect(bindings()).toEqual([{ agent_id: null, role: "cto" }]);
+    // Bound by the first read, even though that read is the one that is denied.
+    expect(reasonOf(read(dir, A))).toContain("look at the code map");
+    expect(bindings()).toEqual([{ agent_id: null, role: "cto" }, { agent_id: "worker-a", role: "worker" }]);
+    read(dir, { session_id: "other", agent_id: "x" });
+    expect(bindings()).toHaveLength(2);
+  });
 });

@@ -1,6 +1,6 @@
 import type { Engine } from "./engine";
 import type { ExecResult } from "./exec";
-import { createWorktree, ensureWorktreeExclude, runWorktreeSetup, slug } from "./worktree";
+import { createWorktree, ensureWorktreeExclude, removeWorktree, runWorktreeSetup, slug } from "./worktree";
 import {
   EngineError, STEP_EVIDENCE, actorId,
   type Actor, type Evidence, type EvidenceKind, type Step, type Task,
@@ -8,7 +8,7 @@ import {
 
 export type EvidenceInput =
   | { kind: "note"; text: string } | { kind: "commit"; sha: string } | { kind: "pr"; url: string }
-  | { kind: "review"; verdict: "approve" | "changes"; findings: string };
+  | { kind: "review"; verdict: "approve" | "changes"; findings: string } | { kind: "merged" };
 export interface TaskView { task: Task; steps: Step[]; next: Step | null; evidence: Evidence[] }
 
 const iso = (e: Engine) => e.now().toISOString();
@@ -89,6 +89,26 @@ function insertSteps(e: Engine, id: number, steps: string[]): void {
 function bind(e: Engine, id: number, actor: Actor): void {
   e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)")
     .run(id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso(e));
+}
+
+/** Bind an agent to an open task the first time it touches it; a bare session and a repeat are no-ops. */
+export function bindWorker(e: Engine, task_id: number, actor: Actor): void {
+  if (!actor.agent_id) return;
+  const open = e.db.prepare("SELECT 1 FROM tasks WHERE id = ? AND status = 'open'").get(task_id);
+  if (!open) return;
+  const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id = ?")
+    .get(task_id, actor.session_id, actor.agent_id);
+  if (dup) return;
+  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, 'worker', ?)")
+    .run(task_id, actor.session_id, actor.agent_id, iso(e));
+}
+
+/** True when the session is a task's CTO: bound with role cto to the task itself or to its parent. */
+export function ownsTask(e: Engine, session_id: string, task_id: number): boolean {
+  return e.db.prepare(
+    `SELECT 1 FROM task_bindings b WHERE b.role = 'cto' AND b.session_id = ?
+       AND b.task_id IN (?, (SELECT parent_id FROM tasks WHERE id = ?)) LIMIT 1`,
+  ).get(session_id, task_id, task_id) !== undefined;
 }
 
 function insertAreas(e: Engine, id: number, area: string[] | undefined): void {
@@ -302,6 +322,18 @@ function checkEvidence(e: Engine, v: TaskView, step: string, ev: EvidenceInput, 
       if (ev.verdict !== "approve") return { payload, rejected: "changes requested" };
       return { payload };
     }
+    case "merged": {
+      const parent = v.task.parent_id === null ? undefined
+        : e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id) as unknown as Task | undefined;
+      if (!parent) bad(`task #${v.task.id} has no parent feature, so there is nothing to merge into`);
+      const head = runBounded(e, parent.cwd, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${v.task.branch}^{commit}`]);
+      if (head.code !== 0) bad(`no such branch: ${v.task.branch}`);
+      const sha = head.stdout.trim();
+      if (runBounded(e, parent.cwd, "git", ["merge-base", "--is-ancestor", sha, `refs/heads/${parent.branch}`]).code !== 0) {
+        bad(`${v.task.branch} is not merged into ${parent.branch} yet; merge it there first (git -C ${parent.cwd} merge --no-ff ${v.task.branch})`);
+      }
+      return { payload: { head: sha, into: parent.branch } };
+    }
     default:
       return bad(`unsupported evidence kind for step ${step}`);
   }
@@ -330,5 +362,10 @@ export function completeStep(e: Engine, input: { task_id: number; step: string; 
     return view(e, v.task.id);
   });
   if (!result) return bad(rejected ?? "evidence rejected");
+  if (input.step === "merge") {
+    // The worker is merged: its worktree goes (kept if dirty). The step is already recorded, so a failure here does not undo it.
+    try { removeWorktree(e, v.task); } catch { /* a git timeout leaves the worktree; the step stands */ }
+    logEvent(e, input.actor, "task_merged", v.task.id, { into: payload.into });
+  }
   return result;
 }

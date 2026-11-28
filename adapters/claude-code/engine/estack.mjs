@@ -34690,6 +34690,7 @@ import { existsSync as existsSync3 } from "node:fs";
 import { join as join4 } from "node:path";
 var WORKTREES_DIR = ".estack/worktrees";
 var WORKTREE_SETUP_TIMEOUT_MS = 6e5;
+var ENGINE = { session_id: "engine" };
 function slug(title) {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
 }
@@ -34709,6 +34710,28 @@ function runWorktreeSetup(e, cwd) {
   const tail = (r.stdout + r.stderr).trim().slice(-500);
   return { ok: r.code === 0 && !r.timedOut, output_tail: r.timedOut ? `${tail}
 timed out`.trim() : tail };
+}
+function removeWorktree(e, task) {
+  const keep = (reason) => {
+    logEvent(e, ENGINE, "worktree_kept", task.id, { path: task.cwd, reason });
+    return "kept";
+  };
+  if (task.cwd === "") return "missing";
+  if (!task.cwd.includes(`/${WORKTREES_DIR}/`)) return keep("not engine-made");
+  if (!existsSync3(task.cwd)) return "missing";
+  const list = runBounded(e, e.repo.root, "git", ["worktree", "list", "--porcelain"]);
+  if (list.code !== 0) return keep("could not list worktrees");
+  const nested = list.stdout.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice("worktree ".length)).some((p) => p.startsWith(task.cwd + "/"));
+  if (nested) return keep("nested worktrees");
+  const status2 = runBounded(e, task.cwd, "git", ["status", "--porcelain"]);
+  if (status2.code !== 0 || status2.stdout.trim() !== "") return keep(status2.code !== 0 ? "git status failed" : "uncommitted changes");
+  const rm = runBounded(e, e.repo.root, "git", ["worktree", "remove", task.cwd]);
+  if (rm.code !== 0) return keep(rm.stderr.trim());
+  const parent = task.parent_id === null ? void 0 : e.db.prepare("SELECT cwd FROM tasks WHERE id = ?").get(task.parent_id);
+  const from = parent?.cwd && existsSync3(parent.cwd) ? parent.cwd : e.repo.root;
+  const br = runBounded(e, from, "git", ["branch", "-d", task.branch]);
+  logEvent(e, ENGINE, "worktree_removed", task.id, { path: task.cwd, branch: task.branch, branch_deleted: br.code === 0 });
+  return "removed";
 }
 
 // engine/src/tasks.ts
@@ -34762,6 +34785,14 @@ function insertSteps(e, id, steps) {
 }
 function bind(e, id, actor) {
   e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, ?, ?)").run(id, actor.session_id, actor.agent_id ?? null, actor.agent_id ? "worker" : "cto", iso(e));
+}
+function bindWorker(e, task_id, actor) {
+  if (!actor.agent_id) return;
+  const open2 = e.db.prepare("SELECT 1 FROM tasks WHERE id = ? AND status = 'open'").get(task_id);
+  if (!open2) return;
+  const dup = e.db.prepare("SELECT 1 FROM task_bindings WHERE task_id = ? AND session_id = ? AND agent_id = ?").get(task_id, actor.session_id, actor.agent_id);
+  if (dup) return;
+  e.db.prepare("INSERT INTO task_bindings (task_id, session_id, agent_id, role, bound_at) VALUES (?, ?, ?, 'worker', ?)").run(task_id, actor.session_id, actor.agent_id, iso(e));
 }
 function insertAreas(e, id, area) {
   for (const path of area ?? []) e.db.prepare("INSERT OR IGNORE INTO task_areas (task_id, path) VALUES (?, ?)").run(id, path);
@@ -34942,6 +34973,17 @@ function checkEvidence(e, v, step, ev, actor) {
       if (ev.verdict !== "approve") return { payload, rejected: "changes requested" };
       return { payload };
     }
+    case "merged": {
+      const parent = v.task.parent_id === null ? void 0 : e.db.prepare("SELECT * FROM tasks WHERE id = ?").get(v.task.parent_id);
+      if (!parent) bad(`task #${v.task.id} has no parent feature, so there is nothing to merge into`);
+      const head = runBounded(e, parent.cwd, "git", ["rev-parse", "--verify", "--quiet", `refs/heads/${v.task.branch}^{commit}`]);
+      if (head.code !== 0) bad(`no such branch: ${v.task.branch}`);
+      const sha = head.stdout.trim();
+      if (runBounded(e, parent.cwd, "git", ["merge-base", "--is-ancestor", sha, `refs/heads/${parent.branch}`]).code !== 0) {
+        bad(`${v.task.branch} is not merged into ${parent.branch} yet; merge it there first (git -C ${parent.cwd} merge --no-ff ${v.task.branch})`);
+      }
+      return { payload: { head: sha, into: parent.branch } };
+    }
     default:
       return bad(`unsupported evidence kind for step ${step}`);
   }
@@ -34967,6 +35009,13 @@ function completeStep(e, input2) {
     return view(e, v.task.id);
   });
   if (!result) return bad(rejected ?? "evidence rejected");
+  if (input2.step === "merge") {
+    try {
+      removeWorktree(e, v.task);
+    } catch {
+    }
+    logEvent(e, input2.actor, "task_merged", v.task.id, { into: payload.into });
+  }
   return result;
 }
 
@@ -35443,7 +35492,7 @@ import { relative, sep } from "node:path";
 var READ_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep"]);
 function preRead(e, ev) {
   try {
-    if (!e.policy.code_map.enabled) return null;
+    if (!e.policy.code_map.enabled && !ev.agent_id) return null;
     const input2 = ev.tool_input ?? {};
     const isRead = ev.tool_name === "Read";
     const raw = isRead ? input2.file_path : input2.path ?? ev.cwd;
@@ -35452,6 +35501,14 @@ function preRead(e, ev) {
     const top = runBounded(e, existsSync5(abs) && statSync2(abs).isDirectory() ? abs : nearestDir(abs), "git", ["rev-parse", "--show-toplevel"], HOOK_GIT_TIMEOUT_MS);
     if (top.code !== 0) return null;
     const checkout = top.stdout.trim();
+    if (ev.agent_id) {
+      const bound = e.db.prepare(
+        `SELECT DISTINCT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
+         WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?`
+      ).all(checkout, ev.session_id);
+      for (const t of bound) bindWorker(e, t.id, actorOf(ev));
+    }
+    if (!e.policy.code_map.enabled) return null;
     const task = e.db.prepare(
       `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
        WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ?
@@ -35651,11 +35708,32 @@ function preEdit(e, ev) {
     `SELECT t.id FROM tasks t JOIN task_bindings b ON b.task_id = t.id
      WHERE t.status = 'open' AND t.cwd = ? AND b.session_id = ? LIMIT 1`
   ).get(worktree, ev.session_id);
-  if (bound) return null;
+  if (bound) {
+    bindWorker(e, Number(bound.id), actorOf(ev));
+    return null;
+  }
   return deny(`No open estack task for this session in ${worktree}. Start one with the start_task tool (title, type, goal, done_check) before editing ${rel}.`);
 }
 function recordAsk(e, ev, taskId, action, command) {
   logEvent(e, actorOf(ev), "ask", taskId, { tool_use_id: ev.tool_use_id ?? null, action, command });
+}
+function pushedBranch(e, cwd, command) {
+  const current = (dir) => runBounded(e, dir, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  for (const segment of command.split(/[;&|\n]+/)) {
+    const words = (segment.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^(["'])(.*)\1$/, "$2"));
+    const git2 = words.findIndex((w) => /(^|\/)git$/.test(w));
+    const at = words.indexOf("push");
+    if (git2 < 0 || at < git2) continue;
+    const c = words.indexOf("-C");
+    const dir = c >= 0 && c < at && words[c + 1] ? resolve(cwd, words[c + 1]) : cwd;
+    const [, ref] = words.slice(at + 1).filter((w) => !w.startsWith("-"));
+    if (ref !== void 0 && ref !== "HEAD") {
+      const dst = ref.replace(/^\+/, "").split(":").at(-1).replace(/^refs\/heads\//, "");
+      if (dst !== "" && dst !== "HEAD") return dst;
+    }
+    return current(dir);
+  }
+  return current(cwd);
 }
 function preBash(e, ev) {
   const command = typeof ev.tool_input?.command === "string" ? ev.tool_input.command : "";
@@ -35669,7 +35747,7 @@ function preBash(e, ev) {
     recordAsk(e, ev, null, v.action, command);
     return pre("ask", `${v.action} needs the owner's approval (pattern ${v.pattern})`);
   }
-  const branch = runBounded(e, ev.cwd, "git", ["branch", "--show-current"], HOOK_GIT_TIMEOUT_MS).stdout.trim();
+  const branch = pushedBranch(e, ev.cwd, command);
   const { task: t, verifySettled } = pushReadiness(e, branch);
   const refusal = !t ? `no estack task for branch ${branch}; start one, or the owner can run \`estack override git_push --reason \u2026\` in a terminal` : !verifySettled ? `task #${t.id} has no verify evidence; run run_check with step verify first` : null;
   if (refusal !== null) {
@@ -45965,7 +46043,8 @@ var evidenceSchema = external_exports.discriminatedUnion("kind", [
   external_exports.object({ kind: external_exports.literal("note"), text: external_exports.string() }),
   external_exports.object({ kind: external_exports.literal("commit"), sha: external_exports.string() }),
   external_exports.object({ kind: external_exports.literal("pr"), url: external_exports.string() }),
-  external_exports.object({ kind: external_exports.literal("review"), verdict: external_exports.enum(["approve", "changes"]), findings: external_exports.string() })
+  external_exports.object({ kind: external_exports.literal("review"), verdict: external_exports.enum(["approve", "changes"]), findings: external_exports.string() }),
+  external_exports.object({ kind: external_exports.literal("merged") })
 ]);
 var text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...isError ? { isError: true } : {} });
 function createServer(cwd, deps = {}) {
@@ -45975,7 +46054,10 @@ function createServer(cwd, deps = {}) {
       let e;
       try {
         e = openEngine(cwd, deps);
-        return text(JSON.stringify(fn(e, args, args.actor ?? { session_id: "unknown" }), null, 2));
+        const actor = args.actor ?? { session_id: "unknown" };
+        const task_id = args.task_id;
+        if (typeof task_id === "number") bindWorker(e, task_id, actor);
+        return text(JSON.stringify(fn(e, args, actor), null, 2));
       } catch (x) {
         if (x instanceof EngineError) return text(`${x.code}: ${x.message}`, true);
         return text(`internal error: ${x instanceof Error ? x.message : String(x)}`, true);
